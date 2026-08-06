@@ -34,6 +34,10 @@ internal sealed record GhIssue(
     [property: JsonPropertyName("labels")] IReadOnlyList<GhLabel>? Labels,
     [property: JsonPropertyName("user")] GhUser? User,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    // The issues endpoint is queried with sort=updated and filtered by `since`, and GitHub
+    // applies `since` to updated_at — NOT created_at. The resume cursor must therefore track
+    // updated_at, or every incremental run re-walks a tail of already-ingested issues.
+    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
     [property: JsonPropertyName("closed_at")] DateTimeOffset? ClosedAt,
     [property: JsonPropertyName("html_url")] string HtmlUrl,
     [property: JsonPropertyName("pull_request")] GhPullRequestLink? PullRequest);

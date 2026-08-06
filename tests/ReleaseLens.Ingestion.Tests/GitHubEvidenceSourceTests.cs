@@ -119,6 +119,85 @@ public class GitHubEvidenceSourceTests
     }
 
     [Fact]
+    public async Task ReadCommits_MultiPage_CursorNeverGoesBackwards()
+    {
+        // The commits endpoint returns newest-first, so page 2 is older than page 1. A cursor
+        // recomputed per page would decrease, and a consumer checkpointing per batch would
+        // persist the oldest value of the run and re-walk that history on the next run.
+        const string newerPage = """
+        [
+          { "sha": "newer", "html_url": "https://github.com/o/r/commit/newer",
+            "commit": { "message": "newer", "author": { "name": "A", "email": "a@e.com", "date": "2026-03-10T00:00:00Z" },
+                        "committer": { "date": "2026-03-10T00:00:00Z" } } }
+        ]
+        """;
+
+        const string olderPage = """
+        [
+          { "sha": "older", "html_url": "https://github.com/o/r/commit/older",
+            "commit": { "message": "older", "author": { "name": "A", "email": "a@e.com", "date": "2026-01-01T00:00:00Z" },
+                        "committer": { "date": "2026-01-01T00:00:00Z" } } }
+        ]
+        """;
+
+        var handler = new StubHttpMessageHandler()
+            .EnqueuePage(newerPage, "https://api.github.com/repositories/1/commits?page=2")
+            .EnqueuePage(olderPage, nextLink: null);
+
+        var batches = await Collect(Create(handler)
+            .ReadCommitsAsync(EvidenceCursor.Start(Tenant), TestContext.Current.CancellationToken));
+
+        Assert.Equal(2, batches.Count);
+        Assert.Equal("2026-03-10T00:00:00Z", batches[0].NextCursor);
+        Assert.Equal("2026-03-10T00:00:00Z", batches[1].NextCursor);
+    }
+
+    [Fact]
+    public async Task ReadIssues_CursorTracksUpdatedAtNotCreatedAt()
+    {
+        // GitHub applies `since` to updated_at on the issues endpoint. A cursor built from
+        // created_at is permanently behind the true high-water mark, so every incremental
+        // run re-walks a tail of issues it has already ingested.
+        const string page = """
+        [
+          { "number": 20, "title": "Old issue, recently updated", "body": "text", "state": "open",
+            "labels": [], "user": {"login":"bob"},
+            "created_at": "2024-01-01T00:00:00Z", "updated_at": "2026-05-05T00:00:00Z",
+            "closed_at": null, "html_url": "https://github.com/o/r/issues/20" }
+        ]
+        """;
+
+        var handler = new StubHttpMessageHandler().EnqueuePage(page, nextLink: null);
+
+        var batches = await Collect(Create(handler)
+            .ReadIssuesAsync(EvidenceCursor.Start(Tenant), TestContext.Current.CancellationToken));
+
+        Assert.Equal("2026-05-05T00:00:00Z", batches[0].NextCursor);
+    }
+
+    [Fact]
+    public async Task ReadPullRequests_ReportsNoCursor_BecauseTheEndpointTakesNoSinceFilter()
+    {
+        const string page = """
+        [
+          { "number": 900, "title": "Fix planner", "body": "b", "state": "closed",
+            "merged_at": "2026-02-01T00:00:00Z", "merge_commit_sha": "abc",
+            "base": {"ref":"main"}, "head": {"ref":"fix/planner"},
+            "user": {"login":"alice"}, "created_at": "2026-01-01T00:00:00Z",
+            "html_url": "https://github.com/o/r/pull/900" }
+        ]
+        """;
+
+        var handler = new StubHttpMessageHandler().EnqueuePage(page, nextLink: null);
+
+        var batches = await Collect(Create(handler)
+            .ReadPullRequestsAsync(EvidenceCursor.Start(Tenant), TestContext.Current.CancellationToken));
+
+        Assert.Single(batches[0].Items);
+        Assert.Null(batches[0].NextCursor);
+    }
+
+    [Fact]
     public async Task ReadCommits_SendsIfNoneMatchWhenTheCursorCarriesAnEtag()
     {
         var handler = new StubHttpMessageHandler().Enqueue(HttpStatusCode.NotModified, string.Empty);
@@ -169,10 +248,12 @@ public class GitHubEvidenceSourceTests
         const string page = """
         [
           { "number": 10, "title": "A real issue", "body": "text", "state": "open", "labels": [{"name":"bug"}],
-            "user": {"login":"bob"}, "created_at": "2026-01-01T00:00:00Z", "closed_at": null,
+            "user": {"login":"bob"}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "closed_at": null,
             "html_url": "https://github.com/microsoft/semantic-kernel/issues/10" },
           { "number": 11, "title": "Actually a PR", "body": "text", "state": "open", "labels": [],
-            "user": {"login":"carol"}, "created_at": "2026-01-02T00:00:00Z", "closed_at": null,
+            "user": {"login":"carol"}, "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+            "closed_at": null,
             "html_url": "https://github.com/microsoft/semantic-kernel/pull/11",
             "pull_request": { "url": "https://api.github.com/repos/microsoft/semantic-kernel/pulls/11" } }
         ]

@@ -48,6 +48,13 @@ public sealed class GitHubEvidenceSource : IEvidenceSource
 
         var firstPage = true;
 
+        // The commits endpoint returns newest-first and offers no sort/direction parameter,
+        // so page 1 already holds the global maximum and every later page is strictly older.
+        // Recomputing the cursor per page would therefore hand the caller a DECREASING
+        // sequence, and a consumer that checkpoints per batch (Task 9 does) would persist the
+        // oldest value of the run and re-walk that history next time. Track a running maximum.
+        DateTimeOffset? highWaterMark = null;
+
         await foreach (var page in ReadPagesAsync<GhCommitListItem>(url, cursor.ETag, cancellationToken))
         {
             if (page.NotModified)
@@ -66,11 +73,17 @@ public sealed class GitHubEvidenceSource : IEvidenceSource
                 commits.Add(Map(cursor.TenantId, item, files));
             }
 
-            var newest = commits.Count > 0 ? commits.Max(c => c.CommittedAt) : (DateTimeOffset?)null;
+            foreach (var commit in commits)
+            {
+                if (highWaterMark is null || commit.CommittedAt > highWaterMark)
+                {
+                    highWaterMark = commit.CommittedAt;
+                }
+            }
 
             yield return new EvidenceBatch<CommitEvidence>(
                 commits,
-                newest is { } n ? Iso(n) : null,
+                highWaterMark is { } n ? Iso(n) : null,
                 firstPage ? page.ETag : null,
                 NotModified: false);
 
@@ -106,7 +119,11 @@ public sealed class GitHubEvidenceSource : IEvidenceSource
                     i.User?.Login, i.CreatedAt, i.ClosedAt, i.HtmlUrl))
                 .ToList();
 
-            var newest = page.Items.Count > 0 ? page.Items.Max(i => i.CreatedAt) : (DateTimeOffset?)null;
+            // sort=updated&direction=asc means the last page carries the newest updated_at,
+            // so a running maximum is unnecessary here — but the field must be UpdatedAt,
+            // because that is what GitHub's `since` filters on. Using CreatedAt would leave
+            // the cursor permanently behind the true high-water mark.
+            var newest = page.Items.Count > 0 ? page.Items.Max(i => i.UpdatedAt) : (DateTimeOffset?)null;
 
             yield return new EvidenceBatch<IssueEvidence>(
                 issues, newest is { } n ? Iso(n) : null, firstPage ? page.ETag : null, NotModified: false);
@@ -136,10 +153,11 @@ public sealed class GitHubEvidenceSource : IEvidenceSource
                 p.MergedAt, p.MergeCommitSha, p.Base?.Ref ?? "main", p.Head?.Ref ?? string.Empty,
                 p.User?.Login, p.CreatedAt, p.HtmlUrl)).ToList();
 
-            var newest = page.Items.Count > 0 ? page.Items.Max(p => p.CreatedAt) : (DateTimeOffset?)null;
-
+            // Pull requests are re-read from the start every run — the endpoint takes no
+            // `since` parameter, so ResolveSince is never consulted on this path. Reporting a
+            // cursor nobody consumes would be a trap for a later reader, so report none.
             yield return new EvidenceBatch<PullRequestEvidence>(
-                pullRequests, newest is { } n ? Iso(n) : null, firstPage ? page.ETag : null, NotModified: false);
+                pullRequests, null, firstPage ? page.ETag : null, NotModified: false);
 
             firstPage = false;
         }
