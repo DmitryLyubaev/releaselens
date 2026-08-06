@@ -116,6 +116,25 @@ public class EvidenceChunkerTests
     }
 
     [Fact]
+    public void Chunk_HeaderLongEnoughToStarveTheBudget_StillSegmentsSanely()
+    {
+        // A ~1000-character single-line commit subject leaves a budget below the overlap
+        // width. Without the guard, Segment advances one character per iteration and this
+        // produces thousands of near-duplicate chunks instead of a handful.
+        var subject = new string('x', 1000);
+        var body = string.Join("\n\n", Enumerable.Range(0, 40)
+            .Select(i => $"Paragraph {i} describing behaviour of the planner in some detail."));
+
+        var chunks = _chunker.Chunk(Commit(subject + "\n\n" + body));
+
+        Assert.True(chunks.Count < 20,
+            $"expected a sane number of chunks, got {chunks.Count} — the budget/overlap guard is not holding");
+        Assert.All(chunks, c => Assert.True(
+            c.ApproxTokens <= ChunkOptions.Default.MaxTokens,
+            $"chunk {c.Index} was {c.ApproxTokens} tokens"));
+    }
+
+    [Fact]
     public void Chunk_TenantAndKey_ArePropagatedToEveryChunk()
     {
         var chunks = _chunker.Chunk(Commit("fix: null ref"));

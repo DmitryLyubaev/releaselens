@@ -114,7 +114,13 @@ public sealed class EvidenceChunker(ChunkOptions options)
         var headerLine = header + "\n";
         var budget = _options.MaxChars - headerLine.Length;
 
-        if (budget < 100)
+        // The guard has to keep budget comfortably ABOVE OverlapChars, not merely above zero.
+        // Segment advances by (cut - overlap); if budget <= overlap then even the widest cut
+        // gives a non-positive advance, Math.Max clamps it to 1, and a long body yields one
+        // chunk per character. With the default options OverlapChars is 172 and MaxChars 1152,
+        // so a header of 981-1052 chars lands in exactly that band — a real commit subject
+        // length — and quietly explodes into thousands of one-character-shifted chunks.
+        if (budget < _options.OverlapChars * 2)
         {
             // Pathological header (a novel-length commit subject). Truncate it rather than
             // producing chunks that are all header and no content.
@@ -140,8 +146,12 @@ public sealed class EvidenceChunker(ChunkOptions options)
 
     /// <summary>
     /// Splits on paragraph boundaries, falling back to sentence boundaries and then
-    /// to a hard character cut. Consecutive segments overlap by <paramref name="overlap"/>
-    /// characters so a fact spanning a boundary survives in at least one segment whole.
+    /// to a hard character cut. Consecutive segments are intended to overlap by
+    /// <paramref name="overlap"/> characters so a fact spanning a boundary survives in
+    /// at least one segment whole — but that overlap is only real when
+    /// <paramref name="budget"/> is comfortably larger than <paramref name="overlap"/>.
+    /// Callers with a <c>budget</c> at or below <c>overlap</c> get correctness (the loop
+    /// still terminates), not the overlap guarantee.
     /// </summary>
     private static List<string> Segment(string text, int budget, int overlap)
     {
