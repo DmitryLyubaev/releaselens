@@ -125,9 +125,9 @@ public sealed class AnthropicChatProvider : IChatProvider
     {
         var content = new JsonArray();
 
-        if (message.Results is { Count: > 0 })
+        if (message.ToolResults is { Count: > 0 })
         {
-            foreach (var result in message.Results)
+            foreach (var result in message.ToolResults)
             {
                 content.Add(new JsonObject
                 {

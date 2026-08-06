@@ -28,7 +28,7 @@ public class AnthropicChatProviderTests
         "Search commits by natural-language query.",
         JsonDocument.Parse("""
             {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
-            """).RootElement);
+            """).RootElement.Clone());
 
     private const string TextResponse = """
     {
@@ -136,7 +136,7 @@ public class AnthropicChatProviderTests
                 ChatMessage.User("question"),
                 ChatMessage.AssistantToolCalls([new ToolCall("toolu_01", "search_commits",
                     JsonDocument.Parse("""{"query":"x"}""").RootElement)]),
-                ChatMessage.ToolResults([new ToolResult("toolu_01", "3 commits found", IsError: false)])
+                ChatMessage.UserToolResults([new ToolResult("toolu_01", "3 commits found", IsError: false)])
             ],
             [SearchTool()], "claude-sonnet-5", 1024);
 

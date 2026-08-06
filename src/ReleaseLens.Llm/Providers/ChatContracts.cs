@@ -14,14 +14,19 @@ public sealed record ChatMessage(
     ChatRole Role,
     string? Text,
     IReadOnlyList<ToolCall>? ToolCalls,
-    IReadOnlyList<ToolResult>? Results)
+    IReadOnlyList<ToolResult>? ToolResults)
 {
     public static ChatMessage User(string text) => new(ChatRole.User, text, null, null);
     public static ChatMessage Assistant(string text) => new(ChatRole.Assistant, text, null, null);
     public static ChatMessage AssistantToolCalls(IReadOnlyList<ToolCall> calls) => new(ChatRole.Assistant, null, calls, null);
 
-    /// <summary>Tool results are sent back in the user turn for Anthropic and as tool-role messages for OpenAI.</summary>
-    public static ChatMessage ToolResults(IReadOnlyList<ToolResult> results) => new(ChatRole.User, null, null, results);
+    /// <summary>
+    /// Tool results are sent back in the user turn for Anthropic and as tool-role messages
+    /// for OpenAI. Named for the turn it produces, parallel to <see cref="AssistantToolCalls"/>
+    /// — and it cannot simply be called ToolResults, because a record's positional property
+    /// of that name already occupies the identifier (CS0102).
+    /// </summary>
+    public static ChatMessage UserToolResults(IReadOnlyList<ToolResult> results) => new(ChatRole.User, null, null, results);
 }
 
 public sealed record ChatRequest(
