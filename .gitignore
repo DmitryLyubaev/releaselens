@@ -1,0 +1,36 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+*.user
+*.suo
+.vs/
+.idea/
+
+# Secrets — never commit
+.env
+.env.*
+appsettings.Development.json
+appsettings.Local.json
+*.pfx
+
+# ONNX model weights (~130 MB) — fetched by scripts/fetch-model.*
+models/
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+!infra/terraform/*.tfvars.example
+infra/terraform/.terraform.lock.hcl
+
+# Python eval service
+eval/.venv/
+eval/__pycache__/
+eval/**/__pycache__/
+eval/.pytest_cache/
+
+# Test output
+TestResults/
+coverage/
