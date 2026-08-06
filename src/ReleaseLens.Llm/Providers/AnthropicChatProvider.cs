@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,8 +16,6 @@ public sealed class AnthropicOptions
 
 public sealed class AnthropicChatProvider : IChatProvider
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     private readonly HttpClient _client;
     private readonly AnthropicOptions _options;
 
@@ -38,34 +35,13 @@ public sealed class AnthropicChatProvider : IChatProvider
     {
         var payload = BuildPayload(request);
 
-        HttpResponseMessage response;
-        try
-        {
-            response = await _client.PostAsJsonAsync("/v1/messages", payload, JsonOptions, cancellationToken);
-        }
-        catch (HttpRequestException transport)
-        {
-            throw new ProviderUnavailableException(Name, "Anthropic transport failure.", transport);
-        }
-        catch (TaskCanceledException timeout) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new ProviderUnavailableException(Name, "Anthropic request timed out.", timeout);
-        }
+        var response = await ProviderHttp.SendAsync(
+            () => _client.PostAsJsonAsync("/v1/messages", payload, ProviderHttp.JsonOptions, cancellationToken),
+            Name, cancellationToken);
 
         using (response)
         {
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                // 5xx and 429 are "try the other provider"; 4xx is our bug and must surface.
-                if (response.StatusCode is HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
-                {
-                    throw new ProviderUnavailableException(Name, $"Anthropic returned {(int)response.StatusCode}: {body}");
-                }
-
-                throw new InvalidOperationException($"Anthropic rejected the request ({(int)response.StatusCode}): {body}");
-            }
+            await ProviderHttp.ThrowIfNotSuccessAsync(response, Name, cancellationToken);
 
             using var document = await JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
@@ -197,17 +173,12 @@ public sealed class AnthropicChatProvider : IChatProvider
             text,
             toolCalls,
             new TokenUsage(
-                ReadInt(usage, "input_tokens"),
-                ReadInt(usage, "output_tokens"),
-                ReadInt(usage, "cache_read_input_tokens"),
-                ReadInt(usage, "cache_creation_input_tokens")),
+                ProviderHttp.ReadInt(usage, "input_tokens"),
+                ProviderHttp.ReadInt(usage, "output_tokens"),
+                ProviderHttp.ReadInt(usage, "cache_read_input_tokens"),
+                ProviderHttp.ReadInt(usage, "cache_creation_input_tokens")),
             root.GetProperty("stop_reason").GetString() ?? "unknown",
             root.GetProperty("model").GetString() ?? _options.Model,
             Name);
     }
-
-    private static int ReadInt(JsonElement element, string name)
-        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
-            ? value.GetInt32()
-            : 0;
 }

@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -25,8 +24,6 @@ public sealed class OpenAiOptions
 
 public sealed class OpenAiChatProvider : IChatProvider
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     private readonly HttpClient _client;
     private readonly OpenAiOptions _options;
 
@@ -51,33 +48,13 @@ public sealed class OpenAiChatProvider : IChatProvider
     {
         var payload = BuildPayload(request);
 
-        HttpResponseMessage response;
-        try
-        {
-            response = await _client.PostAsJsonAsync("chat/completions", payload, JsonOptions, cancellationToken);
-        }
-        catch (HttpRequestException transport)
-        {
-            throw new ProviderUnavailableException(Name, "OpenAI-compatible transport failure.", transport);
-        }
-        catch (TaskCanceledException timeout) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new ProviderUnavailableException(Name, "OpenAI-compatible request timed out.", timeout);
-        }
+        var response = await ProviderHttp.SendAsync(
+            () => _client.PostAsJsonAsync("chat/completions", payload, ProviderHttp.JsonOptions, cancellationToken),
+            Name, cancellationToken);
 
         using (response)
         {
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                if (response.StatusCode is HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
-                {
-                    throw new ProviderUnavailableException(Name, $"Provider returned {(int)response.StatusCode}: {body}");
-                }
-
-                throw new InvalidOperationException($"Provider rejected the request ({(int)response.StatusCode}): {body}");
-            }
+            await ProviderHttp.ThrowIfNotSuccessAsync(response, Name, cancellationToken);
 
             using var document = await JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
@@ -212,18 +189,12 @@ public sealed class OpenAiChatProvider : IChatProvider
             text,
             toolCalls,
             new TokenUsage(
-                ReadInt(usage, "prompt_tokens"),
-                ReadInt(usage, "completion_tokens"),
+                ProviderHttp.ReadInt(usage, "prompt_tokens"),
+                ProviderHttp.ReadInt(usage, "completion_tokens"),
                 cachedTokens,
                 0),
             choice.GetProperty("finish_reason").GetString() ?? "unknown",
             root.TryGetProperty("model", out var model) ? model.GetString() ?? _options.Model : _options.Model,
             Name);
     }
-
-    private static int ReadInt(JsonElement element, string name)
-        => element.ValueKind == JsonValueKind.Object &&
-           element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
-            ? value.GetInt32()
-            : 0;
 }
