@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: releaselens-postgres
+    environment:
+      POSTGRES_USER: releaselens
+      POSTGRES_PASSWORD: releaselens_dev_only
+      POSTGRES_DB: releaselens
+    ports:
+      - "5433:5432"
+    volumes:
+      - releaselens-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U releaselens -d releaselens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: releaselens-aspire
+    environment:
+      DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "18888:18888"   # UI
+      - "4317:18889"    # OTLP gRPC
+
+volumes:
+  releaselens-pgdata:
