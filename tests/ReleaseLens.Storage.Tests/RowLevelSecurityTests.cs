@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using Dapper;
 using Npgsql;
+using Pgvector;
 using Xunit;
 
 namespace ReleaseLens.Storage.Tests;
@@ -93,6 +94,49 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
                 new { tenant = TenantB }, scope.Transaction));
 
         Assert.Equal("42501", exception.SqlState);
+    }
+
+    [Fact]
+    public async Task EmbeddingReferencingAnotherTenantsChunk_IsRejectedByTheCompositeForeignKey()
+    {
+        // Foreign-key checks run with RLS bypassed by design, and the WITH CHECK policy only
+        // constrains the child row's own tenant_id. With a chunk_id-only FK, a tenant-A scope
+        // could write an embedding pointing at a tenant-B chunk — verified against a live
+        // container before the composite key was introduced, where the insert succeeded.
+        // This test is what stops that regressing.
+        await SeedAsync();
+
+        await using var factory = new TenantConnectionFactory(fixture.ConnectionString);
+
+        long tenantBChunkId;
+        await using (var scopeB = await factory.OpenAsync(TenantB, TestContext.Current.CancellationToken))
+        {
+            tenantBChunkId = await scopeB.Connection.ExecuteScalarAsync<long>(
+                """
+                insert into evidence_chunks (tenant_id, entity_type, entity_key, chunk_index, content, token_count)
+                values (@tenant, 'commit', 'bbb2222', 0, 'tenant B content', 4)
+                returning chunk_id
+                """,
+                new { tenant = TenantB }, scopeB.Transaction);
+
+            await scopeB.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var scopeA = await factory.OpenAsync(TenantA, TestContext.Current.CancellationToken);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(async () =>
+            await scopeA.Connection.ExecuteAsync(
+                """
+                insert into embeddings (chunk_id, tenant_id, model, dim, embedding)
+                values (@chunkId, @tenant, 'test-model', 384, @vector)
+                """,
+                new { chunkId = tenantBChunkId, tenant = TenantA, vector = new Vector(new float[384]) },
+                scopeA.Transaction));
+
+        // 23503 = foreign_key_violation: the (tenant_id, chunk_id) pair does not exist.
+        // The WITH CHECK policy passes here — tenant A is writing its own tenant_id — so the
+        // composite foreign key is genuinely the thing doing the rejecting.
+        Assert.Equal("23503", exception.SqlState);
     }
 
     [Theory]

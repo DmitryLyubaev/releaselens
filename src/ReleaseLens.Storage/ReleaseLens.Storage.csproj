@@ -3,6 +3,7 @@
     <PackageReference Include="Npgsql" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Pgvector" />
+    <PackageReference Include="Pgvector.Dapper" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ReleaseLens.Core\ReleaseLens.Core.csproj" />

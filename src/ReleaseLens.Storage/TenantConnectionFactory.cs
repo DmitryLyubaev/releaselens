@@ -1,5 +1,6 @@
 using Dapper;
 using Npgsql;
+using Pgvector.Dapper;
 using Pgvector.Npgsql;
 
 namespace ReleaseLens.Storage;
@@ -12,6 +13,16 @@ namespace ReleaseLens.Storage;
 public sealed class TenantConnectionFactory : IAsyncDisposable
 {
     private readonly NpgsqlDataSource _dataSource;
+
+    static TenantConnectionFactory()
+    {
+        // Npgsql's UseVector() below teaches the ADO.NET layer about the vector column type,
+        // but Dapper binds parameters through its own type lookup before an NpgsqlParameter
+        // ever exists, so a bare Vector parameter fails with NotSupportedException unless
+        // Dapper is separately told how to handle it. Registered once, process-wide, here,
+        // since this is the one place every Dapper call in the application passes through.
+        SqlMapper.AddTypeHandler(new VectorTypeHandler());
+    }
 
     public TenantConnectionFactory(string connectionString)
     {
