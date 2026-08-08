@@ -39,3 +39,10 @@ alter default privileges in schema public
     grant select, insert, update, delete on tables to releaselens_app;
 alter default privileges in schema public
     grant usage, select on sequences to releaselens_app;
+
+-- Without this, SET LOCAL ROLE works locally only because the bootstrap role is a superuser
+-- and may SET ROLE to anything. Azure Flexible Server's admin is NOT a superuser, and its
+-- ability to SET ROLE would rest on PG16+ implicitly granting ADMIN OPTION to a CREATEROLE
+-- creator - a version- and platform-dependent implicit. If it does not hold, every OpenAsync
+-- call fails 42501 and the entire application is down. One idempotent line removes the risk.
+grant releaselens_app to current_user;

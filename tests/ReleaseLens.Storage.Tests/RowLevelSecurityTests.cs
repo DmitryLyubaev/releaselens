@@ -26,8 +26,11 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
             """,
             new { a = TenantA, b = TenantB });
 
-        // Written with RLS bypassed via an explicit setting, to prove the read path
-        // is what is being tested rather than the write path.
+        // This connection is the container's bootstrap superuser, so RLS is bypassed here
+        // regardless of the set_config below - the seed is deliberately not the thing under
+        // test. The set_config is retained only so each row is written under the tenant it
+        // belongs to; it is not what grants the bypass. (Getting that attribution wrong is
+        // the exact subtlety this whole test class exists to pin down.)
         foreach (var (tenant, sha) in new[] { (TenantA, "aaa1111"), (TenantB, "bbb2222") })
         {
             await using var transaction = await connection.BeginTransactionAsync(TestContext.Current.CancellationToken);
@@ -49,7 +52,7 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
     public async Task TenantScope_SeesOnlyItsOwnRows()
     {
         await SeedAsync();
-        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        await using var factory = new TenantConnectionFactory(fixture.ConnectionString);
 
         await using var scope = await factory.OpenAsync(TenantA, TestContext.Current.CancellationToken);
         var shas = await scope.Connection.QueryAsync<string>(
@@ -62,7 +65,7 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
     public async Task QueryWithoutTenantFilter_CannotLeakAcrossTenants()
     {
         await SeedAsync();
-        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        await using var factory = new TenantConnectionFactory(fixture.ConnectionString);
 
         await using var scope = await factory.OpenAsync(TenantB, TestContext.Current.CancellationToken);
 
@@ -77,7 +80,7 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
     public async Task InsertForAnotherTenant_IsRejectedByTheWithCheckPolicy()
     {
         await SeedAsync();
-        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        await using var factory = new TenantConnectionFactory(fixture.ConnectionString);
 
         await using var scope = await factory.OpenAsync(TenantA, TestContext.Current.CancellationToken);
 
@@ -90,6 +93,49 @@ public class RowLevelSecurityTests(PostgresFixture fixture)
                 new { tenant = TenantB }, scope.Transaction));
 
         Assert.Equal("42501", exception.SqlState);
+    }
+
+    [Theory]
+    [InlineData("commits")]
+    [InlineData("files_changed")]
+    [InlineData("issues")]
+    [InlineData("pull_requests")]
+    [InlineData("releases")]
+    [InlineData("evidence_chunks")]
+    [InlineData("embeddings")]
+    [InlineData("ingest_checkpoints")]
+    [InlineData("embedding_dead_letter")]
+    [InlineData("token_usage")]
+    public async Task EveryProtectedTable_HasRlsEnabledForcedAndFullyPolicied(string table)
+    {
+        // Migration 006 maintains three hand-written lists of these ten tables - enable, force,
+        // and the policy loop. They agree today, but a table dropped from one list, or an
+        // eleventh added by a later migration and forgotten in all three, is a silent tenant
+        // isolation hole with a completely green suite. Eight later tasks write to these
+        // tables, so the guarantee is enumerated here rather than spot-checked on one table.
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+
+        const string relSql = """
+            select {0} from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public' and c.relname = @table
+            """;
+
+        Assert.True(
+            await connection.ExecuteScalarAsync<bool>(string.Format(relSql, "relrowsecurity"), new { table }),
+            $"{table}: row level security is not enabled");
+        Assert.True(
+            await connection.ExecuteScalarAsync<bool>(string.Format(relSql, "relforcerowsecurity"), new { table }),
+            $"{table}: FORCE row level security is not set - policies would not apply to the table owner");
+
+        var qual = await connection.ExecuteScalarAsync<string>(
+            "select qual from pg_policies where schemaname = 'public' and tablename = @table", new { table });
+        var withCheck = await connection.ExecuteScalarAsync<string>(
+            "select with_check from pg_policies where schemaname = 'public' and tablename = @table", new { table });
+
+        Assert.False(string.IsNullOrWhiteSpace(qual), $"{table}: policy has no USING expression - reads are unfiltered");
+        Assert.False(string.IsNullOrWhiteSpace(withCheck), $"{table}: policy has no WITH CHECK expression - writes are unchecked");
     }
 
     [Fact]

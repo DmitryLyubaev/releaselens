@@ -11,12 +11,14 @@ create table ingest_checkpoints (
 create table embedding_dead_letter (
     dead_letter_id   bigint generated always as identity primary key,
     tenant_id        uuid not null references tenants(tenant_id) on delete cascade,
-    chunk_id         bigint not null references evidence_chunks(chunk_id) on delete cascade,
+    chunk_id         bigint not null,
     attempts         integer not null default 1,
     last_error       text not null,
     next_attempt_at  timestamptz not null,
     created_at       timestamptz not null default now(),
-    unique (chunk_id)
+    unique (chunk_id),
+    -- Tenant-scoped, for the same reason as embeddings: FK checks bypass RLS.
+    foreign key (tenant_id, chunk_id) references evidence_chunks (tenant_id, chunk_id) on delete cascade
 );
 
 create index embedding_dead_letter_due_idx on embedding_dead_letter (next_attempt_at)
