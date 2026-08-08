@@ -32,6 +32,12 @@ public sealed record RegressionCandidate
 /// </summary>
 public sealed class EvidenceQueries
 {
+    // The tuple below carries a DateTimeOffset through Dapper's tuple deserialiser,
+    // not through record-constructor matching — that is a different code path from
+    // the one Task 5 hit (Npgsql reporting timestamptz as System.DateTime defeats
+    // constructor matching for positional records specifically). The tuple path
+    // converts correctly and the tests exercising it pass; do not "fix" this into a
+    // record on the assumption it reproduces that bug, and do not "fix" it away either.
     public async Task<(DateTimeOffset? From, DateTimeOffset? To)> GetReleaseWindowAsync(
         TenantScope scope, string fromTag, string toTag, CancellationToken cancellationToken)
     {
@@ -70,9 +76,14 @@ public sealed class EvidenceQueries
             """
             select i.number as Number, i.title as Title, i.state as State, i.labels as Labels,
                    i.created_at as CreatedAt, i.url as Url,
+                   -- Anchored on both ends: the leading '#' anchors the start, and \M
+                   -- (Postgres end-of-word) stops '#4211' from also matching '#42110'.
+                   -- An unanchored ilike '%#4211%' would let issue #4211 pick up a PR
+                   -- that only mentions #42110, and FindRegressionsTool reports this as
+                   -- unhedged fact ("fixed by PR #N") that the agent loop treats as evidence.
                    (select p.number from pull_requests p
                     where p.merged_at is not null
-                      and (p.title ilike '%#' || i.number || '%' or p.body ilike '%#' || i.number || '%')
+                      and (p.title ~ ('#' || i.number || '\M') or p.body ~ ('#' || i.number || '\M'))
                     order by p.merged_at limit 1) as FixedByPullRequest
             from issues i
             where i.labels && array['bug', 'regression', 'Bug', 'kind:bug']

@@ -42,7 +42,6 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
         }
 
         var limit = Math.Clamp(JsonArgs.Int(arguments, "limit") ?? 8, 1, 25);
-        var vector = await embedder.EmbedQueryAsync(query, cancellationToken);
 
         EntityType? entityType = null;
         if (JsonArgs.String(arguments, "entity_type") is { } wire)
@@ -57,6 +56,10 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
                     $"'{wire}' is not a valid entity_type. Use commit, issue, pull_request or release.");
             }
         }
+
+        // Validated before embedding: an invalid entity_type should not pay for an
+        // embedding call it is about to reject.
+        var vector = await embedder.EmbedQueryAsync(query, cancellationToken);
 
         var result = await retriever.RetrieveAsync(scope, new RetrievalRequest(query, vector, limit)
         {

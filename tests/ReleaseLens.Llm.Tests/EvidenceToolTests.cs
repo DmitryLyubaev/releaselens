@@ -67,6 +67,25 @@ public class EvidenceToolTests(PostgresFixture fixture)
                 "https://github.com/microsoft/semantic-kernel/issues/4212")
         ], TestContext.Current.CancellationToken);
 
+        // PR 901 merges earlier and only *mentions* #42110 - a different, longer issue
+        // number that happens to start with "#4211". PR 900 merges later and genuinely
+        // fixes #4211. An unanchored `ilike '%#4211%'` match treats both as hits and,
+        // ordered by merged_at, would report 901 as the fix. An anchored match must
+        // report 900.
+        await evidence.UpsertPullRequestsAsync(scope,
+        [
+            new PullRequestEvidence(tenantId, 901, "Unrelated work on #42110", "See #42110 for context.",
+                "merged", new DateTimeOffset(2026, 3, 12, 0, 0, 0, TimeSpan.Zero), "sha_pr901",
+                "main", "branch-901", "eve",
+                new DateTimeOffset(2026, 3, 11, 0, 0, 0, TimeSpan.Zero),
+                "https://github.com/microsoft/semantic-kernel/pull/901"),
+            new PullRequestEvidence(tenantId, 900, "Fixes #4211.", "Fixes #4211.",
+                "merged", new DateTimeOffset(2026, 3, 15, 0, 0, 0, TimeSpan.Zero), "sha_pr900",
+                "main", "branch-900", "frank",
+                new DateTimeOffset(2026, 3, 13, 0, 0, 0, TimeSpan.Zero),
+                "https://github.com/microsoft/semantic-kernel/pull/900")
+        ], TestContext.Current.CancellationToken);
+
         var allChunks = commits.SelectMany(chunker.Chunk).ToList();
         var ids = await chunks.UpsertChunksAsync(scope, allChunks, TestContext.Current.CancellationToken);
         var vectors = await _embedder.EmbedDocumentsAsync(
@@ -200,6 +219,19 @@ public class EvidenceToolTests(PostgresFixture fixture)
 
         Assert.Contains("4211", result.Content, StringComparison.Ordinal);
         Assert.DoesNotContain("4212", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindRegressions_LinksTheFixingPullRequest_WithoutMatchingALongerIssueNumber()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-regressions-pr");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("find_regressions", scope,
+            Args("""{"area":"planner"}"""), TestContext.Current.CancellationToken);
+
+        Assert.Contains("fixed by PR #900", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("#901", result.Content, StringComparison.Ordinal);
     }
 
     [Fact]
