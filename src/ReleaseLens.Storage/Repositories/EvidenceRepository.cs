@@ -96,7 +96,8 @@ public sealed class EvidenceRepository
             values (@TenantId, @Number, @Title, @Body, @State, @Labels, @Author, @CreatedAt, @ClosedAt, @Url)
             on conflict (tenant_id, number) do update set
                 title = excluded.title, body = excluded.body, state = excluded.state,
-                labels = excluded.labels, closed_at = excluded.closed_at, url = excluded.url
+                labels = excluded.labels, author = excluded.author, created_at = excluded.created_at,
+                closed_at = excluded.closed_at, url = excluded.url
             """,
             issues.Select(i => new
             {
@@ -135,9 +136,15 @@ public sealed class EvidenceRepository
                                        base_ref, head_ref, author, created_at, url)
             values (@TenantId, @Number, @Title, @Body, @State, @MergedAt, @MergeCommitSha,
                     @BaseRef, @HeadRef, @Author, @CreatedAt, @Url)
+            -- Every column the record carries is refreshed. base_ref and head_ref in particular
+            -- are not immutable: a PR retargeted to a different base branch would otherwise keep
+            -- the stale ref forever, because the pulls endpoint takes no `since` filter and is
+            -- therefore re-read in full on every run.
             on conflict (tenant_id, number) do update set
                 title = excluded.title, body = excluded.body, state = excluded.state,
-                merged_at = excluded.merged_at, merge_commit_sha = excluded.merge_commit_sha, url = excluded.url
+                merged_at = excluded.merged_at, merge_commit_sha = excluded.merge_commit_sha,
+                base_ref = excluded.base_ref, head_ref = excluded.head_ref,
+                author = excluded.author, created_at = excluded.created_at, url = excluded.url
             """,
             pullRequests, scope.Transaction, cancellationToken: cancellationToken));
     }
@@ -155,8 +162,8 @@ public sealed class EvidenceRepository
             insert into releases (tenant_id, tag, name, body, published_at, target_commitish, url)
             values (@TenantId, @Tag, @Name, @Body, @PublishedAt, @TargetCommitish, @Url)
             on conflict (tenant_id, tag) do update set
-                name = excluded.name, body = excluded.body,
-                published_at = excluded.published_at, url = excluded.url
+                name = excluded.name, body = excluded.body, published_at = excluded.published_at,
+                target_commitish = excluded.target_commitish, url = excluded.url
             """,
             releases, scope.Transaction, cancellationToken: cancellationToken));
     }
@@ -176,11 +183,13 @@ public sealed class EvidenceRepository
     // Dapper materialisation targets. Lower-case names match the column names exactly,
     // which keeps the SQL free of "as Xxx" aliases on the read paths.
     //
-    // These use init-property syntax rather than a positional constructor: Npgsql reports
-    // timestamptz columns as System.DateTime at the reader-schema level (even though the
-    // bound value converts cleanly to DateTimeOffset), so Dapper's constructor-matching for
-    // positional records can never find a matching constructor and throws. Property-setter
-    // materialisation performs the DateTime -> DateTimeOffset conversion correctly.
+    // These use init properties rather than a positional constructor. Npgsql reports a
+    // timestamptz column as System.DateTime at the reader-schema level — even though the
+    // bound value converts cleanly to DateTimeOffset — so Dapper's constructor matching for
+    // a positional record can never find a matching constructor and throws at runtime.
+    // Property-setter materialisation performs the DateTime -> DateTimeOffset conversion
+    // correctly. Any row type carrying a DateTimeOffset needs this shape; FileRow below has
+    // none, so it stays positional.
     private sealed record CommitRow
     {
         public Guid tenant_id { get; init; }

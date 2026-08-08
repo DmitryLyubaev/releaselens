@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using Dapper;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Storage.Repositories;
 using Xunit;
@@ -69,6 +70,40 @@ public class EvidenceRepositoryTests(PostgresFixture fixture)
         var stored = await _repository.GetCommitAsync(read, "sha0002", TestContext.Current.CancellationToken);
 
         Assert.Equal("amended", stored!.Message);
+    }
+
+    [Fact]
+    public async Task UpsertPullRequests_ReRunCorrectsARetargetedBaseRef()
+    {
+        // The pulls endpoint takes no `since` filter, so pull requests are re-read in full on
+        // every ingestion run. A column carried by the record but missing from the on-conflict
+        // update list can therefore never be corrected — it would hold its first-seen value
+        // for the life of the index.
+        var (factory, tenantId) = await ArrangeTenantAsync("upsert-pr-retarget");
+
+        PullRequestEvidence Pr(string baseRef, string state) => new(
+            tenantId, 900, "Fix planner", "body", state, null, null, baseRef, "fix/planner",
+            "alice", DateTimeOffset.UnixEpoch, "https://github.com/microsoft/semantic-kernel/pull/900");
+
+        await using (var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await _repository.UpsertPullRequestsAsync(scope, [Pr("main", "open")], TestContext.Current.CancellationToken);
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using (var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await _repository.UpsertPullRequestsAsync(scope, [Pr("release/1.31", "closed")], TestContext.Current.CancellationToken);
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var read = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var stored = await read.Connection.QuerySingleAsync<(string base_ref, string state)>(
+            "select base_ref, state from pull_requests where number = 900",
+            transaction: read.Transaction);
+
+        Assert.Equal("release/1.31", stored.base_ref);
+        Assert.Equal("closed", stored.state);
     }
 
     [Fact]
