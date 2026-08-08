@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using Dapper;
 using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Storage.Repositories;
@@ -49,12 +50,28 @@ public class ChunkRepositoryTests(PostgresFixture fixture)
         var (factory, tenantId) = await ArrangeTenantAsync("chunk-ids");
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
 
-        var ids = await _chunks.UpsertChunksAsync(scope,
-            [Chunk(tenantId, 0, "first"), Chunk(tenantId, 1, "second"), Chunk(tenantId, 2, "third")],
-            TestContext.Current.CancellationToken);
+        var chunks = new[]
+        {
+            Chunk(tenantId, 0, "first"), Chunk(tenantId, 1, "second"), Chunk(tenantId, 2, "third")
+        };
+
+        var ids = await _chunks.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
 
         Assert.Equal(3, ids.Count);
         Assert.Equal(ids.Distinct().Count(), ids.Count);
+
+        // The count and distinctness assertions above would pass against a scrambled result.
+        // Task 9 zips these ids against vectors computed from the same input list, so a
+        // reordering silently pairs every embedding with the wrong chunk — degraded retrieval
+        // with nothing failing anywhere. Resolve each id back to its content to pin the order.
+        for (var i = 0; i < ids.Count; i++)
+        {
+            var content = await scope.Connection.ExecuteScalarAsync<string>(new CommandDefinition(
+                "select content from evidence_chunks where chunk_id = @id",
+                new { id = ids[i] }, scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
+
+            Assert.Equal(chunks[i].Content, content);
+        }
     }
 
     [Fact]

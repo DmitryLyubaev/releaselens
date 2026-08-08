@@ -26,6 +26,12 @@ public sealed class CheckpointRepository
             on conflict (tenant_id, entity_type) do update set
                 cursor_value = excluded.cursor_value,
                 etag = excluded.etag,
+                -- Additive, and therefore the one non-idempotent write in an otherwise fully
+                -- upsert-idempotent pipeline: a resumed run that re-presents its last batch
+                -- counts those items twice. That is accepted deliberately - this is an operator
+                -- progress signal for a multi-hour ingest, not a metric anything reasons from,
+                -- and making it exact would mean threading a running total through Task 9 for
+                -- no benefit. Read it as "items presented", not "distinct items ingested".
                 items_seen = ingest_checkpoints.items_seen + excluded.items_seen,
                 updated_at = now()
             """,

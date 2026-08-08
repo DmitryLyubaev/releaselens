@@ -108,9 +108,11 @@ public sealed class ChunkRepository
             new { limit }, scope.Transaction, cancellationToken: cancellationToken))];
 
     /// <summary>
-    /// Records an embedding failure with exponential backoff: 1, 2, 4, 8, 16 minutes.
-    /// After five attempts the row stops appearing in <see cref="GetDueDeadLettersAsync"/>
-    /// and stays as a permanent record rather than being retried forever.
+    /// Records an embedding failure. The first attempt is due immediately - it has already
+    /// failed, and delaying the first retry buys nothing - then backs off 1, 2, 4 and 8
+    /// minutes. After five attempts the row stops appearing in
+    /// <see cref="GetDueDeadLettersAsync"/> and stays as a permanent record rather than being
+    /// retried forever, so a 16-minute step is never reached.
     /// </summary>
     public Task DeadLetterAsync(TenantScope scope, long chunkId, string error, CancellationToken cancellationToken)
         => scope.Connection.ExecuteAsync(new CommandDefinition(
