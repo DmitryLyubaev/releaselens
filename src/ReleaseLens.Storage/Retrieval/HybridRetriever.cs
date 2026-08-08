@@ -60,6 +60,10 @@ public sealed class HybridRetriever
                 from vec v
                 full outer join fts f on f.chunk_id = v.chunk_id
             ),
+            -- Divided by the pool maximum against a fixed floor of zero, NOT true min-max:
+            -- rescaling against the empirical minimum would zero out the weakest genuine text
+            -- match whenever every candidate matches the query, penalising exactly the
+            -- single-arm hits the full outer join is there to keep.
             normalised as (
                 select chunk_id, vector_score, text_score,
                        case when max(text_score) over () > 0

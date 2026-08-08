@@ -1,6 +1,8 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
+using Dapper;
 using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Storage.Repositories;
@@ -161,6 +163,100 @@ public class HybridRetrieverTests(PostgresFixture fixture)
 
         Assert.All(result.Chunks, c => Assert.NotEqual(tenantA, tenantB));
         Assert.True(result.Chunks.Count <= 3, "tenant B should only see its own three chunks");
+    }
+
+    [Fact]
+    public async Task Retrieve_SinceFilter_ExcludesCommitsOutsideTheWindow()
+    {
+        // The date and path predicates resolve against the `commits` table rather than the
+        // chunk, so a chunk whose entity_key has no matching commit row is excluded by them
+        // entirely. Nothing else in this suite exercises these filters, and Task 15's
+        // search_commits tool exposes all three to the model.
+        var (factory, tenantId) = await SeedAsync("retrieve-since");
+
+        await using (var seed = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await new EvidenceRepository().UpsertCommitsAsync(seed,
+            [
+                new CommitEvidence(tenantId, "sha_near", "fix planner", "A", "a@example.com",
+                    new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+                    "https://example.invalid/near",
+                    [new FileChange("dotnet/src/Planner.cs", "modified", 1, 0)]),
+                new CommitEvidence(tenantId, "sha_far", "update documentation", "A", "a@example.com",
+                    new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero),
+                    "https://example.invalid/far", [])
+            ], TestContext.Current.CancellationToken);
+
+            await seed.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("planner documentation", NearVector, K: 10)
+            {
+                Since = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains(result.Chunks, c => c.EntityKey == "sha_near");
+        Assert.DoesNotContain(result.Chunks, c => c.EntityKey == "sha_far");
+    }
+
+    [Fact]
+    public async Task Retrieve_PathFilter_MatchesOnAChangedFilePath()
+    {
+        var (factory, tenantId) = await SeedAsync("retrieve-path");
+
+        await using (var seed = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await new EvidenceRepository().UpsertCommitsAsync(seed,
+            [
+                new CommitEvidence(tenantId, "sha_near", "fix planner", "A", "a@example.com",
+                    DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "https://example.invalid/near",
+                    [new FileChange("dotnet/src/Planner.cs", "modified", 1, 0)]),
+                new CommitEvidence(tenantId, "sha_far", "update documentation", "A", "a@example.com",
+                    DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "https://example.invalid/far",
+                    [new FileChange("docs/README.md", "modified", 1, 0)])
+            ], TestContext.Current.CancellationToken);
+
+            await seed.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("planner documentation", NearVector, K: 10) { PathFilter = "Planner.cs" },
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains(result.Chunks, c => c.EntityKey == "sha_near");
+        Assert.DoesNotContain(result.Chunks, c => c.EntityKey == "sha_far");
+    }
+
+    [Fact]
+    public async Task Pgvector_IsNewEnoughForIterativeScan()
+    {
+        // RetrieveAsync sets hnsw.iterative_scan, which exists only in pgvector 0.8+. Both the
+        // compose file and the test fixture pin the image by tag rather than digest, so a
+        // future pull could resolve to an older build — and retrieval would then fail at run
+        // time, in the query path, rather than here with a message that says why.
+        var (factory, tenantId) = await SeedAsync("pgvector-version");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var version = await scope.Connection.ExecuteScalarAsync<string>(new CommandDefinition(
+            "select extversion from pg_extension where extname = 'vector'",
+            transaction: scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.NotNull(version);
+
+        var parts = version.Split('.');
+        var major = int.Parse(parts[0], CultureInfo.InvariantCulture);
+        var minor = int.Parse(parts[1], CultureInfo.InvariantCulture);
+
+        Assert.True(major > 0 || minor >= 8,
+            $"pgvector {version} predates hnsw.iterative_scan, which HybridRetriever depends on");
     }
 
     [Fact]
