@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
@@ -20,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ReleaseLens.Ingestion\ReleaseLens.Ingestion.csproj" />
+    <ProjectReference Include="..\ReleaseLens.Storage.Tests\ReleaseLens.Storage.Tests.csproj" />
   </ItemGroup>
 
 </Project>
