@@ -141,17 +141,14 @@ public sealed class IngestionPipeline(
     /// dead-letters itself rather than taking the whole batch down with it.
     /// </summary>
     /// <remarks>
-    /// Both the embedder call and the <see cref="ChunkRepository.UpsertEmbeddingsAsync"/>
-    /// persistence call are wrapped in one try, deliberately: the failure that sends us into
-    /// the retry path might come from Postgres (a constraint violation on the insert) rather
-    /// than the embedder. A Postgres error leaves the surrounding transaction aborted — every
-    /// later statement on it, including the fallback embed calls and
-    /// <see cref="ChunkRepository.DeadLetterAsync"/>, would otherwise fail with "current
-    /// transaction is aborted", masking the real error behind a recovery path that cannot run.
-    /// A savepoint taken immediately before each attempt and rolled back to on failure clears
-    /// that aborted state without discarding anything committed earlier in the batch's
-    /// transaction, so the retry-then-dead-letter path stays usable regardless of whether the
-    /// embedder or Postgres is what actually failed.
+    /// Each attempt runs inside a savepoint. The failure may come from the embedder — which
+    /// leaves the transaction usable — or from Postgres, which does not: an aborted
+    /// transaction rejects every subsequent statement, so the dead-letter write meant to
+    /// recover from the failure would itself throw "current transaction is aborted" and mask
+    /// the original error precisely when it matters. Rolling back to the savepoint clears the
+    /// aborted state while leaving everything written earlier in this scope intact, including
+    /// the chunk rows the composite (tenant_id, chunk_id) foreign key needs to still exist
+    /// when the dead-letter row is inserted.
     /// </remarks>
     private async Task EmbedAsync(
         TenantScope scope,
@@ -174,14 +171,15 @@ public sealed class IngestionPipeline(
                 scope, [.. chunkIds.Zip(vectors)], embedder.ModelName, cancellationToken);
 
             totals.ChunksEmbedded += chunkIds.Count;
+
+            // Released on success so savepoints do not accumulate on the backend's stack
+            // for the life of the transaction.
+            await scope.Transaction.ReleaseAsync(BatchEmbedSavepoint, cancellationToken);
         }
         catch (Exception batchFailure) when (batchFailure is not OperationCanceledException)
         {
             logger.LogWarning(batchFailure, "Batch embedding failed; retrying individually");
 
-            // Whether the embedder or Postgres threw, the transaction may now be aborted.
-            // Rolling back to the savepoint taken before the attempt clears that state without
-            // undoing anything from earlier batches in this run.
             await scope.Transaction.RollbackAsync(BatchEmbedSavepoint, cancellationToken);
 
             for (var i = 0; i < chunkIds.Count; i++)
@@ -194,6 +192,8 @@ public sealed class IngestionPipeline(
                     await chunks.UpsertEmbeddingsAsync(
                         scope, [(chunkIds[i], vector[0])], embedder.ModelName, cancellationToken);
                     totals.ChunksEmbedded++;
+
+                    await scope.Transaction.ReleaseAsync(SingleEmbedSavepoint, cancellationToken);
                 }
                 catch (Exception single) when (single is not OperationCanceledException)
                 {

@@ -73,6 +73,16 @@ public class IngestionPipelineTests(PostgresFixture fixture)
     public async Task Run_NotModifiedBatch_IngestsNothingAndKeepsTheCheckpoint()
     {
         var (factory, tenantId) = await ArrangeTenantAsync("pipeline-304");
+
+        // Establish a checkpoint first. Without one, "keeps the checkpoint" is vacuous — the
+        // assertions would pass against an implementation that cleared it.
+        await using (var seed = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await new CheckpointRepository().SaveAsync(seed, EntityType.Commit,
+                "2026-04-01T00:00:00Z", "W/\"kept\"", 7, TestContext.Current.CancellationToken);
+            await seed.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
         var source = new FakeEvidenceSource();
         source.CommitBatches.Add(EvidenceBatch<CommitEvidence>.Unchanged("W/\"same\""));
 
@@ -81,6 +91,46 @@ public class IngestionPipelineTests(PostgresFixture fixture)
 
         Assert.Equal(0, report.CommitsIngested);
         Assert.Equal(0, report.ChunksWritten);
+
+        await using var read = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var cursor = await new CheckpointRepository().GetAsync(read, EntityType.Commit, TestContext.Current.CancellationToken);
+
+        Assert.Equal("2026-04-01T00:00:00Z", cursor.Value);
+        Assert.Equal("W/\"kept\"", cursor.ETag);
+    }
+
+    [Fact]
+    public async Task Run_PostgresRejectsAnEmbedding_StillDeadLettersItViaSavepointRollback()
+    {
+        // FailOnContentContaining raises an application-level error, which leaves the
+        // transaction usable — so it never exercises the savepoint. A wrong-length vector
+        // makes Postgres itself reject the insert, aborting the transaction. Without the
+        // savepoint rollback the dead-letter write in the recovery path would throw
+        // "current transaction is aborted" and mask the original failure entirely.
+        var (factory, tenantId) = await ArrangeTenantAsync("pipeline-pg-reject");
+        var source = new FakeEvidenceSource();
+        source.CommitBatches.Add(EvidenceBatch<CommitEvidence>.Final(
+        [
+            Commit(tenantId, "sha0007", "badvector: postgres will reject this embedding"),
+            Commit(tenantId, "sha0008", "fine: this one is ok")
+        ]));
+
+        var embedder = new FakeEmbedder { WrongDimensionOnContentContaining = "badvector" };
+
+        var report = await Build(factory, source, embedder)
+            .RunAsync(tenantId, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, report.CommitsIngested);
+        Assert.True(report.DeadLettered >= 1, "the chunk Postgres rejected should have been dead-lettered");
+        Assert.True(report.ChunksEmbedded >= 1, "the healthy chunk should still have been embedded");
+
+        // The run committed despite a server-side error mid-transaction, and the dead-letter
+        // row survived — which is only possible if the rollback cleared the aborted state
+        // without discarding the chunk rows the composite foreign key depends on.
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var deadLettered = await new ChunkRepository().GetAllDeadLettersAsync(scope, TestContext.Current.CancellationToken);
+
+        Assert.NotEmpty(deadLettered);
     }
 
     [Fact]
