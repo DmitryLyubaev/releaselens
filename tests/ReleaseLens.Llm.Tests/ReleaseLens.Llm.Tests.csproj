@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ReleaseLens.Llm\ReleaseLens.Llm.csproj" />
     <ProjectReference Include="..\ReleaseLens.Ingestion.Tests\ReleaseLens.Ingestion.Tests.csproj" />
+    <ProjectReference Include="..\ReleaseLens.Storage.Tests\ReleaseLens.Storage.Tests.csproj" />
   </ItemGroup>
 
 </Project>
