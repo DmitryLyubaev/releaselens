@@ -10,6 +10,7 @@ artifacts/
 # Secrets — never commit
 .env
 .env.*
+!.env.example
 appsettings.Development.json
 appsettings.Local.json
 *.pfx
