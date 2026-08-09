@@ -43,5 +43,18 @@ services:
     ports:
       - "8080:8080"
 
+  eval:
+    build:
+      context: ./eval
+    profiles: ["eval"]   # Not started by default — a local harness, never deployed.
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./eval/reports:/app/reports
+      - ./eval/golden:/app/golden:ro
+    ports:
+      # Loopback-only, consistent with the other services here.
+      - "127.0.0.1:8000:8000"
+
 volumes:
   releaselens-pgdata:
