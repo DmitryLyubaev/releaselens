@@ -166,22 +166,38 @@ public class QueryAgentTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Answer_StopsAtMaxIterations()
+    public async Task Answer_StopsAtMaxIterations_AndStillProducesAnAnswer()
     {
         var (factory, tenantId) = await SeedAsync("agent-ceiling");
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
 
         var script = new Queue<Func<ChatResponse>>();
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 6; i++)
         {
             script.Enqueue(() => CallTool("search_commits", """{"query":"planner"}"""));
         }
 
-        var answer = await Build(new ScriptedProvider(script))
-            .AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+        // The seventh response answers the "you have reached the tool-call limit" prompt the
+        // ceiling sends with no tools offered. Without it the caller gets nothing back, which
+        // is the whole point of the ceiling behaviour.
+        script.Enqueue(() => Text("Reached the tool limit; from the evidence so far: [E1]."));
+
+        var provider = new ScriptedProvider(script);
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
 
         Assert.Equal(6, answer.Metadata.Iterations);
-        Assert.NotNull(answer.Answer);
+
+        // Asserting NotNull is not enough: a tool-call response carries null text, which the
+        // loop coalesces to an empty string, so NotNull passes while proving nothing about
+        // whether the ceiling actually produced an answer.
+        Assert.False(string.IsNullOrWhiteSpace(answer.Answer));
+        Assert.Contains("tool limit", answer.Answer, StringComparison.OrdinalIgnoreCase);
+
+        // Exactly one extra request beyond the six iterations, and it offered no tools — so the
+        // model cannot call another one on the way out.
+        Assert.Equal(7, provider.Requests.Count);
+        Assert.Empty(provider.Requests[^1].Tools);
     }
 
     [Fact]

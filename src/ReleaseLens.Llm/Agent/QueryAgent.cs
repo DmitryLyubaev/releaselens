@@ -132,6 +132,16 @@ public sealed partial class QueryAgent(
                         systemPrompt,
                         messages, [], options.Model, options.MaxTokens), cancellationToken);
 
+                    if (final.ToolCalls.Count > 0)
+                    {
+                        // Should be unreachable: this request offered no tools. A real provider
+                        // given `tools: []` cannot emit a tool call, so seeing one here would mean
+                        // either a provider bug or a scripted test not honouring the contract.
+                        logger.LogWarning(
+                            "Final no-tools call still returned {Count} tool call(s); ignoring them.",
+                            final.ToolCalls.Count);
+                    }
+
                     usage += final.Usage;
                     answerText = final.Text ?? string.Empty;
                 }
@@ -146,7 +156,14 @@ public sealed partial class QueryAgent(
                 BuildDegradedAnswer(question, evidenceBlock),
                 citations,
                 new AgentMetadata(
-                    iterations, toolsCalled, usage, 0m, "none", options.Model,
+                    iterations, toolsCalled, usage,
+                    // Providers can fail on iteration 2+, after earlier iterations already spent
+                    // real, billable tokens. Hardcoding zero here discards that spend and its
+                    // attribution — and the only test for this path fails on the first call, so
+                    // usage is zero there and the loss is invisible.
+                    ModelPricing.CostUsd(modelName, usage, DateOnly.FromDateTime(DateTime.UtcNow)),
+                    usage.Total > 0 ? providerName : "none",
+                    modelName,
                     Degraded: true,
                     DegradedReason: $"All providers unavailable: {string.Join(", ", unavailable.AttemptedProviders)}. " +
                                     "Returning retrieved evidence without synthesis.",
@@ -250,10 +267,16 @@ public sealed partial class QueryAgent(
 
         foreach (Match match in CitationMarker().Matches(answer))
         {
-            if (int.TryParse(match.Groups[1].Value, CultureInfo.InvariantCulture, out var index) &&
-                (index < 1 || index > citationCount))
+            var raw = match.Groups[1].Value;
+
+            // A marker that will not parse is unresolved BY DEFINITION - an overflowing digit
+            // run indexes nothing. Requiring a successful parse before the range check would
+            // short-circuit and silently drop it, and this list is the groundedness signal the
+            // eval service scores directly, so a false negative here is worse than a noisy one.
+            if (!int.TryParse(raw, CultureInfo.InvariantCulture, out var index)
+                || index < 1 || index > citationCount)
             {
-                unresolved.Add($"E{index}");
+                unresolved.Add($"E{raw}");
             }
         }
 
