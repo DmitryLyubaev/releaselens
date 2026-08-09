@@ -138,6 +138,17 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         var response = await _client.SendAsync(Query("anything", _apiKey), TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+
+        // The status alone would also pass if the endpoint called the agent first and only
+        // then noticed the budget — the regression shape that matters, because it spends
+        // money before refusing. Assert the usage row is untouched, which that ordering
+        // would violate: a completed agent call records its tokens.
+        await using var check = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken);
+        var after = await new TokenUsageRepository().GetTodayAsync(
+            check, DateOnly.FromDateTime(DateTime.UtcNow), TestContext.Current.CancellationToken);
+
+        Assert.Equal(5000, after.TokensIn);
+        Assert.Equal(500, after.TokensOut);
     }
 
     [Fact]

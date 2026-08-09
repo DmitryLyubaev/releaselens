@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using ReleaseLens.Api;
+using ReleaseLens.Api.Auth;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Embedding;
 using ReleaseLens.Llm.Agent;
@@ -34,6 +35,7 @@ builder.Services.AddSingleton(embedderOptions);
 builder.Services.AddSingleton(new TenantConnectionFactory(connectionString));
 builder.Services.AddSingleton<TenantRepository>();
 builder.Services.AddSingleton<ApiKeyRepository>();
+builder.Services.AddSingleton<ApiKeyAuthenticator>();
 builder.Services.AddSingleton<TokenUsageRepository>();
 builder.Services.AddSingleton<EvidenceRepository>();
 builder.Services.AddSingleton<EvidenceQueries>();
@@ -72,7 +74,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapPost("/query", async (
     QueryRequest request,
     HttpContext context,
-    ApiKeyRepository apiKeys,
+    ApiKeyAuthenticator authenticator,
     TenantConnectionFactory connections,
     TenantRepository tenants,
     TokenUsageRepository usageRepository,
@@ -84,8 +86,7 @@ app.MapPost("/query", async (
         return Results.BadRequest(new { error = "The 'question' field is required and must not be empty." });
     }
 
-    var presentedKey = context.Request.Headers["X-Api-Key"].ToString();
-    var tenantId = await apiKeys.ResolveTenantAsync(presentedKey, cancellationToken);
+    var tenantId = await authenticator.ResolveTenantAsync(context, cancellationToken);
 
     if (tenantId is null)
     {
