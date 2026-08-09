@@ -62,6 +62,25 @@ switch (command)
         break;
     }
 
+    case "create-tenant":
+    {
+        await SchemaMigrator.MigrateAsync(connectionString, cancellation.Token);
+
+        var tenantSection = builder.Configuration.GetSection("Tenant");
+        var tenants = host.Services.GetRequiredService<TenantRepository>();
+
+        var tenantId = await tenants.CreateAsync(new TenantDefinition(
+            tenantSection["Slug"] ?? "semantic-kernel",
+            tenantSection["DisplayName"] ?? "microsoft/semantic-kernel",
+            "github",
+            gitHubOptions.Owner,
+            gitHubOptions.Repository,
+            long.Parse(tenantSection["DailyTokenBudget"] ?? "2000000")), cancellation.Token);
+
+        logger.LogInformation("Tenant '{Slug}' is {TenantId}", tenantSection["Slug"], tenantId);
+        break;
+    }
+
     case "ingest":
     {
         if (string.IsNullOrWhiteSpace(gitHubOptions.Token))
@@ -113,7 +132,7 @@ switch (command)
     }
 
     default:
-        logger.LogError("Unknown command '{Command}'. Use: migrate | ingest | issue-key", command);
+        logger.LogError("Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key", command);
         return 1;
 }
 
