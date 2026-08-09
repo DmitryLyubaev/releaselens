@@ -6,8 +6,10 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using ReleaseLens.Api;
+using ReleaseLens.Llm.Providers;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
 using ReleaseLens.Storage.Tests;
@@ -139,16 +141,56 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
 
-        // The status alone would also pass if the endpoint called the agent first and only
-        // then noticed the budget — the regression shape that matters, because it spends
-        // money before refusing. Assert the usage row is untouched, which that ordering
-        // would violate: a completed agent call records its tokens.
+        // The usage row is asserted untouched below, but note what that does and does not
+        // prove: in this test environment both providers point at the discard port, so a
+        // completed agent call records zero usage anyway and the row looks identical under
+        // either ordering. Verified experimentally. The ordering itself is pinned by
+        // Query_OverTheDailyTokenBudget_NeverReachesTheProvider, which counts provider calls.
         await using var check = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken);
         var after = await new TokenUsageRepository().GetTodayAsync(
             check, DateOnly.FromDateTime(DateTime.UtcNow), TestContext.Current.CancellationToken);
 
         Assert.Equal(5000, after.TokensIn);
         Assert.Equal(500, after.TokensOut);
+    }
+
+    [Fact]
+    public async Task Query_OverTheDailyTokenBudget_NeverReachesTheProvider()
+    {
+        // The spec's hard stop is not "return 429" — it is "refuse before spending". Asserting
+        // the status, or the usage row, cannot distinguish a short-circuit from an endpoint
+        // that calls the agent and refuses afterwards, because a failed provider call records
+        // nothing either way. Counting provider invocations is what actually pins it.
+        var spy = new SpyChatProvider();
+
+        await using var spied = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IChatProvider>();
+                services.AddSingleton<IChatProvider>(spy);
+            }));
+
+        using var client = spied.CreateClient();
+
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        await using (var scope = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken))
+        {
+            await new TokenUsageRepository().RecordAsync(
+                scope, DateOnly.FromDateTime(DateTime.UtcNow), 5000, 500, 0.05m,
+                TestContext.Current.CancellationToken);
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/query")
+        {
+            Content = JsonContent.Create(new { question = "anything", k = 5 })
+        };
+        request.Headers.Add("X-Api-Key", _apiKey);
+
+        var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal(0, spy.Calls);
     }
 
     [Fact]
