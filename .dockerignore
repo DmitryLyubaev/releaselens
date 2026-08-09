@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.idea/
+docs/
+eval/
+infra/
+tests/
+models/
+*.md
+.env*

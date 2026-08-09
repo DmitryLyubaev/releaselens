@@ -28,5 +28,20 @@ services:
       - "127.0.0.1:18888:18888"   # UI
       - "127.0.0.1:4317:18889"    # OTLP gRPC
 
+  api:
+    build:
+      context: .
+      dockerfile: src/ReleaseLens.Api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RELEASELENS_DB: "Host=postgres;Port=5432;Database=releaselens;Username=releaselens;Password=releaselens_dev_only"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://aspire-dashboard:18889"
+    ports:
+      - "8080:8080"
+
 volumes:
   releaselens-pgdata:
