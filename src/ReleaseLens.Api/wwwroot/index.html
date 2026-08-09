@@ -1,0 +1,124 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReleaseLens</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fdfdfd; --muted: #666; --line: #ddd; --accent: #0b5fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8e8e8; --bg: #161616; --muted: #999; --line: #333; --accent: #6ea8ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 46rem; padding: 2rem 1rem 4rem;
+         font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  p.sub { color: var(--muted); margin: 0 0 2rem; }
+  label { display: block; font-weight: 600; margin: 1rem 0 .35rem; }
+  input, textarea, button { font: inherit; width: 100%; padding: .6rem .7rem;
+                            border: 1px solid var(--line); border-radius: 6px;
+                            background: var(--bg); color: var(--fg); }
+  textarea { min-height: 5rem; resize: vertical; }
+  button { margin-top: 1rem; background: var(--accent); color: #fff; border: 0;
+           font-weight: 600; cursor: pointer; }
+  button[disabled] { opacity: .55; cursor: progress; }
+  .answer { margin-top: 2rem; padding: 1rem; border: 1px solid var(--line); border-radius: 6px;
+            white-space: pre-wrap; }
+  .degraded { border-color: #c47f00; }
+  .banner { color: #c47f00; font-weight: 600; margin-bottom: .75rem; }
+  ol.citations { padding-left: 1.4rem; }
+  ol.citations li { margin: .3rem 0; }
+  .meta { margin-top: 1.5rem; font-size: .85rem; color: var(--muted); }
+  .meta code { font-size: .85rem; }
+  .error { color: #c62828; margin-top: 1.5rem; }
+</style>
+
+<h1>ReleaseLens</h1>
+<p class="sub">Natural-language questions over a repository's commits, issues, pull requests and releases — answered with citations.</p>
+
+<label for="key">API key</label>
+<input id="key" type="password" placeholder="rl_..." autocomplete="off">
+
+<label for="question">Question</label>
+<textarea id="question" placeholder="What changed between the last two releases?"></textarea>
+
+<label for="k">Evidence items to retrieve (k)</label>
+<input id="k" type="number" value="8" min="1" max="50">
+
+<button id="ask">Ask</button>
+
+<div id="output"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const output = $('output');
+
+  // Convenience only — the key never leaves this browser except as a request header.
+  $('key').value = localStorage.getItem('releaselens-key') ?? '';
+
+  $('ask').addEventListener('click', async () => {
+    const key = $('key').value.trim();
+    const question = $('question').value.trim();
+    if (!question) { return; }
+
+    localStorage.setItem('releaselens-key', key);
+    $('ask').disabled = true;
+    output.innerHTML = '<p class="meta">Thinking…</p>';
+
+    try {
+      const response = await fetch('/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': key },
+        body: JSON.stringify({ question, k: Number($('k').value) })
+      });
+
+      if (response.status === 401) { throw new Error('Unauthorised — check the API key.'); }
+      if (response.status === 429) {
+        const body = await response.json();
+        throw new Error(`Daily token budget exhausted (${body.usedToday} of ${body.dailyTokenBudget}).`);
+      }
+      if (!response.ok) { throw new Error(`Request failed with ${response.status}.`); }
+
+      render(await response.json());
+    } catch (error) {
+      output.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    } finally {
+      $('ask').disabled = false;
+    }
+  });
+
+  function render(result) {
+    const m = result.metadata;
+
+    const banner = m.degraded
+      ? `<p class="banner">Degraded: ${escapeHtml(m.degradedReason ?? 'no provider available')}</p>`
+      : '';
+
+    const shortfall = m.retrievalTruncated
+      ? `<p class="banner">${escapeHtml(m.retrievalNote ?? '')}</p>`
+      : '';
+
+    const unresolved = m.unresolvedCitationMarkers.length
+      ? `<p class="banner">Answer cited markers with no matching evidence: ${m.unresolvedCitationMarkers.join(', ')}</p>`
+      : '';
+
+    const citations = result.citations
+      .map((c, i) => `<li>[E${i + 1}] <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.type)} ${escapeHtml(c.key)}</a> — ${escapeHtml(c.title)}</li>`)
+      .join('');
+
+    output.innerHTML = `
+      <div class="answer${m.degraded ? ' degraded' : ''}">${banner}${shortfall}${unresolved}${escapeHtml(result.answer)}</div>
+      <h2 style="font-size:1rem;margin-top:1.5rem">Citations</h2>
+      <ol class="citations">${citations || '<li>None</li>'}</ol>
+      <p class="meta">
+        ${m.iterations} iteration(s) · tools: ${m.toolsCalled.join(', ') || 'none'} ·
+        ${m.retrievedCount} of ${m.requestedK} evidence items ·
+        ${m.tokensIn} in / ${m.tokensOut} out (${m.cacheReadInputTokens} cached) ·
+        $${m.costUsd.toFixed(6)} · ${m.provider}/${m.model} · ${m.elapsedMs} ms
+      </p>`;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+</script>

@@ -93,8 +93,27 @@ switch (command)
         break;
     }
 
+    case "issue-key":
+    {
+        var slug = args.ElementAtOrDefault(1)
+            ?? builder.Configuration["Tenant:Slug"]
+            ?? "semantic-kernel";
+
+        var tenants = host.Services.GetRequiredService<TenantRepository>();
+        var tenant = await tenants.FindBySlugAsync(slug, cancellation.Token)
+            ?? throw new InvalidOperationException($"No tenant with slug '{slug}'. Run 'ingest' first.");
+
+        var factory = host.Services.GetRequiredService<TenantConnectionFactory>();
+        var key = await new ApiKeyRepository(factory).CreateKeyAsync(
+            tenant.TenantId, args.ElementAtOrDefault(2) ?? "local", cancellation.Token);
+
+        // Printed once. Only the SHA-256 hash is stored, so this cannot be recovered later.
+        Console.WriteLine(key);
+        break;
+    }
+
     default:
-        logger.LogError("Unknown command '{Command}'. Use: migrate | ingest", command);
+        logger.LogError("Unknown command '{Command}'. Use: migrate | ingest | issue-key", command);
         return 1;
 }
 
