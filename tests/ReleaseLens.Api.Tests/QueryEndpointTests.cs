@@ -25,6 +25,14 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
     private string _apiKey = null!;
     private Guid _tenantId;
 
+    // A distinct tenant per test. xUnit constructs a new instance of the class for every test,
+    // so this is unique per test — which is the point. TenantRepository.CreateAsync upserts on
+    // slug, so a fixed slug would give all nine tests ONE shared tenant row with one shared
+    // daily budget: the two tests that seed 5,000 tokens of usage would push every test that
+    // runs after them over the 1,000-token cap, turning an expected 200 into a 429. The suite
+    // would then pass or fail on test ordering, which makes it no gate at all.
+    private readonly string _slug = "api-tests-" + Guid.NewGuid().ToString("n")[..12];
+
     public async ValueTask InitializeAsync()
     {
         Environment.SetEnvironmentVariable("RELEASELENS_DB", fixture.ConnectionString);
@@ -38,7 +46,7 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         var connections = new TenantConnectionFactory(fixture.ConnectionString);
         _tenantId = await new TenantRepository(connections).CreateAsync(
-            new TenantDefinition("api-tests", "API tests", "github", "microsoft", "semantic-kernel", 1000),
+            new TenantDefinition(_slug, "API tests", "github", "microsoft", "semantic-kernel", 1000),
             TestContext.Current.CancellationToken);
 
         _apiKey = await new ApiKeyRepository(connections).CreateKeyAsync(
