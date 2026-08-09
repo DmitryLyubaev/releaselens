@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.AspNetCore.Diagnostics;
 using ReleaseLens.Api;
 using ReleaseLens.Api.Auth;
 using ReleaseLens.Core.Evidence;
@@ -68,6 +69,23 @@ app.MapOpenApi();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "ReleaseLens"));
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+// Last resort. Every designed failure has its own path — 401, 429, and the degraded 200 —
+// so reaching this means something genuinely unforeseen happened. It must still leave the
+// caller with JSON rather than a stack trace, and must not disclose internals.
+app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+{
+    var feature = context.Features.Get<IExceptionHandlerFeature>();
+
+    context.RequestServices.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("ReleaseLens.Api")
+        .LogError(feature?.Error, "Unhandled exception serving {Path}", context.Request.Path);
+
+    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    context.Response.ContentType = "application/json";
+
+    await context.Response.WriteAsJsonAsync(new { error = "An unexpected error occurred." });
+}));
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 

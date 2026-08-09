@@ -69,15 +69,20 @@ switch (command)
         var tenantSection = builder.Configuration.GetSection("Tenant");
         var tenants = host.Services.GetRequiredService<TenantRepository>();
 
+        // Resolved once. Logging tenantSection["Slug"] directly reports (null) whenever the
+        // value came from the default rather than configuration, which reads as a bug in the
+        // command when it is only a bug in the log line.
+        var slug = tenantSection["Slug"] ?? "semantic-kernel";
+
         var tenantId = await tenants.CreateAsync(new TenantDefinition(
-            tenantSection["Slug"] ?? "semantic-kernel",
+            slug,
             tenantSection["DisplayName"] ?? "microsoft/semantic-kernel",
             "github",
             gitHubOptions.Owner,
             gitHubOptions.Repository,
             long.Parse(tenantSection["DailyTokenBudget"] ?? "2000000")), cancellation.Token);
 
-        logger.LogInformation("Tenant '{Slug}' is {TenantId}", tenantSection["Slug"], tenantId);
+        logger.LogInformation("Tenant '{Slug}' is {TenantId}", slug, tenantId);
         break;
     }
 

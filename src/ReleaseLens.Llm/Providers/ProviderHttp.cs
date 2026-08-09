@@ -35,11 +35,23 @@ internal static class ProviderHttp
     }
 
     /// <summary>
-    /// 429 and 5xx become ProviderUnavailableException so the fallback chain tries the next
-    /// provider. Every other non-success status becomes InvalidOperationException, because a
-    /// malformed request is our bug — retrying it against a second provider would hide the bug
-    /// and spend money doing so.
+    /// Maps a non-success response onto the two exception types the fallback chain
+    /// distinguishes.
     /// </summary>
+    /// <remarks>
+    /// <b>Unavailable</b> — 429, 5xx, and also <b>401/403/408</b>. A missing or wrong provider
+    /// credential makes that provider unusable, which is operationally identical to it being
+    /// down: the other provider may well have a valid key, so falling through is exactly right.
+    /// Classifying 401 as a caller bug instead produced an unhandled exception that escaped
+    /// the fallback chain AND the agent's degraded-mode catch, so a service running without an
+    /// ANTHROPIC_API_KEY answered every query with an HTTP 500 and a stack trace — precisely
+    /// the failure the spec's "both providers down returns evidence unsynthesised" rule exists
+    /// to prevent. Nothing is hidden by this: the degraded response names every provider tried
+    /// and why it failed.
+    ///
+    /// <b>Caller bug</b> — everything else, chiefly 400 and 422. A malformed request is ours;
+    /// retrying it against a second provider would hide it and spend money doing so.
+    /// </remarks>
     public static async Task ThrowIfNotSuccessAsync(
         HttpResponseMessage response, string providerName, CancellationToken cancellationToken)
     {
@@ -51,7 +63,11 @@ internal static class ProviderHttp
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         var status = (int)response.StatusCode;
 
-        if (response.StatusCode is HttpStatusCode.TooManyRequests || status >= 500)
+        if (response.StatusCode is HttpStatusCode.TooManyRequests
+                or HttpStatusCode.Unauthorized
+                or HttpStatusCode.Forbidden
+                or HttpStatusCode.RequestTimeout
+            || status >= 500)
         {
             throw new ProviderUnavailableException(providerName, $"{providerName} returned {status}: {body}");
         }
