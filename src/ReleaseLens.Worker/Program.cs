@@ -2,15 +2,33 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
+using ReleaseLens.Core.Telemetry;
 using ReleaseLens.Embedding;
 using ReleaseLens.Ingestion;
 using ReleaseLens.Ingestion.GitHub;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = args,
+
+    // Host.CreateApplicationBuilder defaults the content root to the process's current
+    // directory, so `dotnet run --project src/ReleaseLens.Worker` from the repository root
+    // never finds appsettings.json — and every Tenant:* and GitHub:* value silently falls
+    // back to its C# default with nothing reported. That is invisible only while the defaults
+    // happen to mirror the file; the moment someone edits SinceUtc or PageSize in
+    // appsettings.json alone, the change would not apply and the ingest would quietly fetch a
+    // different slice of history. appsettings.json is copied to the output directory, so
+    // anchor the content root there instead of to wherever the process happens to be started.
+    ContentRootPath = AppContext.BaseDirectory
+});
+
 builder.Configuration.AddEnvironmentVariables("RELEASELENS_");
 
 var connectionString = Environment.GetEnvironmentVariable("RELEASELENS_DB")
@@ -40,6 +58,38 @@ builder.Services.AddHttpClient<IEvidenceSource, GitHubEvidenceSource>(client =>
     client.BaseAddress = new Uri("https://api.github.com/"));
 
 builder.Services.AddSingleton<IngestionPipeline>();
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService("releaselens-worker", serviceVersion: "1.0.0"))
+    .WithTracing(tracing =>
+    {
+        tracing.AddHttpClientInstrumentation();
+
+        foreach (var source in ReleaseLensTelemetry.SourceNames)
+        {
+            tracing.AddSource(source);
+        }
+
+        // Reads OTEL_EXPORTER_OTLP_ENDPOINT. Locally that is the Aspire Dashboard on
+        // http://localhost:4317; in Azure it is the Monitor OTLP ingestion endpoint.
+        //
+        // Skipped under the Testing environment for the same reason as the API: no collector
+        // to reach means an exporter that retries in the background and logs its failures. The
+        // ActivitySources are still registered either way; only the egress is off.
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            tracing.AddOtlpExporter();
+        }
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics.AddHttpClientInstrumentation();
+
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            metrics.AddOtlpExporter();
+        }
+    });
 
 using var host = builder.Build();
 var logger = host.Services.GetRequiredService<ILogger<Program>>();
@@ -107,8 +157,13 @@ switch (command)
             gitHubOptions.Repository,
             long.Parse(tenantSection["DailyTokenBudget"] ?? "2000000")), cancellation.Token);
 
-        logger.LogInformation("Ingesting {Owner}/{Repo} into tenant {TenantId}",
-            gitHubOptions.Owner, gitHubOptions.Repository, tenantId);
+        // Logged so the settings actually in effect are visible before a multi-hour run,
+        // rather than assumed from a file that may not have been read.
+        logger.LogInformation(
+            "Ingesting {Owner}/{Repo} into tenant {TenantId} — since {Since:yyyy-MM-dd}, " +
+            "commit files {FetchFiles}, page size {PageSize}, budget {RequestsPerHour}/hour",
+            gitHubOptions.Owner, gitHubOptions.Repository, tenantId, gitHubOptions.SinceUtc,
+            gitHubOptions.FetchCommitFiles, gitHubOptions.PageSize, gitHubOptions.RequestsPerHour);
 
         var report = await host.Services.GetRequiredService<IngestionPipeline>()
             .RunAsync(tenantId, cancellation.Token);

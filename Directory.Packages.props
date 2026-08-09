@@ -24,10 +24,18 @@
     <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerUI" Version="7.2.0" />
   </ItemGroup>
   <ItemGroup Label="Telemetry">
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.11.1" />
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.11.1" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.11.0" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.11.0" />
+    <!--
+      1.11.x is what Tasks 9/11/16 originally pinned, but OpenTelemetry.Api 1.11.1 and
+      OpenTelemetry.Exporter.OpenTelemetryProtocol 1.11.1 both carry known moderate-severity
+      advisories (GHSA-8785-wc3w-h8q6, GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9), which NuGet
+      audit turns into build errors under TreatWarningsAsErrors the moment a project actually
+      references them (Task 19 is the first to do so). Bumped the whole set to the latest
+      stable release, which carries none of those advisories.
+    -->
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
   </ItemGroup>
   <ItemGroup Label="Testing">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />

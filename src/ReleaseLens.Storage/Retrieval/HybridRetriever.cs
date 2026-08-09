@@ -2,6 +2,7 @@ using System.Globalization;
 using Dapper;
 using Pgvector;
 using ReleaseLens.Core.Evidence;
+using ReleaseLens.Core.Telemetry;
 
 namespace ReleaseLens.Storage.Retrieval;
 
@@ -15,6 +16,12 @@ public sealed class HybridRetriever
     public async Task<RetrievalResult> RetrieveAsync(
         TenantScope scope, RetrievalRequest request, CancellationToken cancellationToken)
     {
+        using var activity = ReleaseLensTelemetry.Retrieval.StartActivity("retrieve.hybrid");
+        activity?.SetTag("retrieval_k", request.K);
+        activity?.SetTag("candidate_pool_size", request.CandidatePoolSize);
+        activity?.SetTag("alpha", request.Alpha);
+        activity?.SetTag("entity_type_filter", request.EntityTypeFilter?.ToWireName());
+
         var hasText = !string.IsNullOrWhiteSpace(request.Query);
 
         // embeddings_hnsw_idx has no tenant awareness, so under RLS the HNSW walk finds
@@ -110,6 +117,9 @@ public sealed class HybridRetriever
             r.BlendedScore)).ToList();
 
         var truncated = chunks.Count < request.K;
+
+        activity?.SetTag("retrieved_count", chunks.Count);
+        activity?.SetTag("retrieval_truncated", truncated);
 
         return new RetrievalResult(
             chunks,

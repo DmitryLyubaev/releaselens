@@ -1,8 +1,12 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using ReleaseLens.Api;
 using ReleaseLens.Api.Auth;
 using ReleaseLens.Core.Evidence;
+using ReleaseLens.Core.Telemetry;
 using ReleaseLens.Embedding;
 using ReleaseLens.Llm.Agent;
 using ReleaseLens.Llm.Providers;
@@ -62,6 +66,41 @@ builder.Services.AddSingleton(sp => new ToolRegistry(
 
 builder.Services.AddSingleton<QueryAgent>();
 builder.Services.AddOpenApi();
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService("releaselens-api", serviceVersion: "1.0.0"))
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation()
+               .AddHttpClientInstrumentation();
+
+        foreach (var source in ReleaseLensTelemetry.SourceNames)
+        {
+            tracing.AddSource(source);
+        }
+
+        // Reads OTEL_EXPORTER_OTLP_ENDPOINT. Locally that is the Aspire Dashboard on
+        // http://localhost:4317; in Azure it is the Monitor OTLP ingestion endpoint.
+        //
+        // Skipped under the Testing environment. WebApplicationFactory boots the real host, so
+        // an exporter with no collector to reach retries in the background and writes its
+        // failures to the logger — which would make the API test output noisy, and the plan's
+        // definition of done requires it pristine. The ActivitySources are still registered, so
+        // anything asserting on spans still works; only the egress is off.
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            tracing.AddOtlpExporter();
+        }
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation();
+
+        if (!builder.Environment.IsEnvironment("Testing"))
+        {
+            metrics.AddOtlpExporter();
+        }
+    });
 
 var app = builder.Build();
 
