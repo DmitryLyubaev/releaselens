@@ -22,6 +22,11 @@ public sealed class TenantConnectionFactory : IAsyncDisposable
         // Dapper is separately told how to handle it. Registered once, process-wide, here,
         // since this is the one place every Dapper call in the application passes through.
         SqlMapper.AddTypeHandler(new VectorTypeHandler());
+
+        // Same gap as Vector, for DateOnly: Dapper's static type map predates it, so a bare
+        // DateOnly parameter (token_usage.usage_date) throws NotSupportedException without
+        // this registered first.
+        SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
     }
 
     public TenantConnectionFactory(string connectionString)

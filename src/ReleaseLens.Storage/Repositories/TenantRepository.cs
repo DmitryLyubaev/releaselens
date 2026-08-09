@@ -54,4 +54,19 @@ public sealed class TenantRepository(TenantConnectionFactory factory)
             """,
             new { slug }, cancellationToken: cancellationToken));
     }
+
+    public async Task<Tenant?> FindByIdAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenUntenantedAsync(cancellationToken);
+
+        return await connection.QuerySingleOrDefaultAsync<Tenant>(new CommandDefinition(
+            """
+            select tenant_id as TenantId, slug as Slug, display_name as DisplayName,
+                   source_name as SourceName, repo_owner as RepoOwner, repo_name as RepoName,
+                   daily_token_budget as DailyTokenBudget
+            from tenants
+            where tenant_id = @tenantId
+            """,
+            new { tenantId }, cancellationToken: cancellationToken));
+    }
 }
