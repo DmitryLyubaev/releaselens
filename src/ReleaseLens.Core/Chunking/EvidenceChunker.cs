@@ -124,7 +124,15 @@ public sealed class EvidenceChunker(ChunkOptions options)
         {
             // Pathological header (a novel-length commit subject). Truncate it rather than
             // producing chunks that are all header and no content.
-            headerLine = headerLine[..Math.Min(headerLine.Length, _options.MaxChars / 2)] + "\n";
+            var headerCut = Math.Min(headerLine.Length, _options.MaxChars / 2);
+
+            // Same surrogate hazard as Segment below: never cut between the halves of a pair.
+            if (headerCut > 0 && headerCut < headerLine.Length && char.IsLowSurrogate(headerLine[headerCut]))
+            {
+                headerCut--;
+            }
+
+            headerLine = headerLine[..headerCut] + "\n";
             budget = _options.MaxChars - headerLine.Length;
         }
 
@@ -195,9 +203,26 @@ public sealed class EvidenceChunker(ChunkOptions options)
                 cut = budget;
             }
 
+            // Never cut between the halves of a surrogate pair. A lone surrogate is not valid
+            // UTF-16, and Npgsql's UTF-8 encoder throws EncoderFallbackException when the chunk
+            // is written — killing the ingest mid-run. Emoji are ordinary in commit messages and
+            // issue titles, so this is reached in practice, not in theory: it took down the very
+            // first real ingest of microsoft/semantic-kernel on a robot-face emoji.
+            if (position + cut < text.Length && char.IsLowSurrogate(text[position + cut]))
+            {
+                cut--;
+            }
+
             segments.Add(text[position..(position + cut)].Trim());
 
             var advance = Math.Max(1, cut - overlap);
+
+            // Likewise, never resume mid-pair.
+            if (position + advance < text.Length && char.IsLowSurrogate(text[position + advance]))
+            {
+                advance++;
+            }
+
             position += advance;
         }
 

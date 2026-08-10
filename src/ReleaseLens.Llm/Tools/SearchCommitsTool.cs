@@ -100,7 +100,14 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
     {
         var newline = content.IndexOf('\n');
         var line = newline < 0 ? content : content[..newline];
-        return line.Length <= 120 ? line : line[..120];
+        if (line.Length <= 120)
+        {
+            return line;
+        }
+
+        // Do not truncate between the halves of a surrogate pair — a lone surrogate is
+        // invalid UTF-16 and fails to encode on the way to Postgres or to a provider.
+        return line[..(char.IsLowSurrogate(line[120]) ? 119 : 120)];
     }
 
     /// <summary>
