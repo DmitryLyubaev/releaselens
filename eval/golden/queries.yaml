@@ -1,0 +1,318 @@
+# Every id, tag, issue number, pull request number and username in this file was
+# verified against the ingested corpus with psql before the entry was written.
+# See schema.md for the field meanings, the corpus coverage caveat, and the rule
+# that keeps this set stable across re-ingests.
+version: 1
+repository: microsoft/semantic-kernel
+
+queries:
+  # ---------------------------------------------------------------- factual --
+  - id: gq-001
+    question: "What is issue 14111 about?"
+    category: factual
+    expected_citations: ["issue:14111"]
+    must_contain: ["14111"]
+    notes: "Baseline. If this fails, get_issue or seed retrieval is broken. Issue 14111 asks for TimeProvider injection into TimePlugin so tests stop depending on the real clock."
+
+  - id: gq-002
+    question: "What does pull request 14112 change in TimePlugin?"
+    category: factual
+    expected_citations: ["pull_request:14112"]
+    must_contain: ["14112"]
+    notes: "Pull request bodies must be retrievable as evidence in their own right, not only through the issue they close."
+
+  - id: gq-003
+    question: "Which release included the SharpCompress 0.48.0 pin for GHSA-6c8g-7p36-r338?"
+    category: factual
+    expected_citations: ["release:dotnet-1.77.0", "pull_request:13977"]
+    must_contain: ["dotnet-1.77.0"]
+    notes: "Release bodies list the commits they shipped. Answering needs the release note, not just the pull request."
+
+  - id: gq-004
+    question: "What was the tag of the last Java release published in this repository?"
+    category: factual
+    expected_citations: ["release:java-0.2.9-alpha"]
+    must_contain: ["java-0.2.9-alpha"]
+    notes: "The Java release line ended on 2023-09-26 with four releases in total, so this answer is frozen."
+
+  - id: gq-005
+    question: "Which pull request removed the planners from the .NET SDK?"
+    category: factual
+    expected_citations: ["pull_request:12399"]
+    must_contain: ["12399"]
+    notes: "A 2025 artefact, well outside the smoke ingest window for commits and issues. It exercises the complete pull request corpus."
+
+  - id: gq-006
+    question: "What did pull request 14169 upgrade, and which vulnerability advisory did it address?"
+    category: factual
+    expected_citations: ["pull_request:14169"]
+    must_contain: ["14169", "NU1903"]
+    notes: "Two identifiers in one answer. NU1903 appears in the pull request title, so an answer that cites the artefact should carry it."
+
+  - id: gq-007
+    question: "What is the earliest release ever published in this repository?"
+    category: factual
+    expected_citations: ["release:dotnet-0.13.277.1-preview"]
+    must_contain: ["dotnet-0.13.277.1-preview"]
+    notes: "Published 2023-04-25. Releases are ingested all-time, so the earliest cannot move backwards."
+
+  - id: gq-008
+    question: "What does issue 14265 report about VertexAIEmbeddingGenerator?"
+    category: factual
+    expected_citations: ["issue:14265"]
+    must_contain: ["14265"]
+    notes: "A bug-labelled issue whose body contains a reproduction. Tests that issue bodies survive chunking intact."
+
+  - id: gq-009
+    question: "Which pull request added a Think property to OllamaPromptExecutionSettings?"
+    category: factual
+    expected_citations: ["pull_request:14122"]
+    must_contain: ["14122"]
+    notes: "Retrieval by feature description rather than by number."
+
+  - id: gq-010
+    question: "Who authored pull request 14182, the CosmosDB vector store fix?"
+    category: factual
+    expected_citations: ["pull_request:14182"]
+    must_contain: ["westey"]
+    notes: "Author attribution. The username is westey-m and the commit author name is westey, so the shorter form matches both without asserting one spelling."
+
+  - id: gq-011
+    question: "What did pull request 14146 change about OpenAPI server variable values?"
+    category: factual
+    expected_citations: ["pull_request:14146"]
+    must_contain: ["14146"]
+    notes: "Shipped in both dotnet-1.79.0 and python-1.44.1, so the model has more than one path to it and should still cite the pull request."
+
+  - id: gq-012
+    question: "Which pull request added the demo showing how to integrate MCP tools with Semantic Kernel?"
+    category: factual
+    expected_citations: ["pull_request:10779"]
+    must_contain: ["10779"]
+    notes: "Merged 2025-03-04. Another deliberately old artefact, to keep the set from drifting entirely into the recent window."
+
+  - id: gq-013
+    question: "What was included in release python-1.43.0?"
+    category: factual
+    expected_citations: ["release:python-1.43.0"]
+    must_contain: ["python-1.43.0"]
+    notes: "Python release notes use a different body format from the .NET ones. This checks that both parse and retrieve."
+
+  # --------------------------------------------------------------- temporal --
+  - id: gq-014
+    question: "What changed between releases dotnet-1.78.0 and dotnet-1.79.0?"
+    category: temporal
+    expected_citations: ["release:dotnet-1.78.0", "release:dotnet-1.79.0"]
+    must_not_contain: ["I don't have", "cannot determine"]
+    notes: "Should call diff_between_releases. 22 commits sit in this window (2026-07-07 to 2026-08-06), which is inside the ingested commit range."
+
+  - id: gq-015
+    question: "What changed between python-1.43.1 and python-1.44.0?"
+    category: temporal
+    expected_citations: ["release:python-1.43.1", "release:python-1.44.0"]
+    must_not_contain: ["I don't have", "cannot determine"]
+    notes: "A second diff window (2026-06-17 to 2026-07-07), also inside the ingested commit range, so the commit set will not change on re-ingest."
+
+  - id: gq-016
+    question: "Which .NET release came immediately after dotnet-1.76.0?"
+    category: temporal
+    expected_citations: ["release:dotnet-1.76.0", "release:dotnet-1.77.0"]
+    must_contain: ["dotnet-1.77.0"]
+    notes: "Ordering, not content. dotnet-1.76.0 is 2026-05-11 and dotnet-1.77.0 is 2026-05-28 with nothing in the dotnet line between them."
+
+  - id: gq-017
+    question: "How many days passed between the publication of dotnet-1.78.0 and dotnet-1.79.0?"
+    category: temporal
+    expected_citations: ["release:dotnet-1.78.0", "release:dotnet-1.79.0"]
+    must_contain: ["30", "dotnet-1.79.0"]
+    must_not_contain: ["approximately", "roughly"]
+    notes: "2026-07-07 to 2026-08-06 is exactly 30 days. An answer of 'about a month' fails, which is the point."
+
+  - id: gq-018
+    question: "Which was published first, dotnet-1.73.0 or python-1.41.0?"
+    category: temporal
+    expected_citations: ["release:dotnet-1.73.0", "release:python-1.41.0"]
+    must_contain: ["dotnet-1.73.0"]
+    notes: "Cross-line date comparison. dotnet-1.73.0 is 2026-03-04, python-1.41.0 is 2026-03-13."
+
+  - id: gq-019
+    question: "Which two releases were published on 6 August 2026?"
+    category: temporal
+    expected_citations: ["release:dotnet-1.79.0", "release:python-1.44.1"]
+    must_contain: ["dotnet-1.79.0", "python-1.44.1"]
+    notes: "Both were published within nine minutes of each other. An answer naming only one is incomplete, not wrong-in-kind."
+
+  - id: gq-020
+    question: "When did the Java release line stop, and what was its final tag?"
+    category: temporal
+    expected_citations: ["release:java-0.2.9-alpha"]
+    must_contain: ["java-0.2.9-alpha", "2023"]
+    notes: "Requires noticing an absence over time rather than reading one artefact. Safe to assert because releases are ingested all-time."
+
+  - id: gq-021
+    question: "Did the SharpCompress security pin merge before or after the Prompty.Core upgrade?"
+    category: temporal
+    expected_citations: ["pull_request:13977", "pull_request:14169"]
+    must_contain: ["13977", "14169"]
+    notes: "Date reasoning over pull requests rather than releases. 13977 merged 2026-05-11, 14169 merged 2026-07-20."
+
+  # ----------------------------------------------------------------- causal --
+  - id: gq-022
+    question: "Which pull request fixed issue 14111, and which release shipped it?"
+    category: causal
+    expected_citations: ["issue:14111", "pull_request:14112", "release:dotnet-1.79.0"]
+    must_contain: ["14112", "dotnet-1.79.0"]
+    notes: "Three-hop: issue to fixing pull request to release. The dotnet-1.79.0 body lists 14112 explicitly."
+
+  - id: gq-023
+    question: "Issue 14078 reports empty results from thinking-enabled Ollama models. What fixed it?"
+    category: causal
+    expected_citations: ["issue:14078", "pull_request:14122"]
+    must_contain: ["14122"]
+    notes: "The dotnet-1.79.0 release body annotates the 14122 commit with [ #14078 ], so the link is in the evidence and not inferred."
+
+  - id: gq-024
+    question: "Which pull request addressed issue 14157 about UNC path validation in the file plugins?"
+    category: causal
+    expected_citations: ["issue:14157", "pull_request:14166"]
+    must_contain: ["14166"]
+    notes: "Issue closed 2026-07-20, pull request merged the same day."
+
+  - id: gq-025
+    question: "Issue 13620 reported that the VertexAI global endpoint was not working. What fixed it, and in which release did the fix ship?"
+    category: causal
+    expected_citations: ["issue:13620", "pull_request:13621", "release:dotnet-1.76.0"]
+    must_contain: ["13621", "dotnet-1.76.0"]
+    notes: "The fixing pull request title carries (#13620), and dotnet-1.76.0 lists 13621. Both hops are evidenced."
+
+  - id: gq-026
+    question: "Issue 14085 describes an encoded dot-segment path bypass in the OpenAPI plugin. Which pull request resolved it?"
+    category: causal
+    expected_citations: ["issue:14085", "pull_request:14086"]
+    must_contain: ["14086"]
+    notes: "Opened and closed on the same day, 2026-06-16. The fix is not named in any release body, so the model must follow the issue-to-pull-request link itself."
+
+  - id: gq-027
+    question: "What fixed the static analysis problems reported in issue 13922?"
+    category: causal
+    expected_citations: ["issue:13922", "pull_request:13925"]
+    must_contain: ["13925"]
+    notes: "The pull request body opens with 'Fixes #13922'. Tests that the link is followed from the pull request side as well as the issue side."
+
+  - id: gq-028
+    question: "Were any bugs reported against the Ollama connector, and what fixed them?"
+    category: causal
+    expected_citations: ["issue:14078", "pull_request:14122"]
+    must_contain: ["14078"]
+    notes: "Should call find_regressions with an Ollama area. Issue 14078 is labelled bug and links to a merged pull request, so the tool has something real to return."
+
+  # ------------------------------------------------------------ aggregation --
+  - id: gq-029
+    question: "List every Java release tag ever published in this repository."
+    category: aggregation
+    expected_citations:
+      ["release:java-0.2.6-alpha", "release:java-0.2.7-alpha",
+       "release:java-0.2.8-alpha", "release:java-0.2.9-alpha"]
+    must_contain: ["java-0.2.6-alpha", "java-0.2.7-alpha", "java-0.2.8-alpha", "java-0.2.9-alpha"]
+    notes: "An aggregation whose answer is identifiers rather than a count, so it stays checkable without a brittle number. The Java line has exactly four releases, all in 2023."
+
+  - id: gq-030
+    question: "Which vectordata releases were published during 2025?"
+    category: aggregation
+    expected_citations:
+      ["release:vectordata-dotnet-9.0.0-preview.1.25078.1",
+       "release:vectordata-dotnet-9.0.0-preview.1.25161.1",
+       "release:vectordata-dotnet-9.5.0", "release:vectordata-dotnet-9.6.0",
+       "release:vectordata-dotnet-9.7.0"]
+    must_contain: ["vectordata-dotnet-9.5.0", "vectordata-dotnet-9.6.0", "vectordata-dotnet-9.7.0"]
+    notes: "Five releases. must_contain names only the three stable tags; the two preview tags are in expected_citations, where an exact-match comparison is safe."
+
+  - id: gq-031
+    question: "Which .NET releases were published in the first quarter of 2026?"
+    category: aggregation
+    expected_citations:
+      ["release:dotnet-1.69.0", "release:dotnet-1.70.0", "release:dotnet-1.71.0",
+       "release:dotnet-1.72.0", "release:dotnet-1.73.0", "release:dotnet-1.74.0"]
+    must_contain: ["dotnet-1.69.0", "dotnet-1.74.0"]
+    notes: "Six releases between 2026-01-19 and 2026-03-20. A window with a hard boundary at both ends, so recall against the six citations measures completeness directly."
+
+  - id: gq-032
+    question: "How many releases were published in 2024?"
+    category: aggregation
+    expected_citations: []
+    must_contain: ["99"]
+    must_not_contain: ["approximately", "roughly"]
+    notes: "Exactly 99. The corpus can answer this but no tool counts for the model, so this entry measures whether it counts, declines, or invents. Hedging means it estimated."
+
+  - id: gq-033
+    question: "How many pull requests were merged during 2024?"
+    category: aggregation
+    expected_citations: []
+    must_not_contain: ["approximately", "roughly"]
+    notes: "The true answer is 2017, far beyond what k retrieved chunks can support. Deliberately unwinnable by counting: the correct behaviour is to say the evidence in hand cannot support an exact count. No must_contain, because asserting a number here would score a decline as a failure."
+
+  - id: gq-034
+    question: "Excluding bots, who merged the most pull requests in 2024?"
+    category: aggregation
+    expected_citations: []
+    must_contain: ["markwallace-microsoft"]
+    notes: "214 merged pull requests in 2024, ahead of moonbox3 on 188; dependabot leads overall on 257 and is excluded by the question. Checked on an identifier rather than a count."
+
+  - id: gq-035
+    question: "How many issues were opened in June 2026?"
+    category: aggregation
+    expected_citations: []
+    must_not_contain: ["approximately", "roughly"]
+    notes: "Exactly 14. Scoped deliberately: the issue ingest used an updated-since filter of 2026-06-01, so every issue created in June 2026 is present and this count will not move when the full historical ingest runs. No other issue or commit aggregation is in this set for that reason."
+
+  # ---------------------------------------------------------- unanswerable --
+  - id: gq-036
+    question: "What is the production incident rate of Semantic Kernel deployments at Microsoft?"
+    category: unanswerable
+    expected_citations: []
+    must_not_contain: ["%"]
+    notes: "Operational telemetry lives outside the repository entirely, so no ingest will ever make this answerable. A percentage in the answer is fabrication."
+
+  - id: gq-037
+    question: "Who is the best contributor to this repository?"
+    category: unanswerable
+    expected_citations: []
+    notes: "Subjective. The system prompt forbids speculation about quality or blame, and commit counts are not a quality ranking."
+
+  - id: gq-038
+    question: "What will be in the next release after the most recent one in the evidence?"
+    category: unanswerable
+    expected_citations: []
+    must_not_contain: ["will include", "is planned"]
+    notes: "Phrased relative to the newest release rather than naming a tag, so it stays forward-looking however much history is later ingested."
+
+  - id: gq-039
+    question: "How much revenue does Microsoft earn from Semantic Kernel?"
+    category: unanswerable
+    expected_citations: []
+    must_not_contain: ["$"]
+    notes: "Commercial data, never in repository evidence. A dollar figure is invented."
+
+  - id: gq-040
+    question: "What did the maintainers decide in their internal roadmap review about the future of the .NET SDK?"
+    category: unanswerable
+    expected_citations: []
+    notes: "Internal deliberation leaves no artefact in issues, pull requests, commits or releases. The plausible-sounding failure here is to summarise deprecation pull requests as if they were a decision record."
+
+  - id: gq-041
+    question: "How many times has the Microsoft.SemanticKernel NuGet package been downloaded?"
+    category: unanswerable
+    expected_citations: []
+    notes: "Package registry statistics are a different system. The repository can name the package and never its download count."
+
+  - id: gq-042
+    question: "Which maintainer writes the lowest-quality code?"
+    category: unanswerable
+    expected_citations: []
+    notes: "Blame attribution about people. Refusing is correct even though the corpus contains plenty of authorship data that could be misused to answer it."
+
+  - id: gq-043
+    question: "Which enterprise customers run Semantic Kernel in production?"
+    category: unanswerable
+    expected_citations: []
+    notes: "Customer adoption is not repository evidence. Sample and demo directories name vendors and are the bait for a wrong answer here."
