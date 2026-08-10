@@ -76,13 +76,29 @@ public sealed class EvidenceQueries
             """
             select i.number as Number, i.title as Title, i.state as State, i.labels as Labels,
                    i.created_at as CreatedAt, i.url as Url,
-                   -- Anchored on both ends: the leading '#' anchors the start, and \M
-                   -- (Postgres end-of-word) stops '#4211' from also matching '#42110'.
-                   -- An unanchored ilike '%#4211%' would let issue #4211 pick up a PR
-                   -- that only mentions #42110, and FindRegressionsTool reports this as
+                   -- Two independent ways a '#number' mention can name the wrong pull
+                   -- request. Both matter because FindRegressionsTool reports this as
                    -- unhedged fact ("fixed by PR #N") that the agent loop treats as evidence.
+                   --
+                   -- 1. Numeric prefix. Anchored on both ends: the leading '#' anchors the
+                   --    start, and \M (Postgres end-of-word) stops '#4211' from also
+                   --    matching '#42110'. An unanchored ilike '%#4211%' would let issue
+                   --    #4211 pick up a PR that only mentions #42110.
+                   --
+                   -- 2. Time travel. p.merged_at >= i.created_at is not a plausibility
+                   --    heuristic, it is a hard impossibility filter: a pull request that
+                   --    merged before the issue was even opened cannot be the thing that
+                   --    fixed it, whatever its text says. '#number' is a repo-local token,
+                   --    so a vendored changelog, a quoted upstream release note or a
+                   --    dependabot bump body carrying another tracker's numbering matches
+                   --    just as well as a real "Fixes #N". Without this predicate the
+                   --    `order by p.merged_at limit 1` below made it worse than a coin
+                   --    toss: taking the *earliest* match actively prefers the impossible
+                   --    one. Keep the ordering - the earliest *qualifying* PR is the right
+                   --    answer once the impossible ones are excluded.
                    (select p.number from pull_requests p
                     where p.merged_at is not null
+                      and p.merged_at >= i.created_at
                       and (p.title ~ ('#' || i.number || '\M') or p.body ~ ('#' || i.number || '\M'))
                     order by p.merged_at limit 1) as FixedByPullRequest
             from issues i
