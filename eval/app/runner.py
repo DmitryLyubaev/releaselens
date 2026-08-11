@@ -21,10 +21,44 @@ from .models import QueryOutcome, RunReport, RunRequest
 _JUDGE_INPUT_USD_PER_MTOK = 2.00
 
 
+# A dry run answers one query per category for real before extrapolating. An agentic
+# loop's cost cannot be known without running it: the tool calls it chooses, and the
+# evidence they return, are what drive the token count. One per category rather than the
+# first N, because cost varies enormously by category — a factual lookup resolves in one
+# or two tool calls while a temporal or causal question sends the agent hunting. Pricing
+# a mixed sweep from a handful of factual queries underestimates it several times over.
+_DRY_RUN_PER_CATEGORY = 1
+
+
+def _stratify(queries: list, per_category: int) -> list:
+    """First N of each category, in the file's own category order."""
+    taken: dict[str, int] = {}
+    kept = []
+
+    for query in queries:
+        seen = taken.get(query.category, 0)
+        if seen < per_category:
+            taken[query.category] = seen + 1
+            kept.append(query)
+
+    return kept
+
+
 async def run_eval(request: RunRequest) -> RunReport:
     queries = load_golden()
-    if request.limit:
+    full_query_count = len(queries)
+
+    if request.per_category:
+        queries = _stratify(queries, request.per_category)
+    elif request.limit:
         queries = queries[: request.limit]
+
+    # A dry run is a *sample*, not a simulation. It really does call the API and really
+    # does spend money — just on a few queries instead of all of them — and it skips the
+    # judge, whose cost is estimated for free with count_tokens. Calling it free would be
+    # a lie that costs whoever believed it the price of a whole sweep.
+    if request.dry_run:
+        queries = _stratify(queries, _DRY_RUN_PER_CATEGORY)
 
     outcomes: list[QueryOutcome] = []
 
@@ -94,6 +128,14 @@ async def run_eval(request: RunRequest) -> RunReport:
         # Free, and it prices the sweep before any money is spent on it.
         estimated_tokens = await judge.estimate_cost(scorable)
         estimated_judge_cost = estimated_tokens / 1_000_000 * _JUDGE_INPUT_USD_PER_MTOK
+
+        # On a dry run, scale what the sample actually cost up to the whole set, so the
+        # number the operator reads is the price of the run they are about to authorise
+        # rather than the price of the three queries that just ran.
+        if request.dry_run and outcomes:
+            agent_cost_so_far = sum(o.cost_usd for o in outcomes)
+            per_query = (agent_cost_so_far + estimated_judge_cost) / len(outcomes)
+            estimated_judge_cost = per_query * full_query_count
 
         if not request.dry_run:
             for outcome in outcomes:

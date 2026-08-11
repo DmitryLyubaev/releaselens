@@ -58,5 +58,15 @@ class RunRequest(BaseModel):
     k: int = 8
     judge: bool = True
     judge_model: str = "claude-sonnet-5"
+    # Takes the first N queries in file order. The golden set is grouped by category with
+    # the unanswerable entries last, so a limit small enough to be cheap is also small
+    # enough to consist entirely of factual queries — and unanswerable accuracy, the
+    # metric the set exists for, would silently report null. Prefer per_category.
     limit: int | None = None
+
+    # Takes the first N of *each* category, so a partial run still reports every metric.
+    # A sweep costs real money, so a representative subset is often the right sweep to
+    # run, not a compromise on the full one.
+    per_category: int | None = None
+
     dry_run: bool = False

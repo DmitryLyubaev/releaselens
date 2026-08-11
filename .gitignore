@@ -35,3 +35,7 @@ eval/.pytest_cache/
 # Test output
 TestResults/
 coverage/
+
+# Eval sweep output. Reports are evidence of a run, not source; the README quotes
+# the headline numbers instead. Committing them would also commit answer text.
+eval/reports/

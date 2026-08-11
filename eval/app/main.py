@@ -5,7 +5,17 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
-from .golden import load_golden
+# Python verifies TLS against certifi's bundle, not the operating system's trust store,
+# so behind a TLS-inspecting corporate proxy every call to api.anthropic.com fails with
+# CERTIFICATE_VERIFY_FAILED while the .NET side of this same repository succeeds — it
+# already uses the OS store. truststore closes that gap rather than the usual workaround
+# of disabling verification, which would trade a broken harness for an insecure one.
+# No-op on machines that do not intercept TLS, so it is safe to leave on everywhere.
+import truststore
+
+truststore.inject_into_ssl()
+
+from .golden import load_golden  # noqa: E402 — must follow inject_into_ssl()
 from .models import RunReport, RunRequest
 from .runner import run_eval
 
