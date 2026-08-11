@@ -335,7 +335,7 @@ public class QueryAgentTests(PostgresFixture fixture)
         var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>([() => Text("done")]));
         var answer = await Build(provider).AnswerAsync(scope, "planner", 50, TestContext.Current.CancellationToken);
 
-        Assert.True(answer.Metadata.RetrievalTruncated);
+        Assert.True(answer.Metadata.RetrievalFewerThanRequested);
         Assert.Equal(50, answer.Metadata.RequestedK);
         Assert.NotNull(answer.Metadata.RetrievalNote);
     }

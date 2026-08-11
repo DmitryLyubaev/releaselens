@@ -116,17 +116,21 @@ public sealed class HybridRetriever
             r.TextScore,
             r.BlendedScore)).ToList();
 
-        var truncated = chunks.Count < request.K;
+        // NOT a truncation flag, despite what the old name said. This is true when the
+        // corpus held FEWER matches than k -- that is, when nothing was cut. The inverse
+        // reading sent "we filled your k and there may be more" out as retrievalTruncated
+        // = false, so any consumer alerting on truncation read it exactly backwards.
+        var fewerThanRequested = chunks.Count < request.K;
 
         activity?.SetTag("retrieved_count", chunks.Count);
-        activity?.SetTag("retrieval_truncated", truncated);
+        activity?.SetTag("retrieval_fewer_than_requested", fewerThanRequested);
 
         return new RetrievalResult(
             chunks,
             request.K,
             request.CandidatePoolSize,
-            truncated,
-            truncated
+            fewerThanRequested,
+            fewerThanRequested
                 ? string.Create(CultureInfo.InvariantCulture,
                     $"Retrieval returned {chunks.Count} chunks, fewer than the requested k={request.K}. The corpus does not contain more matching evidence; results were not truncated by a limit.")
                 : null);

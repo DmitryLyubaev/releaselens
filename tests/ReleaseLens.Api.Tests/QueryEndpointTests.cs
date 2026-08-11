@@ -122,7 +122,7 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         var metadata = body.GetProperty("metadata");
         Assert.True(metadata.TryGetProperty("retrievedCount", out _));
         Assert.True(metadata.TryGetProperty("requestedK", out _));
-        Assert.True(metadata.TryGetProperty("retrievalTruncated", out _));
+        Assert.True(metadata.TryGetProperty("retrievalFewerThanRequested", out _));
         Assert.True(metadata.TryGetProperty("degraded", out _));
     }
 

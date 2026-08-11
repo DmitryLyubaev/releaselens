@@ -202,7 +202,7 @@ app.MapPost("/query", async (
             answer.Metadata.DegradedReason,
             answer.Metadata.RetrievedCount,
             answer.Metadata.RequestedK,
-            answer.Metadata.RetrievalTruncated,
+            answer.Metadata.RetrievalFewerThanRequested,
             answer.Metadata.RetrievalNote,
             answer.Metadata.AccumulatedCitationCount,
             answer.Metadata.UnresolvedCitationMarkers,

@@ -175,7 +175,7 @@ public sealed partial class QueryAgent(
                     Degraded: true,
                     DegradedReason: $"All providers unavailable: {string.Join(", ", unavailable.AttemptedProviders)}. " +
                                     "Returning retrieved evidence without synthesis.",
-                    seed.Chunks.Count, k, seed.Truncated, seed.Note, citations.Count, []));
+                    seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, []));
         }
 
         answerText ??= "No answer was produced.";
@@ -197,7 +197,7 @@ public sealed partial class QueryAgent(
         return new AgentAnswer(answerText, cited, new AgentMetadata(
             iterations, toolsCalled, usage, cost, providerName, modelName,
             Degraded: false, DegradedReason: null,
-            seed.Chunks.Count, k, seed.Truncated, seed.Note, citations.Count, unresolved));
+            seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, unresolved));
     }
 
     /// <summary>

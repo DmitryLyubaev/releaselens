@@ -24,7 +24,7 @@ public sealed record AgentMetadata(
     string? DegradedReason,
     int RetrievedCount,
     int RequestedK,
-    bool RetrievalTruncated,
+    bool RetrievalFewerThanRequested,
     string? RetrievalNote,
     // The size of the accumulated evidence pool the answer was written against - every
     // artefact any tool returned, cited or not. `Citations` no longer carries it, because it

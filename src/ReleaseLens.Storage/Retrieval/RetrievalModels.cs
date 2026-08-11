@@ -30,5 +30,5 @@ public sealed record RetrievalResult(
     IReadOnlyList<RetrievedChunk> Chunks,
     int RequestedK,
     int CandidatePoolSize,
-    bool Truncated,
+    bool FewerThanRequested,
     string? Note);

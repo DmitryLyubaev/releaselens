@@ -119,7 +119,7 @@ public class HybridRetrieverTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Retrieve_FewerThanK_IsReportedNotSilentlyTruncated()
+    public async Task Retrieve_FewerThanK_IsReportedNotSilentlyDropped()
     {
         var (factory, tenantId) = await SeedAsync("retrieve-short");
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
@@ -128,7 +128,7 @@ public class HybridRetrieverTests(PostgresFixture fixture)
             new RetrievalRequest("planner", NearVector, K: 50),
             TestContext.Current.CancellationToken);
 
-        Assert.True(result.Truncated);
+        Assert.True(result.FewerThanRequested);
         Assert.Equal(50, result.RequestedK);
         Assert.True(result.Chunks.Count < 50);
         Assert.NotNull(result.Note);
@@ -136,7 +136,7 @@ public class HybridRetrieverTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task Retrieve_ExactlyKAvailable_IsNotMarkedTruncated()
+    public async Task Retrieve_ExactlyKAvailable_IsNotMarkedShort()
     {
         var (factory, tenantId) = await SeedAsync("retrieve-exact");
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
@@ -146,7 +146,7 @@ public class HybridRetrieverTests(PostgresFixture fixture)
             TestContext.Current.CancellationToken);
 
         Assert.Equal(3, result.Chunks.Count);
-        Assert.False(result.Truncated);
+        Assert.False(result.FewerThanRequested);
         Assert.Null(result.Note);
     }
 

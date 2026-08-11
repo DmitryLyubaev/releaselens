@@ -93,7 +93,7 @@
       ? `<p class="banner">Degraded: ${escapeHtml(m.degradedReason ?? 'no provider available')}</p>`
       : '';
 
-    const shortfall = m.retrievalTruncated
+    const shortfall = m.retrievalFewerThanRequested
       ? `<p class="banner">${escapeHtml(m.retrievalNote ?? '')}</p>`
       : '';
 

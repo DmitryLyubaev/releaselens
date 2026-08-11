@@ -26,7 +26,7 @@ public sealed record QueryMetadataDto(
     string? DegradedReason,
     int RetrievedCount,
     int RequestedK,
-    bool RetrievalTruncated,
+    bool RetrievalFewerThanRequested,
     string? RetrievalNote,
     // How many artefacts the agent had accumulated when it validated the answer's markers.
     // `citations` is the cited subset, so this is what UnresolvedCitationMarkers was range-
