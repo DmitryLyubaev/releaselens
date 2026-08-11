@@ -102,26 +102,77 @@ public static class EvidenceDateFields
 public sealed class EvidenceQueries
 {
     /// <summary>
-    /// Counts records whose date field falls in the half-open window [since, until).
+    /// Counts records whose date field falls in the half-open window [since, until),
+    /// optionally restricted to issues carrying at least one of <paramref name="labels"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>is not null</c> is not redundant next to the range predicates. Both
     /// <c>merged_at</c> and <c>published_at</c> are nullable, so an unbounded count
     /// over "merged" must mean "pull requests that were actually merged" — without
     /// this predicate an unbounded call would return every row in the table, open
     /// ones included, and report it as a merge count.
+    /// </para>
+    /// <para>
+    /// <paramref name="labels"/> is only meaningful for issues, and the caller is
+    /// responsible for rejecting it for anything else — passing it with a non-issue
+    /// field throws rather than counting unfiltered, because a quietly dropped filter
+    /// returns a precise number for a question nobody asked.
+    /// </para>
     /// </remarks>
     public async Task<long> CountAsync(
         TenantScope scope, EvidenceDateField field,
-        DateTimeOffset? since, DateTimeOffset? until, CancellationToken cancellationToken)
-        => await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
+        DateTimeOffset? since, DateTimeOffset? until,
+        IReadOnlyList<string>? labels, CancellationToken cancellationToken)
+    {
+        var filtered = labels is { Count: > 0 };
+
+        if (filtered && field.Type != EntityType.Issue)
+        {
+            throw new ArgumentException(
+                $"Label filtering is only supported for issues, not {field.Type}.", nameof(labels));
+        }
+
+        // Spliced in rather than left as a dormant `cardinality(@labels) = 0 or ...`
+        // disjunct in one shared statement: only issues have a labels column, and
+        // Postgres resolves column names when it parses, so the shared form would fail
+        // outright for commits, pull requests and releases on a branch that never runs.
+        var labelPredicate = filtered ? $"\n  and {IssueLabelOverlap}" : string.Empty;
+
+        return await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
             $"""
             select count(*) from {field.Table}
             where {field.Column} is not null
               and (@since is null or {field.Column} >= @since)
-              and (@until is null or {field.Column} < @until)
+              and (@until is null or {field.Column} < @until){labelPredicate}
             """,
-            new { since, until }, scope.Transaction, cancellationToken: cancellationToken));
+            new { since, until, labels = filtered ? labels!.ToArray() : Array.Empty<string>() },
+            scope.Transaction, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>
+    /// Array overlap — an issue matches if it carries at least one of the requested
+    /// labels — compared case-insensitively.
+    /// </summary>
+    /// <remarks>
+    /// Case-insensitive deliberately. The corpus labels are author-typed and
+    /// inconsistently cased (<c>.NET</c>, <c>Build</c>, <c>Ignite</c> alongside
+    /// <c>bug</c>, <c>python</c>, <c>stale</c>), while the label reaching this query was
+    /// lifted from a natural-language question and will almost always arrive lowercase.
+    /// An exact <c>&amp;&amp;</c> would answer "how many Build issues" with 0 while 166
+    /// issues carry the label — a confident, checkable-looking zero, which is the exact
+    /// failure the aggregate tools exist to remove. Nothing is lost the other way: no two
+    /// labels in this corpus differ only by case, so folding case cannot conflate two
+    /// distinct labels into one count.
+    ///
+    /// Both sides are lowered by Postgres rather than one by .NET, so the fold is done
+    /// once under one collation and the two sides cannot disagree.
+    /// </remarks>
+    private const string IssueLabelOverlap =
+        """
+        array(select lower(mine) from unnest(labels) as mine)
+              && array(select lower(wanted) from unnest(@labels) as wanted)
+        """;
 
     public async Task<EvidenceCoverage> GetCoverageAsync(
         TenantScope scope, EvidenceDateField field, CancellationToken cancellationToken)
@@ -216,7 +267,7 @@ public sealed class EvidenceQueries
     public async Task<IReadOnlyList<RegressionCandidate>> FindRegressionCandidatesAsync(
         TenantScope scope, string area, DateTimeOffset? since, int limit, CancellationToken cancellationToken)
         => [.. await scope.Connection.QueryAsync<RegressionCandidate>(new CommandDefinition(
-            """
+            $$"""
             select i.number as Number, i.title as Title, i.state as State, i.labels as Labels,
                    i.created_at as CreatedAt, i.url as Url,
                    -- Two independent ways a '#number' mention can name the wrong pull
@@ -245,11 +296,38 @@ public sealed class EvidenceQueries
                       and (p.title ~ ('#' || i.number || '\M') or p.body ~ ('#' || i.number || '\M'))
                     order by p.merged_at limit 1) as FixedByPullRequest
             from issues i
-            where i.labels && array['bug', 'regression', 'Bug', 'kind:bug']
-              and (@since is null or i.created_at >= @since)
-              and (@area = '' or i.title ilike '%' || @area || '%' or i.body ilike '%' || @area || '%')
+            where {{RegressionFilter}}
             order by i.created_at desc
             limit @limit
             """,
             new { area, since, limit }, scope.Transaction, cancellationToken: cancellationToken))];
+
+    /// <summary>
+    /// How many issues match the regression filter, computed separately from the page so
+    /// the tool can say "20 of 1047" rather than handing back a capped list that reads as
+    /// the complete set and inviting the model to count its rows into a total.
+    /// </summary>
+    public async Task<long> CountRegressionCandidatesAsync(
+        TenantScope scope, string area, DateTimeOffset? since, CancellationToken cancellationToken)
+        => await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            $"select count(*) from issues i where {RegressionFilter}",
+            new { area, since }, scope.Transaction, cancellationToken: cancellationToken));
+
+    /// <summary>
+    /// Shared so the count and the page can never disagree about what "matching" means —
+    /// a total computed from a wider or narrower predicate than the list beneath it would
+    /// be worse than no total at all.
+    /// </summary>
+    /// <remarks>
+    /// The label list is an explicit enumeration of the case variants seen in this corpus,
+    /// not a case-insensitive match. Left as it stands: this is the tool's fixed definition
+    /// of "regression", not caller input, so widening it would change what the tool means
+    /// rather than fix a caller's guess about casing.
+    /// </remarks>
+    private const string RegressionFilter =
+        """
+        i.labels && array['bug', 'regression', 'Bug', 'kind:bug']
+              and (@since is null or i.created_at >= @since)
+              and (@area = '' or i.title ilike '%' || @area || '%' or i.body ilike '%' || @area || '%')
+        """;
 }

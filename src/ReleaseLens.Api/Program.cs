@@ -187,7 +187,8 @@ app.MapPost("/query", async (
     return Results.Ok(new QueryResponse(
         answer.Answer,
         [.. answer.Citations.Select(c => new CitationDto(
-            c.Type.ToWireName(), c.EntityKey, c.Title, repositoryBaseUrl + c.Url))],
+            c.Marker, c.Citation.Type.ToWireName(), c.Citation.EntityKey, c.Citation.Title,
+            repositoryBaseUrl + c.Citation.Url))],
         new QueryMetadataDto(
             answer.Metadata.Iterations,
             answer.Metadata.ToolsCalled,
@@ -203,6 +204,7 @@ app.MapPost("/query", async (
             answer.Metadata.RequestedK,
             answer.Metadata.RetrievalTruncated,
             answer.Metadata.RetrievalNote,
+            answer.Metadata.AccumulatedCitationCount,
             answer.Metadata.UnresolvedCitationMarkers,
             (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds)));
 });

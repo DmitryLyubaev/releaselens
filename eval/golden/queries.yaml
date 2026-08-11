@@ -280,8 +280,19 @@ queries:
     question: "How many issues were opened in June 2026?"
     category: aggregation
     expected_citations: []
+    must_contain: ["14"]
     must_not_contain: ["approximately", "roughly"]
-    notes: "Exactly 14. Scoped deliberately: the issue ingest used an updated-since filter of 2026-06-01, so every issue created in June 2026 is present and this count will not move when the full historical ingest runs. No other issue or commit aggregation is in this set for that reason."
+    notes: >
+      Exactly 14, re-verified on 2026-08-12 after the full historical ingest — the entry was
+      written predicting the count would not move, and it did not. Scoped deliberately for
+      that reason: an issue created in June 2026 necessarily has an update stamp after
+      2026-06-01, so it was already present under the old updated-since filter.
+
+      must_contain was missing until 2026-08-12, so any confident wrong number passed. "14"
+      is a knowingly weak test — it matches issue numbers such as 14111 that a correct answer
+      might also mention — but the alternative, asserting prose like "14 issues", is brittle
+      against harmless rewording. Weak and honest beats brittle here; the hedging check in
+      must_not_contain carries the rest.
 
   # ---------------------------------------------------------- unanswerable --
   - id: gq-036

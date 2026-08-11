@@ -152,9 +152,17 @@ public sealed partial class QueryAgent(
             logger.LogError(unavailable, "All providers unavailable; degrading to unsynthesised evidence");
             activity?.SetTag("degraded", true);
 
+            var degradedAnswer = BuildDegradedAnswer(question, evidenceBlock);
+
             return new AgentAnswer(
-                BuildDegradedAnswer(question, evidenceBlock),
-                citations,
+                degradedAnswer,
+                // The same filter as the synthesised path, deliberately: the degraded answer is
+                // the evidence block verbatim, and every entry in it is labelled "[E<n>]", so
+                // every seed artefact resolves and the caller can attribute all of the prose
+                // they were handed. What it drops is anything a tool returned before the
+                // provider died - those artefacts appear nowhere in this response's text, so
+                // shipping them would be the same "everything we looked at" bug in miniature.
+                SelectCitedEvidence(degradedAnswer, citations),
                 new AgentMetadata(
                     iterations, toolsCalled, usage,
                     // Providers can fail on iteration 2+, after earlier iterations already spent
@@ -167,12 +175,18 @@ public sealed partial class QueryAgent(
                     Degraded: true,
                     DegradedReason: $"All providers unavailable: {string.Join(", ", unavailable.AttemptedProviders)}. " +
                                     "Returning retrieved evidence without synthesis.",
-                    seed.Chunks.Count, k, seed.Truncated, seed.Note, []));
+                    seed.Chunks.Count, k, seed.Truncated, seed.Note, citations.Count, []));
         }
 
         answerText ??= "No answer was produced.";
 
+        // Order matters and is load-bearing. Validation runs against the FULL accumulated pool,
+        // because a marker is hallucinated only if it indexes nothing the agent ever saw.
+        // Filtering first would shrink the pool to the cited subset and then report every marker
+        // in it as in-range while reporting nothing else at all - or, worse under a different
+        // ordering, brand every unused marker a hallucination.
         var unresolved = FindUnresolvedMarkers(answerText, citations.Count);
+        var cited = SelectCitedEvidence(answerText, citations);
         var cost = ModelPricing.CostUsd(modelName, usage, DateOnly.FromDateTime(DateTime.UtcNow));
 
         activity?.SetTag("tokens_in", usage.InputTokens);
@@ -180,10 +194,10 @@ public sealed partial class QueryAgent(
         activity?.SetTag("cost_usd", (double)cost);
         activity?.SetTag("iterations", iterations);
 
-        return new AgentAnswer(answerText, citations, new AgentMetadata(
+        return new AgentAnswer(answerText, cited, new AgentMetadata(
             iterations, toolsCalled, usage, cost, providerName, modelName,
             Degraded: false, DegradedReason: null,
-            seed.Chunks.Count, k, seed.Truncated, seed.Note, unresolved));
+            seed.Chunks.Count, k, seed.Truncated, seed.Note, citations.Count, unresolved));
     }
 
     /// <summary>
@@ -277,6 +291,40 @@ public sealed partial class QueryAgent(
 
         accumulated.Add(citation);
         return accumulated.Count;
+    }
+
+    /// <summary>
+    /// Narrows the accumulated evidence pool to the artefacts the answer actually cites, each
+    /// paired with the marker the answer used. Without this the response carried every artefact
+    /// any tool returned during the loop — "everything we looked at", not "what this rests on" —
+    /// which one <c>list_releases</c> call can inflate to 300 entries.
+    ///
+    /// Three properties this must have, all of them exercised by tests:
+    /// a marker outside <c>1..accumulated.Count</c> yields no citation rather than a phantom one;
+    /// a marker repeated across several sentences yields one citation, not one per mention;
+    /// and an answer with no markers at all — a decline — yields none.
+    ///
+    /// The result is ordered by marker ascending. That is the least surprising order for a
+    /// consumer that has not yet read the marker field, but it is NOT a licence to keep
+    /// inferring markers from position: <c>[E3]</c> alone lands at index 0.
+    /// </summary>
+    private static IReadOnlyList<CitedEvidence> SelectCitedEvidence(
+        string answer, List<EvidenceCitation> accumulated)
+    {
+        // Keyed by marker, so a repeat collapses; sorted, so the order is deterministic
+        // rather than a function of which sentence happened to mention what first.
+        var cited = new SortedDictionary<int, EvidenceCitation>();
+
+        foreach (Match match in CitationMarker().Matches(answer))
+        {
+            if (int.TryParse(match.Groups[1].Value, CultureInfo.InvariantCulture, out var marker)
+                && marker >= 1 && marker <= accumulated.Count)
+            {
+                cited[marker] = accumulated[marker - 1];
+            }
+        }
+
+        return [.. cited.Select(entry => new CitedEvidence(entry.Key, entry.Value))];
     }
 
     private static IReadOnlyList<string> FindUnresolvedMarkers(string answer, int citationCount)

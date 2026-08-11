@@ -26,9 +26,22 @@ public sealed record AgentMetadata(
     int RequestedK,
     bool RetrievalTruncated,
     string? RetrievalNote,
+    // The size of the accumulated evidence pool the answer was written against - every
+    // artefact any tool returned, cited or not. `Citations` no longer carries it, because it
+    // now holds only what the answer cites; without this number a caller cannot reproduce the
+    // range check that produced UnresolvedCitationMarkers, and "[E8] is unresolved" becomes an
+    // assertion they have to take on faith.
+    int AccumulatedCitationCount,
     IReadOnlyList<string> UnresolvedCitationMarkers);
+
+/// <summary>
+/// An artefact the answer actually cites, paired with the marker the answer used for it.
+/// The marker is carried explicitly rather than implied by list position: the list is a
+/// filtered subset, so position no longer equals marker.
+/// </summary>
+public sealed record CitedEvidence(int Marker, EvidenceCitation Citation);
 
 public sealed record AgentAnswer(
     string Answer,
-    IReadOnlyList<EvidenceCitation> Citations,
+    IReadOnlyList<CitedEvidence> Citations,
     AgentMetadata Metadata);

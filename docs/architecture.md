@@ -114,7 +114,11 @@ the evidence block and are not necessarily in ascending order; the system prompt
 
 Because markers are issued densely — a new number only ever at the moment a citation is
 appended — validating the model's answer is a range check: any `[E<n>]` outside `1..count` is
-reported in `metadata.unresolvedCitationMarkers` rather than silently accepted.
+reported in `metadata.unresolvedCitationMarkers` rather than silently accepted. That check runs
+against the full accumulated evidence pool, whose size is reported as
+`metadata.accumulatedCitationCount`; only afterwards is the response's `citations` array
+narrowed to the artefacts the answer actually cites. Because that array is a subset, each entry
+carries its `marker` explicitly and a consumer must never infer one from array position.
 
 ## Designed failure modes
 

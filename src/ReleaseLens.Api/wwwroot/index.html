@@ -101,8 +101,11 @@
       ? `<p class="banner">Answer cited markers with no matching evidence: ${m.unresolvedCitationMarkers.join(', ')}</p>`
       : '';
 
+    // c.marker, not the array index: the list holds only the artefacts this answer cites, so
+    // an answer citing [E3] and [E7] arrives as two entries and numbering them 1 and 2 would
+    // relabel both of them wrongly.
     const citations = result.citations
-      .map((c, i) => `<li>[E${i + 1}] <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.type)} ${escapeHtml(c.key)}</a> — ${escapeHtml(c.title)}</li>`)
+      .map(c => `<li>[E${c.marker}] <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.type)} ${escapeHtml(c.key)}</a> — ${escapeHtml(c.title)}</li>`)
       .join('');
 
     output.innerHTML = `

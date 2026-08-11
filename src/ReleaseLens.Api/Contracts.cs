@@ -4,7 +4,14 @@ namespace ReleaseLens.Api;
 
 public sealed record QueryRequest(string Question, int? K);
 
-public sealed record CitationDto(string Type, string Key, string Title, string Url);
+/// <summary>
+/// One artefact the answer cites. <paramref name="Marker"/> is the number inside the
+/// <c>[E&lt;n&gt;]</c> label as it appears in the answer text, and it is the ONLY way to match a
+/// citation to its mention: the array holds just the cited artefacts, so its indices are not
+/// the markers. A consumer that reads <c>citations[0]</c> as <c>[E1]</c> will mislabel every
+/// answer that skips a marker.
+/// </summary>
+public sealed record CitationDto(int Marker, string Type, string Key, string Title, string Url);
 
 public sealed record QueryMetadataDto(
     int Iterations,
@@ -21,6 +28,10 @@ public sealed record QueryMetadataDto(
     int RequestedK,
     bool RetrievalTruncated,
     string? RetrievalNote,
+    // How many artefacts the agent had accumulated when it validated the answer's markers.
+    // `citations` is the cited subset, so this is what UnresolvedCitationMarkers was range-
+    // checked against, and the gap between the two is the signal that used to be the bug.
+    int AccumulatedCitationCount,
     IReadOnlyList<string> UnresolvedCitationMarkers,
     long ElapsedMs);
 

@@ -14,7 +14,9 @@ from anthropic import AsyncAnthropic
 
 _JUDGE_SYSTEM = """You score whether an answer is grounded in the evidence it cites.
 
-You are given a question, an answer, and the evidence the answering system retrieved.
+You are given a question, an answer, and the evidence the answer cites. This is what the
+answer rests on, not everything the system retrieved — so a claim resting on something the
+answer did not cite is unsupported here, which is the point.
 
 Score groundedness from 0.0 to 1.0:
 - 1.0 — every factual claim in the answer is supported by the evidence shown.

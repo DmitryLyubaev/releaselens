@@ -28,6 +28,11 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
         "question instead of counting search results, which only ever see a sample. " +
         "You must say which date to count by: 'committed' for commits, 'created' for issues, " +
         "'created' or 'merged' for pull requests, 'published' for releases. " +
+        "Issues can also be narrowed by label, which is how to answer 'how many bugs' - counting " +
+        "the rows find_regressions returned would only ever count its page limit. Labels match " +
+        "case-insensitively, so 'bug' also finds 'Bug', and an issue matches if it carries any " +
+        "one of the labels given. Labels apply to issues only; asking for them with another " +
+        "entity_type is an error rather than an unfiltered count. " +
         "Returns a number, the exact predicate applied, and the date range the corpus actually " +
         "covers — check that range before presenting the number as complete. " +
         "Returns no citation, because a computed count is not an artefact.";
@@ -41,7 +46,9 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
             "date_field":  { "type": "string", "enum": ["committed", "created", "merged", "published"],
                              "description": "Which date to count by. Valid values depend on entity_type: commit accepts 'committed'; issue accepts 'created'; pull_request accepts 'created' (opened) or 'merged'; release accepts 'published'. Opened and merged are different questions - pick the one asked." },
             "since":       { "type": "string", "description": "Optional ISO-8601 date. Inclusive lower bound, UTC." },
-            "until":       { "type": "string", "description": "Optional ISO-8601 date. Upper bound, UTC. A plain date such as 2024-12-31 includes the whole of that day." }
+            "until":       { "type": "string", "description": "Optional ISO-8601 date. Upper bound, UTC. A plain date such as 2024-12-31 includes the whole of that day." },
+            "labels":      { "type": "array", "items": { "type": "string" },
+                             "description": "Optional, and only valid when entity_type is 'issue'. Count only issues carrying at least one of these labels. Matched case-insensitively but otherwise exactly, so 'bug' finds 'bug' and 'Bug' but not 'bugfix'. Supplying this with any other entity_type is an error." }
           },
           "required": ["entity_type", "date_field"]
         }
@@ -89,6 +96,24 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
                 "Choose the one the question actually asks about rather than retrying with another.");
         }
 
+        if (!JsonArgs.TryStringArray(arguments, "labels", out var labels, out var labelsError))
+        {
+            return ToolExecutionResult.Error(labelsError!);
+        }
+
+        // Naming the restriction beats honouring the rest of the call. Only issues carry
+        // labels, so "how many bug-labelled commits in 2024" has no answer here — and the
+        // count it would otherwise return, every commit in 2024, is a precise figure for a
+        // different question with nothing in the result to show the filter went missing.
+        if (labels is not null && entityType != EntityType.Issue)
+        {
+            return ToolExecutionResult.Error(
+                $"'labels' is only supported with entity_type='issue', not '{entityTypeText}', because " +
+                "only issues carry labels. The filter was not applied and no count was computed. " +
+                "Count issues instead, or drop the labels argument if you meant every " +
+                $"{entityTypeText} in the window.");
+        }
+
         if (!AggregateWindow.TryRead(arguments, "since", isUpperBound: false, out var since, out var sinceError))
         {
             return ToolExecutionResult.Error(sinceError!);
@@ -106,7 +131,7 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
                 $"since ({AggregateWindow.Format(since.Value)}). Check the order of the dates.");
         }
 
-        var count = await queries.CountAsync(scope, field, since?.Value, until?.Value, cancellationToken);
+        var count = await queries.CountAsync(scope, field, since?.Value, until?.Value, labels, cancellationToken);
         var coverage = await queries.GetCoverageAsync(scope, field, cancellationToken);
 
         var label = $"{entityTypeText}.{field.FieldName}";
@@ -116,9 +141,21 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
             .Append("Predicate: entity_type=").Append(entityTypeText)
             .Append(", date_field=").Append(field.FieldName)
             .Append(" (").Append(field.Qualified).Append("), ")
-            .Append(AggregateWindow.DescribeWindow(field.Column, since, until))
-            .AppendLine(".");
+            .Append(AggregateWindow.DescribeWindow(field.Column, since, until));
 
+        if (labels is not null)
+        {
+            content.Append(", labels overlapping [")
+                   .Append(string.Join(", ", labels.Select(l => $"'{l}'")))
+                   .Append("] (case-insensitive; an issue matches if it carries any one of them)");
+        }
+
+        content.AppendLine(".");
+
+        // Deliberately the unfiltered coverage of the date field. Coverage answers "what
+        // span of history is held at all", which the label filter does not change, and a
+        // filtered version would quietly redefine INCOMPLETE COVERAGE to mean "no issue
+        // with this label falls outside the window" - a different and far weaker claim.
         AggregateWindow.AppendCoverage(content, label, coverage, since, until);
 
         // A count is computed, not retrieved, so there is no artefact to point at and no

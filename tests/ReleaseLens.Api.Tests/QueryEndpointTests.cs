@@ -1,14 +1,19 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using ReleaseLens.Api;
+using ReleaseLens.Core.Chunking;
+using ReleaseLens.Core.Evidence;
+using ReleaseLens.Embedding;
 using ReleaseLens.Llm.Providers;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
@@ -199,6 +204,92 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.Equal(0, spy.Calls);
+    }
+
+    /// <summary>
+    /// Seeds this test's tenant with <paramref name="count"/> single-chunk commits, embedded
+    /// with the host's own embedder, so seed retrieval has a pool to draw markers from.
+    /// </summary>
+    private async Task SeedCommitsAsync(int count)
+    {
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        var embedder = _factory.Services.GetRequiredService<IEmbedder>();
+
+        await using var scope = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken);
+
+        var commits = Enumerable.Range(0, count).Select(i => new CommitEvidence(
+            _tenantId, $"sha_api_{i}", $"fix: planner defect number {i}", "Alice", "a@example.com",
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+            $"https://github.com/microsoft/semantic-kernel/commit/sha_api_{i}", [])).ToList();
+
+        await new EvidenceRepository().UpsertCommitsAsync(scope, commits, TestContext.Current.CancellationToken);
+
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+        var chunks = commits.SelectMany(chunker.Chunk).ToList();
+        var chunkRepository = new ChunkRepository();
+
+        var ids = await chunkRepository.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
+        var vectors = await embedder.EmbedDocumentsAsync(
+            [.. chunks.Select(c => c.Content)], TestContext.Current.CancellationToken);
+        await chunkRepository.UpsertEmbeddingsAsync(scope, [.. ids.Zip(vectors)], embedder.ModelName,
+            TestContext.Current.CancellationToken);
+
+        await scope.CommitAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Query_ReturnsOnlyTheCitationsTheAnswerCites_EachCarryingItsMarker()
+    {
+        await SeedCommitsAsync(4);
+
+        await using var scripted = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IChatProvider>();
+                services.AddSingleton<IChatProvider>(new ScriptedChatProvider(
+                    "The defect arrived in [E1] and was fixed by [E3]; see [E3] again for the test."));
+            }));
+
+        using var client = scripted.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/query")
+        {
+            Content = JsonContent.Create(new { question = "planner", k = 5 })
+        };
+        request.Headers.Add("X-Api-Key", _apiKey);
+
+        var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        var metadata = body.GetProperty("metadata");
+
+        Assert.False(metadata.GetProperty("degraded").GetBoolean());
+
+        // Four artefacts were retrieved and put in front of the model; the answer rests on two.
+        Assert.Equal(4, metadata.GetProperty("accumulatedCitationCount").GetInt32());
+
+        // The wire contract under test: the marker in the response is the marker in the prose.
+        // Read as a set — [E3] is mentioned twice and must still yield one citation.
+        var inProse = Regex.Matches(body.GetProperty("answer").GetString()!, @"\[E(\d+)\]")
+                           .Select(m => int.Parse(m.Groups[1].Value))
+                           .Distinct().Order().ToArray();
+
+        var onWire = body.GetProperty("citations").EnumerateArray()
+                         .Select(c => c.GetProperty("marker").GetInt32())
+                         .ToArray();
+
+        Assert.Equal([1, 3], inProse);
+        Assert.Equal(inProse, onWire);
+
+        // Position is not the marker any more, and each entry is still a whole citation.
+        foreach (var citation in body.GetProperty("citations").EnumerateArray())
+        {
+            Assert.Equal("commit", citation.GetProperty("type").GetString());
+            Assert.StartsWith("sha_api_", citation.GetProperty("key").GetString(), StringComparison.Ordinal);
+            Assert.StartsWith("https://github.com/microsoft/semantic-kernel/",
+                citation.GetProperty("url").GetString(), StringComparison.Ordinal);
+        }
     }
 
     [Fact]

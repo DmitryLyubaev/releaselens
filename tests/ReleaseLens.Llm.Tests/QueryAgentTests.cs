@@ -82,6 +82,42 @@ public class QueryAgentTests(PostgresFixture fixture)
     }
 
     /// <summary>
+    /// <paramref name="count"/> single-chunk commits, so seed retrieval at k = count yields
+    /// exactly that many distinct artefacts and therefore markers E1..E&lt;count&gt;. Used by the
+    /// filtering tests, which need an evidence pool visibly larger than what the answer cites.
+    /// </summary>
+    private async Task<(TenantConnectionFactory Factory, Guid TenantId)> SeedManyAsync(
+        string slug, int count)
+    {
+        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        var tenantId = await new TenantRepository(factory).CreateAsync(
+            new TenantDefinition(slug, slug, "github", "microsoft", "semantic-kernel", 1_000_000),
+            TestContext.Current.CancellationToken);
+
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+        var chunkRepository = new ChunkRepository();
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var commits = Enumerable.Range(0, count).Select(i => new CommitEvidence(
+            tenantId, $"sha_many_{i}", $"fix: planner defect number {i}", "Alice",
+            "a@example.com", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+            $"https://github.com/microsoft/semantic-kernel/commit/sha_many_{i}", [])).ToList();
+
+        await new EvidenceRepository().UpsertCommitsAsync(scope, commits, TestContext.Current.CancellationToken);
+
+        var chunks = commits.SelectMany(chunker.Chunk).ToList();
+        var ids = await chunkRepository.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
+        var vectors = await _embedder.EmbedDocumentsAsync(
+            [.. chunks.Select(c => c.Content)], TestContext.Current.CancellationToken);
+        await chunkRepository.UpsertEmbeddingsAsync(scope, [.. ids.Zip(vectors)], _embedder.ModelName,
+            TestContext.Current.CancellationToken);
+
+        await scope.CommitAsync(TestContext.Current.CancellationToken);
+        return (factory, tenantId);
+    }
+
+    /// <summary>
     /// A commit whose message is long enough that the chunker splits it into several
     /// chunks, alongside a second commit that fits in one. Seed retrieval then returns
     /// more than one chunk for a single artefact, which is the condition under which
@@ -330,7 +366,12 @@ public class QueryAgentTests(PostgresFixture fixture)
 
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
 
-        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>([() => Text("done")]));
+        // The answer cites both markers. Only two artefacts are seeded and markers are issued
+        // densely, so the set is always {1, 2} whatever order retrieval ranks them in — and
+        // citing both is what keeps this test about artefact-level deduplication rather than
+        // about the cited-only filter, which has its own tests below.
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("Both of these are relevant: [E1] and [E2].")]));
         var answer = await Build(provider).AnswerAsync(scope, "planner", 20,
             TestContext.Current.CancellationToken);
 
@@ -345,10 +386,10 @@ public class QueryAgentTests(PostgresFixture fixture)
 
         // 1. A citation identifies an artefact, so each artefact appears exactly once.
         Assert.Equal(
-            answer.Citations.Select(c => (c.Type, c.EntityKey)).Distinct().Count(),
+            answer.Citations.Select(c => (c.Citation.Type, c.Citation.EntityKey)).Distinct().Count(),
             answer.Citations.Count);
-        Assert.Single(answer.Citations, c => c.EntityKey == "sha_split");
-        Assert.Single(answer.Citations, c => c.EntityKey == "sha_solo");
+        Assert.Single(answer.Citations, c => c.Citation.EntityKey == "sha_split");
+        Assert.Single(answer.Citations, c => c.Citation.EntityKey == "sha_solo");
 
         // 2. Collapsing the citation list must not collapse the evidence: the model still
         //    sees the text of every chunk, including the parts unique to each one.
@@ -360,13 +401,156 @@ public class QueryAgentTests(PostgresFixture fixture)
         // 3. Every chunk of the artefact points at one marker, and that marker resolves to
         //    the artefact. This is what a fix that dedupes the list but leaves the markers
         //    numbered per chunk would fail.
+        //    Looked up BY MARKER, not by array position: the returned list is the cited subset,
+        //    so index arithmetic on it is exactly the inference the marker field exists to kill.
         var splitMarker = Assert.Single(
             entries.Where(e => e.EntityKey == "sha_split").Select(e => e.Marker).Distinct());
-        Assert.InRange(splitMarker, 1, answer.Citations.Count);
-        Assert.Equal("sha_split", answer.Citations[splitMarker - 1].EntityKey);
+        Assert.Equal("sha_split",
+            Assert.Single(answer.Citations, c => c.Marker == splitMarker).Citation.EntityKey);
 
         var soloMarker = Assert.Single(
             entries.Where(e => e.EntityKey == "sha_solo").Select(e => e.Marker).Distinct());
-        Assert.Equal("sha_solo", answer.Citations[soloMarker - 1].EntityKey);
+        Assert.Equal("sha_solo",
+            Assert.Single(answer.Citations, c => c.Marker == soloMarker).Citation.EntityKey);
+    }
+
+    /// <summary>
+    /// The defect this whole change is about: the response used to carry every artefact any
+    /// tool had returned, so a query that swept 48 releases reported 48 citations behind an
+    /// answer resting on two. Precision was measured at 0.090 against the golden set.
+    /// </summary>
+    [Fact]
+    public async Task Answer_CitingTwoOfEightArtefacts_ReturnsOnlyThoseTwoWithTheirMarkers()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-cited-subset", 8);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("The regression came in via [E2] and was reverted by [E5].")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 8,
+            TestContext.Current.CancellationToken);
+
+        // The pool really was eight, so "returns two" is a filter doing work rather than a
+        // retrieval that happened to find two things.
+        Assert.Equal(8, answer.Metadata.AccumulatedCitationCount);
+
+        Assert.Equal([2, 5], answer.Citations.Select(c => c.Marker).ToArray());
+
+        // Each marker still points at the artefact the evidence block told the model it meant.
+        // A filter that renumbered as it shrank would pass the count assertion above and
+        // silently re-aim both markers — the failure mode worth more than the one being fixed.
+        var entries = EvidenceEntries(provider.Requests[0].Messages[0].Text!);
+
+        foreach (var citation in answer.Citations)
+        {
+            var expected = Assert.Single(
+                entries.Where(e => e.Marker == citation.Marker).Select(e => e.EntityKey).Distinct());
+            Assert.Equal(expected, citation.Citation.EntityKey);
+        }
+
+        Assert.Empty(answer.Metadata.UnresolvedCitationMarkers);
+    }
+
+    [Fact]
+    public async Task Answer_WithAHallucinatedMarker_ReportsItAndProducesNoCitation()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-hallucinated", 3);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("Supported by [E1] and, allegedly, [E9].")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 3,
+            TestContext.Current.CancellationToken);
+
+        // Validation ran against the full accumulated pool, before filtering — which is the
+        // ordering that makes "E9 is out of range" mean anything. Had it run after, E9 would
+        // have been checked against a one-entry list and E1 would have been the only survivor
+        // either way, so this assertion pair is what pins the order.
+        Assert.Equal(["E9"], answer.Metadata.UnresolvedCitationMarkers.ToArray());
+        Assert.Equal(3, answer.Metadata.AccumulatedCitationCount);
+
+        // Out of range yields nothing rather than a phantom entry.
+        Assert.Equal([1], answer.Citations.Select(c => c.Marker).ToArray());
+    }
+
+    [Fact]
+    public async Task Answer_RepeatingAMarker_YieldsOneCitation()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-repeat-marker", 3);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("First [E2]. Then again [E2]. And once more, [E2].")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 3,
+            TestContext.Current.CancellationToken);
+
+        var only = Assert.Single(answer.Citations);
+        Assert.Equal(2, only.Marker);
+    }
+
+    [Fact]
+    public async Task Answer_WithNoMarkersAtAll_ReturnsNoCitations()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-declines", 3);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // A decline. The evidence exists and was retrieved, but the answer rests on none of
+        // it, so it is not what the answer rests on — the response says so by carrying nothing.
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("The indexed evidence does not answer this question.")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 3,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(answer.Citations);
+        Assert.Equal(3, answer.Metadata.AccumulatedCitationCount);
+    }
+
+    /// <summary>
+    /// The degraded response is the evidence block verbatim, and every entry in it is labelled
+    /// "[E&lt;n&gt;]" — so the ordinary cited-only filter keeps exactly the artefacts the caller
+    /// can see, and the caller can still attribute all of the prose they were handed. The
+    /// intended behaviour is NOT "skip filtering when degraded": artefacts a tool returned
+    /// before the provider died appear nowhere in the degraded text, and shipping those would
+    /// reproduce the bug in miniature.
+    /// </summary>
+    [Fact]
+    public async Task Answer_AllProvidersDown_CitesTheEvidenceItShows_AndNotToolResultsItDoesNot()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-degraded-filter", 3);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            // One successful tool call widens the accumulated pool beyond the seed...
+            () => CallTool("search_commits", """{"query":"planner","limit":3}"""),
+            // ...and then every provider dies, so the caller gets the seed evidence only.
+            () => throw new AllProvidersUnavailableException(["anthropic", "openai"])
+        ]));
+
+        // k = 1 so the seed contributes exactly one artefact and the tool contributes the rest.
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 1,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.Degraded);
+        Assert.True(answer.Metadata.AccumulatedCitationCount > 1,
+            "the tool call must have added artefacts beyond the seed, or this proves nothing");
+
+        // Exactly the markers the degraded text itself displays — no more, no fewer.
+        var shown = Regex.Matches(answer.Answer, @"\[E(\d+)\]")
+                         .Select(m => int.Parse(m.Groups[1].Value))
+                         .Distinct().Order().ToArray();
+
+        Assert.NotEmpty(shown);
+        Assert.Equal(shown, answer.Citations.Select(c => c.Marker).ToArray());
+
+        // Every artefact the caller can read about is attributable.
+        foreach (var citation in answer.Citations)
+        {
+            Assert.Contains(citation.Citation.EntityKey, answer.Answer, StringComparison.Ordinal);
+        }
     }
 }

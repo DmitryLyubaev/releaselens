@@ -71,7 +71,24 @@ public class EvidenceToolTests(PostgresFixture fixture)
                 "https://github.com/microsoft/semantic-kernel/issues/4211"),
             new IssueEvidence(tenantId, 4212, "Docs typo", "Minor.", "closed", ["documentation"], "dave",
                 new DateTimeOffset(2026, 3, 11, 0, 0, 0, TimeSpan.Zero), null,
-                "https://github.com/microsoft/semantic-kernel/issues/4212")
+                "https://github.com/microsoft/semantic-kernel/issues/4212"),
+            // The two issues below carry labels whose stored casing differs from the casing
+            // a question would supply. The real corpus is like this - 'bug' and 'python' are
+            // lowercase, '.NET', 'Build' and 'Ignite' are not - so a case-sensitive label
+            // filter would answer "how many Build issues" with zero and look right doing it.
+            //
+            // 'Build' deliberately carries no bug or regression label: it is the case test
+            // for the count filter without also being a find_regressions candidate.
+            new IssueEvidence(tenantId, 4213, "Compilation fails in the build pipeline", "Broken.", "open",
+                ["Build"], "erin",
+                new DateTimeOffset(2026, 3, 12, 0, 0, 0, TimeSpan.Zero), null,
+                "https://github.com/microsoft/semantic-kernel/issues/4213"),
+            // Capital 'Bug'. Counted with 4211 by a case-insensitive labels filter, and the
+            // second candidate that lets the find_regressions cap actually bite.
+            new IssueEvidence(tenantId, 4214, "Memory leak in chat history", "Leaks.", "open",
+                ["Bug"], "frank",
+                new DateTimeOffset(2026, 3, 13, 0, 0, 0, TimeSpan.Zero), null,
+                "https://github.com/microsoft/semantic-kernel/issues/4214")
         ], TestContext.Current.CancellationToken);
 
         // PR 901 merges earlier and only *mentions* #42110 - a different, longer issue
@@ -433,6 +450,250 @@ public class EvidenceToolTests(PostgresFixture fixture)
         Assert.False(result.IsError);
         Assert.Contains("Count: 4", result.Content, StringComparison.Ordinal);
         Assert.Empty(result.Citations);
+    }
+
+    [Fact]
+    public async Task CountEvidence_LabelFilter_CountsOnlyIssuesCarryingTheLabel()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labels");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var registry = BuildRegistry();
+
+        var all = await registry.ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created"}"""),
+            TestContext.Current.CancellationToken);
+
+        var docs = await registry.ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["documentation"]}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(docs.IsError);
+
+        // Four issues are seeded; exactly one is labelled documentation. Asserting both
+        // numbers is the point: a filter that was accepted and then dropped would return
+        // the unfiltered 4 here and look like a perfectly good answer.
+        Assert.Contains("Count: 4", all.Content, StringComparison.Ordinal);
+        Assert.Contains("Count: 1", docs.Content, StringComparison.Ordinal);
+        Assert.Empty(docs.Citations);
+    }
+
+    /// <summary>
+    /// The casing decision, asserted in both directions. Labels are matched
+    /// case-insensitively: the corpus stores author-typed labels of inconsistent case
+    /// ('bug' but 'Build', '.NET', 'Ignite') while the label reaching the tool comes from a
+    /// natural-language question and arrives lowercase. A case-sensitive match would report
+    /// 0 build issues out of 166 — a confident undercount that reads exactly like a fact.
+    /// </summary>
+    [Fact]
+    public async Task CountEvidence_LabelFilter_MatchesCaseInsensitively()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelcase");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var registry = BuildRegistry();
+
+        // Stored as 'bug' on #4211 and 'Bug' on #4214. Case-sensitively this is 1.
+        var lower = await registry.ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["bug"]}"""),
+            TestContext.Current.CancellationToken);
+
+        // The same question shouted. Casing of the argument must not change the answer.
+        var upper = await registry.ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["BUG"]}"""),
+            TestContext.Current.CancellationToken);
+
+        // Stored as 'Build', asked as 'build'. Case-sensitively this is 0.
+        var stored = await registry.ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["build"]}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains("Count: 2", lower.Content, StringComparison.Ordinal);
+        Assert.Contains("Count: 2", upper.Content, StringComparison.Ordinal);
+        Assert.Contains("Count: 1", stored.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Case is folded; the rest of the label is not. 'bug' must not match 'debugging' or
+    /// 'bugfix', or the filter becomes a substring search wearing a filter's precision.
+    /// </summary>
+    [Fact]
+    public async Task CountEvidence_LabelFilter_IsWholeLabelNotSubstring()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelsubstring");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["doc"]}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Contains("Count: 0", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CountEvidence_SeveralLabels_CountEachIssueOnceOnOverlapNotConjunction()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labeloverlap");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["bug","regression","documentation"]}"""),
+            TestContext.Current.CancellationToken);
+
+        // #4211 carries both bug and regression, #4212 documentation, #4214 Bug. Three
+        // issues, not four matches: an issue with two of the labels is still one issue.
+        Assert.Contains("Count: 3", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CountEvidence_LabelFilterAndDateWindowBothApply()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelwindow");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["bug"],"since":"2026-03-13"}"""),
+            TestContext.Current.CancellationToken);
+
+        // Two bug-labelled issues exist; only #4214 (2026-03-13) is in the window. Neither
+        // filter may quietly replace the other.
+        Assert.Contains("Count: 1", result.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The failure mode this restriction exists for. Commits carry no labels, so the only
+    /// alternatives are an error or a count of every commit in the window — and the latter
+    /// is a precise, checkable-looking figure for a different question, with nothing in the
+    /// output to show the filter was thrown away.
+    /// </summary>
+    [Fact]
+    public async Task CountEvidence_LabelsWithANonIssueEntityType_IsACleanErrorNotAnUnfilteredCount()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelwrongentity");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var registry = BuildRegistry();
+
+        foreach (var entity in new[] { "commit", "pull_request", "release" })
+        {
+            var dateField = entity switch { "commit" => "committed", "release" => "published", _ => "created" };
+
+            var result = await registry.ExecuteAsync("count_evidence", scope,
+                Args($$"""{"entity_type":"{{entity}}","date_field":"{{dateField}}","labels":["bug"]}"""),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.IsError, $"{entity} with labels should be an error");
+            Assert.Empty(result.Citations);
+            Assert.Contains("labels", result.Content, StringComparison.Ordinal);
+            Assert.Contains("entity_type='issue'", result.Content, StringComparison.Ordinal);
+
+            // An error that also carried a number would invite the model to use the number
+            // and ignore the error.
+            Assert.DoesNotContain("Count:", result.Content, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task CountEvidence_EmptyLabelsArray_IsAnErrorRatherThanAnUnfilteredCount()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelempty");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":[]}"""),
+            TestContext.Current.CancellationToken);
+
+        // Reading [] as "no filter" would answer a label question with the total issue count.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Count:", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CountEvidence_LabelFilter_StatesTheFilterAndItsCasingInThePredicate()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-labelpredicate");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("count_evidence", scope,
+            Args("""{"entity_type":"issue","date_field":"created","labels":["bug"]}"""),
+            TestContext.Current.CancellationToken);
+
+        // The predicate is the number's only justification, so a filter that was applied
+        // but not stated is as unverifiable as one that was stated but not applied.
+        Assert.Contains("labels overlapping ['bug']", result.Content, StringComparison.Ordinal);
+        Assert.Contains("case-insensitive", result.Content, StringComparison.Ordinal);
+        Assert.Contains("issues.created_at", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CountEvidence_DescriptionTellsTheCallerHowLabelsAreMatched()
+    {
+        var definition = BuildRegistry().Definitions.Single(d => d.Name == "count_evidence");
+
+        // Whether the match folds case is not guessable from the outside, and guessing
+        // wrong is a silent undercount. It has to be in the text the model reads.
+        Assert.Contains("case-insensitiv", definition.Description, StringComparison.OrdinalIgnoreCase);
+
+        var labels = definition.JsonSchema.GetProperty("properties").GetProperty("labels");
+        Assert.Equal("array", labels.GetProperty("type").GetString());
+        Assert.Contains("case-insensitiv",
+            labels.GetProperty("description").GetString()!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The defect this pairs with: 50 rows returned, 50 counted, "50 bugs" reported as
+    /// fact. A cap the output does not mention is indistinguishable from a complete set.
+    /// </summary>
+    [Fact]
+    public async Task FindRegressions_WhenTheCapBites_ItSaysSoAndGivesTheTotal()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-regressions-capped");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("find_regressions", scope,
+            Args("""{"area":"","limit":1}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Single(result.Citations);
+
+        Assert.Contains("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.Contains("Showing 1 of 2", result.Content, StringComparison.Ordinal);
+        Assert.Contains("limit=1", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("not capped", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindRegressions_WhenTheResultsFit_DoesNotClaimTruncation()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-regressions-fits");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("find_regressions", scope,
+            Args("""{"area":""}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Equal(2, result.Citations.Count);
+
+        // Crying truncation on a complete set is the other half of the bug: it pushes the
+        // model to hedge or re-query an answer that was already whole.
+        Assert.DoesNotContain("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.Contains("Showing 2 of 2", result.Content, StringComparison.Ordinal);
+        Assert.Contains("not capped", result.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An exact fit at the limit is the case a <c>rows.Count == limit</c> heuristic gets
+    /// wrong: the list is complete and must not be announced as truncated.
+    /// </summary>
+    [Fact]
+    public async Task FindRegressions_ExactFitAtTheLimit_IsNotReportedAsTruncated()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-regressions-exactfit");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("find_regressions", scope,
+            Args("""{"area":"","limit":2}"""), TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.Contains("Showing 2 of 2", result.Content, StringComparison.Ordinal);
     }
 
     [Fact]

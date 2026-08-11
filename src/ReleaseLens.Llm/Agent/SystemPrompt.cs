@@ -35,7 +35,8 @@ public static class SystemPrompt
         - count_evidence — count commits, issues, pull requests or releases in a date window.
           Use this for every "how many" question. Searching cannot answer one: it returns a
           sample, and a sample counted is a guess. Say which date you mean — for pull requests,
-          opened and merged are different questions.
+          opened and merged are different questions. Issues take a labels filter, so "how many
+          bugs" is a count, never a list counted by hand.
         - list_releases — enumerate release tags with their publication dates, optionally by tag
           prefix. Use this for "list every release" or "which releases exist"; search cannot tell
           you when it has missed one.
