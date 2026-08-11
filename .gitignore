@@ -21,6 +21,10 @@ models/
 # Terraform
 infra/terraform/.terraform/
 infra/terraform/*.tfstate
+# A saved plan carries resolved values, including the generated Postgres password and
+# whatever is bound for the Key Vault secrets. It is as sensitive as state.
+infra/terraform/tfplan
+infra/terraform/*.tfplan
 infra/terraform/*.tfstate.*
 infra/terraform/*.tfvars
 !infra/terraform/*.tfvars.example
