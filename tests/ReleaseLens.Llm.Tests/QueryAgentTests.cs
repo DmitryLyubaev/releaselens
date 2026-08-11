@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -78,6 +80,77 @@ public class QueryAgentTests(PostgresFixture fixture)
         await scope.CommitAsync(TestContext.Current.CancellationToken);
         return (factory, tenantId);
     }
+
+    /// <summary>
+    /// A commit whose message is long enough that the chunker splits it into several
+    /// chunks, alongside a second commit that fits in one. Seed retrieval then returns
+    /// more than one chunk for a single artefact, which is the condition under which
+    /// the citation list used to grow one entry per chunk instead of one per artefact.
+    /// </summary>
+    private async Task<(TenantConnectionFactory Factory, Guid TenantId, IReadOnlyList<Chunk> SplitChunks)>
+        SeedSplitEntityAsync(string slug)
+    {
+        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        var tenantId = await new TenantRepository(factory).CreateAsync(
+            new TenantDefinition(slug, slug, "github", "microsoft", "semantic-kernel", 1_000_000),
+            TestContext.Current.CancellationToken);
+
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+        var chunkRepository = new ChunkRepository();
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var split = new CommitEvidence(tenantId, "sha_split", LongPlannerMessage(), "Alice",
+            "a@example.com", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+            "https://github.com/microsoft/semantic-kernel/commit/sha_split", []);
+
+        var solo = new CommitEvidence(tenantId, "sha_solo", "docs: planner readme typo", "Bob",
+            "b@example.com", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+            "https://github.com/microsoft/semantic-kernel/commit/sha_solo", []);
+
+        await new EvidenceRepository().UpsertCommitsAsync(scope, [split, solo],
+            TestContext.Current.CancellationToken);
+
+        var splitChunks = chunker.Chunk(split);
+        var allChunks = new List<Chunk>(splitChunks);
+        allChunks.AddRange(chunker.Chunk(solo));
+
+        var ids = await chunkRepository.UpsertChunksAsync(scope, allChunks, TestContext.Current.CancellationToken);
+        var vectors = await _embedder.EmbedDocumentsAsync(
+            [.. allChunks.Select(c => c.Content)], TestContext.Current.CancellationToken);
+        await chunkRepository.UpsertEmbeddingsAsync(scope, [.. ids.Zip(vectors)], _embedder.ModelName,
+            TestContext.Current.CancellationToken);
+
+        await scope.CommitAsync(TestContext.Current.CancellationToken);
+        return (factory, tenantId, splitChunks);
+    }
+
+    private static string LongPlannerMessage()
+    {
+        var message = new StringBuilder();
+        message.Append("fix: planner null reference\n\n");
+        message.Append("sentinel-alpha opens the body of this commit message.\n\n");
+
+        // Comfortably past ChunkOptions.Default.MaxChars so Segment produces several
+        // chunks, all carrying the same entity key.
+        for (var i = 0; i < 40; i++)
+        {
+            message.Append("Paragraph ").Append(i)
+                   .Append(" describes another part of the planner change in enough words ")
+                   .Append("to push this body well past a single chunk's character budget.\n\n");
+        }
+
+        message.Append("sentinel-omega closes the body of this commit message.\n");
+        return message.ToString();
+    }
+
+    /// <summary>
+    /// Each seed evidence entry is rendered as "[E&lt;n&gt;] (&lt;entity key&gt;) ...", so the
+    /// prompt itself says which marker the model was told to use for which artefact.
+    /// </summary>
+    private static List<(int Marker, string EntityKey)> EvidenceEntries(string evidenceBlock)
+        => [.. Regex.Matches(evidenceBlock, @"^\[E(\d+)\] \((\S+)\) ", RegexOptions.Multiline)
+                    .Select(m => (int.Parse(m.Groups[1].Value), m.Groups[2].Value))];
 
     private QueryAgent Build(IChatProvider provider) => new(
         provider,
@@ -243,5 +316,57 @@ public class QueryAgentTests(PostgresFixture fixture)
         var answer = await Build(provider).AnswerAsync(scope, "planner", 5, TestContext.Current.CancellationToken);
 
         Assert.Contains("E99", answer.Metadata.UnresolvedCitationMarkers);
+    }
+
+    [Fact]
+    public async Task Answer_SeedChunksOfOneEntity_ShareASingleCitationAndMarker()
+    {
+        var (factory, tenantId, splitChunks) = await SeedSplitEntityAsync("agent-split-entity");
+
+        // Guards the fixture, not the agent: with only one chunk the test would pass
+        // against the duplicating code and prove nothing.
+        Assert.True(splitChunks.Count >= 2,
+            $"fixture must split the commit into at least two chunks, got {splitChunks.Count}");
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>([() => Text("done")]));
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 20,
+            TestContext.Current.CancellationToken);
+
+        var evidence = provider.Requests[0].Messages[0].Text!;
+        var entries = EvidenceEntries(evidence);
+
+        // Both artefacts were retrieved, and the split one contributed several chunks —
+        // otherwise the deduplication under test is never exercised.
+        Assert.True(entries.Count(e => e.EntityKey == "sha_split") >= 2,
+            $"expected at least two seed chunks for sha_split, evidence block was:\n{evidence}");
+        Assert.Contains(entries, e => e.EntityKey == "sha_solo");
+
+        // 1. A citation identifies an artefact, so each artefact appears exactly once.
+        Assert.Equal(
+            answer.Citations.Select(c => (c.Type, c.EntityKey)).Distinct().Count(),
+            answer.Citations.Count);
+        Assert.Single(answer.Citations, c => c.EntityKey == "sha_split");
+        Assert.Single(answer.Citations, c => c.EntityKey == "sha_solo");
+
+        // 2. Collapsing the citation list must not collapse the evidence: the model still
+        //    sees the text of every chunk, including the parts unique to each one.
+        Assert.Contains(splitChunks[0].Content, evidence, StringComparison.Ordinal);
+        Assert.Contains(splitChunks[1].Content, evidence, StringComparison.Ordinal);
+        Assert.Contains("sentinel-alpha", evidence, StringComparison.Ordinal);
+        Assert.Contains("sentinel-omega", evidence, StringComparison.Ordinal);
+
+        // 3. Every chunk of the artefact points at one marker, and that marker resolves to
+        //    the artefact. This is what a fix that dedupes the list but leaves the markers
+        //    numbered per chunk would fail.
+        var splitMarker = Assert.Single(
+            entries.Where(e => e.EntityKey == "sha_split").Select(e => e.Marker).Distinct());
+        Assert.InRange(splitMarker, 1, answer.Citations.Count);
+        Assert.Equal("sha_split", answer.Citations[splitMarker - 1].EntityKey);
+
+        var soloMarker = Assert.Single(
+            entries.Where(e => e.EntityKey == "sha_solo").Select(e => e.Marker).Distinct());
+        Assert.Equal("sha_solo", answer.Citations[soloMarker - 1].EntityKey);
     }
 }

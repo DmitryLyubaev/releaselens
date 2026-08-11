@@ -17,6 +17,10 @@ public static class SystemPrompt
 
         Each question arrives with an initial set of numbered evidence items, retrieved by a
         hybrid of full-text and semantic search. Each item is labelled [E1], [E2] and so on.
+        A label identifies an artefact, not an item: a long commit message or pull request
+        body is split across several items, and every one of them carries that artefact's
+        label. So the same label can appear more than once, and the labels you see are not
+        necessarily in order. Cite the label, once, however many items carry it.
 
         You also have tools. Use them. The initial evidence is a starting point, not the
         complete answer:

@@ -218,15 +218,18 @@ public sealed partial class QueryAgent(
 
         foreach (var chunk in result.Chunks)
         {
-            citations.Add(new EvidenceCitation(
+            // One entity split across several chunks gets ONE citation and therefore one
+            // marker, shared by all of its chunks. Every chunk's text is still listed below;
+            // only the citation list collapses.
+            var marker = ResolveCitationMarker(new EvidenceCitation(
                 chunk.Type, chunk.EntityKey,
                 SearchCommitsTool.FirstLine(chunk.Content),
-                SearchCommitsTool.BuildUrl(chunk.Type, chunk.EntityKey)));
+                SearchCommitsTool.BuildUrl(chunk.Type, chunk.EntityKey)), citations);
 
             // The chunk's own header carries a truncated identifier (a 7-char sha, say) for
             // readability in the embedding text. The full entity key is repeated here so the
             // model can cite it precisely rather than the truncated form baked into the chunk.
-            builder.Append('[').Append('E').Append(citations.Count).Append("] (")
+            builder.Append('[').Append('E').Append(marker).Append("] (")
                    .Append(chunk.EntityKey).Append(") ")
                    .AppendLine(chunk.Content)
                    .AppendLine();
@@ -236,29 +239,44 @@ public sealed partial class QueryAgent(
     }
 
     /// <summary>
-    /// Adds tool citations that are not already present and returns the marker numbers
-    /// for the ones added, so the model can be told what to cite.
+    /// Returns the marker number of every incoming tool citation, adding the ones not
+    /// already accumulated, so the model can be told what to cite.
     /// </summary>
     private static List<int> AppendCitations(
         IReadOnlyList<EvidenceCitation> incoming, List<EvidenceCitation> accumulated)
     {
-        var markers = new List<int>();
+        var markers = new List<int>(incoming.Count);
 
         foreach (var citation in incoming)
         {
-            var existing = accumulated.FindIndex(c => c.Type == citation.Type && c.EntityKey == citation.EntityKey);
-
-            if (existing >= 0)
-            {
-                markers.Add(existing + 1);
-                continue;
-            }
-
-            accumulated.Add(citation);
-            markers.Add(accumulated.Count);
+            markers.Add(ResolveCitationMarker(citation, accumulated));
         }
 
         return markers;
+    }
+
+    /// <summary>
+    /// Find-or-add on (Type, EntityKey), returning the 1-based marker number — the citation's
+    /// position in <paramref name="accumulated"/>, which is what <c>[E&lt;n&gt;]</c> indexes and
+    /// what <see cref="FindUnresolvedMarkers"/> range-checks.
+    ///
+    /// A citation identifies an artefact, not a chunk, so a second sighting of an artefact
+    /// reuses the marker it already has. This is the ONLY place that rule is implemented:
+    /// seed retrieval and tool results both come through here, because when they each had
+    /// their own copy of it the seed path's copy was missing and the citation list grew one
+    /// entry per chunk — inflating exactly the count the eval harness scores precision over.
+    /// </summary>
+    private static int ResolveCitationMarker(EvidenceCitation citation, List<EvidenceCitation> accumulated)
+    {
+        var existing = accumulated.FindIndex(c => c.Type == citation.Type && c.EntityKey == citation.EntityKey);
+
+        if (existing >= 0)
+        {
+            return existing + 1;
+        }
+
+        accumulated.Add(citation);
+        return accumulated.Count;
     }
 
     private static IReadOnlyList<string> FindUnresolvedMarkers(string answer, int citationCount)
