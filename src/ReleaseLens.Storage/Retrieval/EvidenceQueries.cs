@@ -1,4 +1,5 @@
 using Dapper;
+using ReleaseLens.Core.Evidence;
 
 namespace ReleaseLens.Storage.Retrieval;
 
@@ -26,12 +27,154 @@ public sealed record RegressionCandidate
     public int? FixedByPullRequest { get; init; }
 }
 
+public sealed record ReleaseSummary
+{
+    public string Tag { get; init; } = "";
+    public string? Name { get; init; }
+    public DateTimeOffset? PublishedAt { get; init; }
+    public string Url { get; init; } = "";
+}
+
+/// <summary>
+/// What the corpus actually holds for one date field: the earliest and latest dates
+/// present, and how many records carry that date at all.
+/// </summary>
+/// <remarks>
+/// Every aggregate this class computes is reported alongside its coverage, because a
+/// count is only true of the corpus, never of the world. "How many commits in 2023"
+/// over a corpus whose commits begin in 2024 is zero, and a bare zero is the most
+/// confidently wrong answer this system can give. Coverage is what lets the caller
+/// qualify the number or decline instead.
+/// </remarks>
+public sealed record EvidenceCoverage
+{
+    public DateTimeOffset? Earliest { get; init; }
+    public DateTimeOffset? Latest { get; init; }
+    public long Total { get; init; }
+}
+
+/// <summary>
+/// One (entity type, date field) pair that may be counted over.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The date field is never inferred from the entity type. "How many pull requests were
+/// merged in 2024" and "how many were opened in 2024" are different questions with
+/// different answers over the same table, so a caller that does not say which one it
+/// means gets an error rather than a guess.
+/// </para>
+/// <para>
+/// <see cref="Table"/> and <see cref="Column"/> reach the SQL by string interpolation,
+/// which is safe only because they are compile-time constants of this assembly. This
+/// whitelist is therefore the injection boundary: caller text is matched against
+/// <see cref="FieldName"/> and then discarded, and nothing a caller typed is ever
+/// interpolated. Do not add a member whose table or column comes from outside.
+/// </para>
+/// </remarks>
+public sealed record EvidenceDateField(EntityType Type, string FieldName, string Table, string Column)
+{
+    /// <summary>How the predicate is shown to the caller, e.g. <c>pull_requests.merged_at</c>.</summary>
+    public string Qualified => $"{Table}.{Column}";
+}
+
+public static class EvidenceDateFields
+{
+    public static readonly IReadOnlyList<EvidenceDateField> All =
+    [
+        new(EntityType.Commit, "committed", "commits", "committed_at"),
+        new(EntityType.Issue, "created", "issues", "created_at"),
+        new(EntityType.PullRequest, "created", "pull_requests", "created_at"),
+        new(EntityType.PullRequest, "merged", "pull_requests", "merged_at"),
+        new(EntityType.Release, "published", "releases", "published_at")
+    ];
+
+    public static EvidenceDateField? Find(EntityType type, string fieldName)
+        => All.FirstOrDefault(f => f.Type == type && string.Equals(f.FieldName, fieldName, StringComparison.Ordinal));
+
+    public static IReadOnlyList<string> NamesFor(EntityType type)
+        => [.. All.Where(f => f.Type == type).Select(f => f.FieldName)];
+}
+
 /// <summary>
 /// Relational queries the tools need that are not retrieval. Kept here because
 /// Storage owns every line of SQL in the solution.
 /// </summary>
 public sealed class EvidenceQueries
 {
+    /// <summary>
+    /// Counts records whose date field falls in the half-open window [since, until).
+    /// </summary>
+    /// <remarks>
+    /// <c>is not null</c> is not redundant next to the range predicates. Both
+    /// <c>merged_at</c> and <c>published_at</c> are nullable, so an unbounded count
+    /// over "merged" must mean "pull requests that were actually merged" — without
+    /// this predicate an unbounded call would return every row in the table, open
+    /// ones included, and report it as a merge count.
+    /// </remarks>
+    public async Task<long> CountAsync(
+        TenantScope scope, EvidenceDateField field,
+        DateTimeOffset? since, DateTimeOffset? until, CancellationToken cancellationToken)
+        => await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            $"""
+            select count(*) from {field.Table}
+            where {field.Column} is not null
+              and (@since is null or {field.Column} >= @since)
+              and (@until is null or {field.Column} < @until)
+            """,
+            new { since, until }, scope.Transaction, cancellationToken: cancellationToken));
+
+    public async Task<EvidenceCoverage> GetCoverageAsync(
+        TenantScope scope, EvidenceDateField field, CancellationToken cancellationToken)
+        => await scope.Connection.QuerySingleAsync<EvidenceCoverage>(new CommandDefinition(
+            $"""
+            select min({field.Column}) as Earliest,
+                   max({field.Column}) as Latest,
+                   count({field.Column}) as Total
+            from {field.Table}
+            """,
+            transaction: scope.Transaction, cancellationToken: cancellationToken));
+
+    /// <summary>
+    /// How many releases match a listing filter, computed separately from the page
+    /// itself so the tool can say "50 of 276" rather than leaving a capped list
+    /// looking complete.
+    /// </summary>
+    public async Task<long> CountReleasesAsync(
+        TenantScope scope, string? tagPrefix,
+        DateTimeOffset? since, DateTimeOffset? until, CancellationToken cancellationToken)
+        => await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            $"select count(*) from releases where {ReleaseFilter}",
+            new { tagPrefix, since, until }, scope.Transaction, cancellationToken: cancellationToken));
+
+    public async Task<IReadOnlyList<ReleaseSummary>> ListReleasesAsync(
+        TenantScope scope, string? tagPrefix,
+        DateTimeOffset? since, DateTimeOffset? until, int limit, CancellationToken cancellationToken)
+        => [.. await scope.Connection.QueryAsync<ReleaseSummary>(new CommandDefinition(
+            $"""
+            select tag as Tag, name as Name, published_at as PublishedAt, url as Url
+            from releases
+            where {ReleaseFilter}
+            order by published_at desc nulls last, tag desc
+            limit @limit
+            """,
+            new { tagPrefix, since, until, limit }, scope.Transaction, cancellationToken: cancellationToken))];
+
+    /// <summary>
+    /// Shared so the count and the page can never disagree about what "matching" means.
+    /// </summary>
+    /// <remarks>
+    /// <c>starts_with</c> rather than <c>like @prefix || '%'</c>: a tag prefix is a
+    /// literal, and several real tags in this corpus contain <c>_</c>, which LIKE reads
+    /// as a single-character wildcard. Escaping it correctly is fiddlier than not
+    /// using LIKE at all.
+    /// </remarks>
+    private const string ReleaseFilter =
+        """
+        (@tagPrefix is null or starts_with(tag, @tagPrefix))
+          and (@since is null or published_at >= @since)
+          and (@until is null or published_at < @until)
+        """;
+
     // The tuple below carries a DateTimeOffset through Dapper's tuple deserialiser,
     // not through record-constructor matching — that is a different code path from
     // the one Task 5 hit (Npgsql reporting timestamptz as System.DateTime defeats

@@ -61,7 +61,9 @@ builder.Services.AddSingleton(sp => new ToolRegistry(
     new SearchCommitsTool(sp.GetRequiredService<HybridRetriever>(), sp.GetRequiredService<IEmbedder>()),
     new GetIssueTool(sp.GetRequiredService<EvidenceRepository>()),
     new DiffBetweenReleasesTool(sp.GetRequiredService<EvidenceQueries>()),
-    new FindRegressionsTool(sp.GetRequiredService<EvidenceQueries>())
+    new FindRegressionsTool(sp.GetRequiredService<EvidenceQueries>()),
+    new CountEvidenceTool(sp.GetRequiredService<EvidenceQueries>()),
+    new ListReleasesTool(sp.GetRequiredService<EvidenceQueries>())
 ]));
 
 builder.Services.AddSingleton<QueryAgent>();

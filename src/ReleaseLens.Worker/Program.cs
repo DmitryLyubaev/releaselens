@@ -191,8 +191,82 @@ switch (command)
         break;
     }
 
+    // Ingestion prefers a stored cursor over GitHub:SinceUtc, which is what makes a daily run
+    // cheap and resumable — and also what makes widening the window a silent no-op: change
+    // SinceUtc from 2026-06-01 to 2024-01-01, re-run, and the cursors still point at August
+    // 2026, so a handful of items arrive and the run looks like a success. This is the
+    // supported way to backfill; the alternative was hand-written SQL against
+    // ingest_checkpoints.
+    case "reset-checkpoints":
+    {
+        // Positional, like `issue-key`: slug first, then entity types. Naming a type
+        // therefore means naming the tenant too. That is deliberate — the alternative of
+        // guessing which one args[1] is would reset the wrong tenant's checkpoints whenever
+        // a slug collided with an entity type name, whereas this fails loudly instead.
+        var slug = args.ElementAtOrDefault(1)
+            ?? builder.Configuration["Tenant:Slug"]
+            ?? "semantic-kernel";
+
+        var byWireName = Enum.GetValues<EntityType>().ToDictionary(type => type.ToWireName());
+        var requested = args.Skip(2).ToArray();
+
+        var unknown = requested.Where(name => !byWireName.ContainsKey(name)).ToArray();
+        if (unknown.Length > 0)
+        {
+            logger.LogError(
+                "Unknown entity type(s): {Unknown}. Use any of: {Valid}. " +
+                "Usage: reset-checkpoints [tenant-slug] [entity-type...]",
+                string.Join(", ", unknown), string.Join(" | ", byWireName.Keys));
+            return 1;
+        }
+
+        EntityType[] entityTypes = requested.Length == 0
+            ? Enum.GetValues<EntityType>()
+            : [.. requested.Select(name => byWireName[name])];
+
+        var tenants = host.Services.GetRequiredService<TenantRepository>();
+        var tenant = await tenants.FindBySlugAsync(slug, cancellation.Token)
+            ?? throw new InvalidOperationException($"No tenant with slug '{slug}'. Run 'ingest' first.");
+
+        var factory = host.Services.GetRequiredService<TenantConnectionFactory>();
+        var checkpoints = host.Services.GetRequiredService<CheckpointRepository>();
+
+        IReadOnlyList<CheckpointReset> reset;
+        await using (var scope = await factory.OpenAsync(tenant.TenantId, cancellation.Token))
+        {
+            reset = await checkpoints.ResetAsync(scope, entityTypes, cancellation.Token);
+            await scope.CommitAsync(cancellation.Token);
+        }
+
+        // Said out loud rather than left to be inferred: an operator reaching for a command
+        // called "reset" reasonably fears it empties the corpus. It does not touch evidence.
+        logger.LogInformation(
+            "Reset {Count} checkpoint(s) for tenant '{Slug}' ({TenantId}). No evidence was deleted — " +
+            "ingestion upserts, so the next run re-walks the window from GitHub:SinceUtc " +
+            "({Since:yyyy-MM-dd}) and refreshes what it finds.",
+            reset.Count, slug, tenant.TenantId, gitHubOptions.SinceUtc);
+
+        foreach (var entry in reset)
+        {
+            logger.LogInformation(
+                "  {EntityType}: discarded cursor {Cursor}, etag {ETag}",
+                entry.EntityType.ToWireName(),
+                entry.DiscardedCursor ?? "(none)",
+                entry.DiscardedETag ?? "(none)");
+        }
+
+        foreach (var untouched in entityTypes.Except(reset.Select(entry => entry.EntityType)))
+        {
+            logger.LogInformation("  {EntityType}: no checkpoint stored, nothing to reset", untouched.ToWireName());
+        }
+
+        break;
+    }
+
     default:
-        logger.LogError("Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key", command);
+        logger.LogError(
+            "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints",
+            command);
         return 1;
 }
 

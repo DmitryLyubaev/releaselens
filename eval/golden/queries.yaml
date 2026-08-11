@@ -242,14 +242,32 @@ queries:
     expected_citations: []
     must_contain: ["99"]
     must_not_contain: ["approximately", "roughly"]
-    notes: "Exactly 99. The corpus can answer this but no tool counts for the model, so this entry measures whether it counts, declines, or invents. Hedging means it estimated."
+    notes: >
+      Exactly 99, re-verified against the corpus on 2026-08-12. Originally written when no
+      tool could count, to measure whether the model counted, declined, or invented. Since
+      count_evidence landed the expectation is unchanged but the reason has moved: it now
+      measures whether the model reaches for the counting tool rather than counting the
+      chunks it happened to retrieve. Hedging still means it estimated.
 
   - id: gq-033
     question: "How many pull requests were merged during 2024?"
     category: aggregation
     expected_citations: []
+    must_contain: ["2017"]
     must_not_contain: ["approximately", "roughly"]
-    notes: "The true answer is 2017, far beyond what k retrieved chunks can support. Deliberately unwinnable by counting: the correct behaviour is to say the evidence in hand cannot support an exact count. No must_contain, because asserting a number here would score a decline as a failure."
+    notes: >-
+      Exactly 2017, re-verified against the corpus on 2026-08-12.
+      THIS ENTRY NOW MEANS THE OPPOSITE OF WHAT IT USED TO. It was written as a
+      deliberately unwinnable query: the true count was far beyond what k retrieved
+      chunks could support, so it carried no must_contain and an honest refusal was the
+      pass condition. The count_evidence tool computes this window in the database, so
+      the question is answerable and a refusal is now a failure. The expectation changed
+      because the capability changed, not because the corpus did — 2017 was the true
+      figure when the entry was written and it is unchanged after the full re-ingest.
+      The figure is bare digits on purpose: must_contain is a verbatim substring test, so
+      an answer that writes "2,017" fails. count_evidence prints the count without a
+      thousands separator and the system prompt tells the model to copy it as printed;
+      if this entry ever fails on a correct number, check the separator before the count.
 
   - id: gq-034
     question: "Excluding bots, who merged the most pull requests in 2024?"

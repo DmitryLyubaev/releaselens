@@ -25,8 +25,9 @@ IEvidenceSource ───────────────┤  ingest  · iss
      │  api-key auth → budget check → QueryAgent                 │
      │                                                           │
      │  QueryAgent: seed evidence + tool loop                    │
-     │    search_commits · get_issue                             │
-     │    diff_between_releases · find_regressions               │
+     │    retrieve: search_commits · get_issue                   │
+     │              diff_between_releases · find_regressions     │
+     │    compute:  count_evidence · list_releases               │
      │                                                           │
      │  FallbackChatProvider → Anthropic ─┐                      │
      │                       → OpenAI-wire ┴─► degraded 200      │
@@ -137,6 +138,12 @@ time-of-use race, so the usage row is inserted and then selected `FOR UPDATE`.
 checkpoints track only items seen. `issues` and `commits` do take `since` — but GitHub filters
 issues on *updated* time, so an issues checkpoint must track `updated_at` or it falls
 permanently behind the true high-water mark.
+
+The stored checkpoint takes precedence over the configured `GitHub:SinceUtc`, which is what
+makes a daily run cheap and resumable — and it means widening the window has no effect until
+the checkpoint is cleared, so a backfill requires the worker's `reset-checkpoints` command
+first. The reset clears the ETag as well as the cursor: a surviving ETag earns a 304 and the
+pipeline skips the source, so the backfill would ingest nothing and still report success.
 
 Chunking never slices between the halves of a surrogate pair. A lone surrogate is invalid
 UTF-16 and Npgsql's encoder rejects it, which killed the first real ingest on an emoji in a
