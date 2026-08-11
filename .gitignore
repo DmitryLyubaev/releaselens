@@ -24,7 +24,10 @@ infra/terraform/*.tfstate
 infra/terraform/*.tfstate.*
 infra/terraform/*.tfvars
 !infra/terraform/*.tfvars.example
-infra/terraform/.terraform.lock.hcl
+# .terraform.lock.hcl is deliberately NOT ignored. HashiCorp's guidance is to commit it:
+# it pins exact provider versions and their checksums, so a clone gets byte-identical
+# providers rather than whatever the ~> constraint resolves to that week, and the
+# checksums are the supply-chain control that constraint alone does not give.
 
 # Python eval service
 eval/.venv/
