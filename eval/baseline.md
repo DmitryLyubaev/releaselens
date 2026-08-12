@@ -1,157 +1,157 @@
-# Baseline evaluation — 11 August 2026
+# Evaluation — 12 August 2026
 
-The first measured run of ReleaseLens against its golden query set. Every number here
-came from a real run; nothing is estimated or carried over from a previous version.
+The current measured state of ReleaseLens against its golden query set. Every number came
+from a real run; nothing is estimated. The August 11 baseline is kept at the end, because a
+project that only reports its latest numbers is not showing you a measurement, it is showing
+you a claim.
 
-- **Commit:** `3e25a6d`
-- **Run id:** `6bf37544-4cb6-4b5f-b51c-ce5f8edc82a6`
-- **Started:** 2026-08-11T05:58:56Z
-- **Answering model:** Claude Sonnet 5 via the Anthropic provider, `k=8` seed chunks
-- **Raw report:** `eval/reports/6bf37544-4cb6-4b5f-b51c-ce5f8edc82a6.json` (git-ignored —
-  it embeds full answer text)
+- **Commit:** `121ec0e`
+- **Run id:** `64b3ee8b-1dbd-41f2-9030-8d7dba313554`
+- **Started:** 2026-08-12T02:25:01Z
+- **Answering model:** Claude Sonnet 5, `k=8` seed chunks · **Judge:** Claude Sonnet 5
+- **Corpus:** 41,825 chunks — 2,921 commits, 3,805 issues, 7,121 pull requests, 276 releases
+- **Raw report:** `eval/reports/64b3ee8b-….json` (git-ignored — it embeds answer and evidence text)
 
-## Method, and why it is five queries and not forty-three
+## Method
 
-The golden set holds 43 queries. This run used **five — one per category**, selected by
-the harness's `per_category` sampler.
+Five queries, one per category, selected by the harness's `per_category` sampler. The golden
+set holds 43; five is what the remaining API balance allowed, and sampling one per category
+rather than the first five matters because the set is grouped by category with the eight
+`unanswerable` entries last — any prefix sample would have been entirely `factual`.
 
-That was a budget decision, taken with the numbers in hand rather than as a guess. The
-run itself priced a full sweep at **$8.01**, against a remaining platform balance of about
-$3.40. A full sweep was not affordable, and a partial sweep large enough to be interesting
-would have consumed most of the balance for numbers that a later, cheaper system could
-produce again.
-
-Sampling one per category rather than the first five matters. The golden set is grouped by
-category with the eight `unanswerable` entries last, so any prefix-based sample cheap
-enough to run would have consisted entirely of `factual` queries — and unanswerable
-accuracy, the metric the set exists for, would have reported null without complaining.
-
-**Treat every figure below as N=5, one observation per category.** They are real
-measurements, not estimates, but they are five measurements.
-
-## Corpus under test
-
-Ingested from `microsoft/semantic-kernel`:
-
-| evidence | rows | coverage |
-|---|---|---|
-| pull requests | 7,119 | complete, all-time (2023-02-27 → 2026-08-06) |
-| releases | 276 | complete, all-time |
-| issues | 163 | only since 2026-06-01 |
-| commits | 60 | only since 2026-06-03 |
-| chunks / embeddings | 22,288 / 22,288 | — |
-
-GitHub's `pulls` and `releases` endpoints take no `since` parameter, so those arrived
-complete even though the ingest window was set to June 2026. Issues and commits are the
-smoke window only. Queries lean on the complete half of the corpus for that reason.
+**Every figure below is N=5, one observation per category.** Real measurements, but five of
+them. No rate should be derived from them.
 
 ## Results
 
-| metric | value | reading |
-|---|---|---|
-| citation recall | **1.000** | every expected artefact was cited, in all five categories |
-| citation precision (reported mean) | 0.272 | inflated — see below |
-| **citation precision (answerable only)** | **0.090** | the honest figure |
-| must_contain pass rate | **1.000** | every required identifier appeared |
-| unanswerable accuracy | **1.000** | 1 of 1 — declined rather than inventing |
-| groundedness | **not measured** | see below |
-| p50 latency | 15,876 ms | |
-| p95 latency | 58,028 ms | one query, see below |
-| total cost | $0.92 | for five queries |
+| Metric | 11 Aug | **12 Aug** | |
+|---|---|---|---|
+| Groundedness (LLM-judge) | not measured | **0.940** | scored 5 of 5 |
+| Citation recall | 1.000 | **1.000** | |
+| Citation precision (answerable) | 0.090 | **0.588** | |
+| must_contain pass rate | 1.000 | **1.000** | |
+| Unanswerable handled correctly | 1 of 1 | **1 of 1** | |
+| Total cost, 5 queries | $0.9200 | **$0.2367** | agent-side |
+| Worst single query | $0.7202 | **$0.0581** | gq-029 |
+| p50 latency | 15,876 ms | 20,863 ms | |
+| p95 latency | 58,028 ms | **22,647 ms** | |
 
-### Three caveats that change how these read
+### Per query
 
-**Precision 0.272 is not the real number.** `citation_recall` and `citation_precision`
-both return a vacuous 1.0 when a query expects no citations, which is every `unanswerable`
-entry — by design, since `unanswerable_correct` is what scores those. With one of five
-queries unanswerable, that vacuous 1.0 pulls the reported mean up. **Over the four
-answerable queries precision is 0.090.** Recall is unaffected: all four answerable queries
-genuinely scored 1.0.
-
-**Groundedness was not measured at all.** The run was executed in `dry_run` mode, which
-skips the LLM-judge to price a sweep before committing to it. `mean_groundedness` is
-`null`. There is no groundedness baseline yet, and the harness should not be described as
-having produced one.
-
-**Unanswerable accuracy is 1 of 1.** A single correct refusal. It is the right sign and it
-is not a rate.
-
-`unanswerable_correct` is a keyword heuristic — it looks for a decline marker and the
-absence of a numeric assertion — so it can in principle be satisfied by an answer that
-hedges its way past the check. It was not, here. The actual answer to *"What is the
-production incident rate of Semantic Kernel deployments at Microsoft?"* opens:
-
-> The evidence provided does not contain any information about production incident rates
-> for Semantic Kernel deployments at Microsoft.
-
-and then names what the retrieved evidence *is* about — dependency bumps, a telemetry
-proposal, a versioning ADR — rather than stretching any of it into an answer. That is the
-behaviour the category exists to test, and on this query the heuristic and the reality
-agree. On a larger sample they may not always; the heuristic is a screen, not a judge.
-
-## Per-query detail
-
-| id | category | cost | latency | citations | precision | input tokens |
+| id | category | groundedness | cost | latency | citations | precision |
 |---|---|---:|---:|---:|---:|---:|
-| gq-036 | unanswerable | $0.0093 | 4,980 ms | 6 | — | 3,446 |
-| gq-001 | factual | $0.0117 | 8,928 ms | 8 | 0.125 | 1,987 |
-| gq-014 | temporal | $0.0266 | 15,876 ms | 26 | 0.077 | 8,232 |
-| gq-022 | causal | $0.1522 | 25,227 ms | 40 | 0.075 | 69,844 |
-| gq-029 | aggregation | $0.7202 | 58,028 ms | 48 | 0.083 | 337,570 |
+| gq-001 | factual | 1.0 | $0.0051 | 5,206 ms | 1 | 1.00 |
+| gq-014 | temporal | 0.9 | $0.0342 | 20,863 ms | 21 | 0.10 |
+| gq-022 | causal | 0.8 | $0.1290 | 22,647 ms | 4 | 0.75 |
+| gq-029 | aggregation | 1.0 | $0.0581 | 21,708 ms | 8 | 0.50 |
+| gq-036 | unanswerable | 1.0 | $0.0103 | 4,757 ms | 5 | 1.00 |
 
-No query errored, none ran degraded, and no answer contained an unresolved `[E<n>]`
-marker — the model never cited evidence it had not been shown.
+## How to read these
 
-## The two findings worth acting on
+**Precision is 0.588, not the 0.669 the harness reports.** `citation_recall` and
+`citation_precision` both return a vacuous 1.0 for a query expecting no citations, which is
+every `unanswerable` entry. With one of five unanswerable, that pulls the reported mean up.
+The figure above is over the four answerable queries.
 
-### Cost is uneven by a factor of 77, and one query dominates
+**Groundedness is a mean over 5 of 5**, and the report now carries that denominator. It
+matters: an earlier attempt today reported groundedness 1.000 from *two* scored queries out
+of five, which reads as perfect and was not. An unparseable judgement scores `None`, never
+zero — a harness fault must not masquerade as a hallucinating system — but that silently
+shrinks the denominator, so the denominator now travels with the number.
 
-`gq-029` — *"List every Java release tag ever published in this repository"* — cost $0.72,
-took 58 seconds, and pushed **337,570 input tokens**. It alone is 78% of the run's cost.
+**"1 of 1" is not 100%.** One correct refusal.
 
-The cause is structural rather than accidental. There is no counting or enumeration tool,
-so an aggregation question can only be answered by retrieving its way to completeness: the
-agent searches, sees a partial list, searches again, and accumulates the whole corpus in
-context. Prompt caching barely helps — **27,594 of 421,079 input tokens were served from
-cache, a 6.6% hit rate** — because each iteration appends new evidence and moves the cache
-boundary.
+**The 12 Aug precision figure is not comparable with anything before `e94e9f7`.** Until that
+commit the response returned every artefact any tool had touched, so precision measured how
+many rows a tool returned rather than anything about the answer. The rise from 0.090 is
+mostly the measurement becoming correct, not the system improving.
 
-This is the single lever on both cost and p95 latency. It is why a full sweep prices at $8
-rather than the cents the plan originally assumed.
+## What changed between the two runs, and what it bought
 
-### The system over-cites
+Four defects were found and fixed, each by measuring rather than by reasoning:
 
-Precision of 0.090 on answerable queries means roughly one citation in eleven was one the
-question actually needed. The agent cites essentially everything it retrieves — 48
-artefacts on `gq-029`, 40 on `gq-022`.
+**Aggregation cost — `count_evidence` and `list_releases` (`0e74352`).** The 11 Aug run
+showed cost spanning 77× across categories, with *"list every Java release tag"* at $0.72,
+58 seconds and 337,570 input tokens — 78% of the whole run. Nothing computed; every tool
+returned evidence chunks, so an aggregation could only be answered by retrieving toward
+completeness. That query now costs **$0.0581 and runs in 21.7 seconds**, and p95 across the
+run fell from 58.0s to 22.6s.
 
-This is not the duplicate-citation defect fixed in `fc03c62`; that one is gone, and these
-citations are distinct artefacts. It is a judgement problem: nothing asks the model to cite
-only what it used. Recall being a clean 1.000 says retrieval is finding the right evidence,
-so there is real headroom here — precision can rise without recall falling.
+**Citations were not filtered to what the answer used (`e94e9f7`).** See above.
 
-**Any precision figure recorded before `fc03c62` is not comparable with these.** That
-commit changed the denominator by collapsing per-chunk citations into per-artefact ones.
+**The judge had never worked (`56dede6`, `121ec0e`).** It received bare identifiers —
+`['issue:14111']` — and was asked whether every claim was supported by them. It correctly
+reported it could not tell and scored 0.0. The defect stayed hidden because every earlier run
+was a dry run, which skips the judge. It now receives the text of each cited artefact, opt-in
+so production responses do not carry it.
 
-## What this baseline can and cannot support
+**Recall did not fall, and I expected it to.** Filtering citations to those the answer used
+should, in principle, have exposed queries where retrieval found the right artefact and the
+model wrote around it — the old number credited the model for the retriever's work. It stayed
+at 1.000, so on these five the model really was citing what mattered.
 
-**It can** support claims that retrieval finds the right evidence (recall 1.000 across five
-categories), that required identifiers appear (1.000), that the system declined an
-unanswerable question rather than inventing an answer, and that cost and latency are
-dominated by aggregation-style questions.
+## What the judge actually caught
 
-**It cannot** support any claim about groundedness, any rate framed as a percentage of the
-golden set, or any comparison against a previous version — this is the first measurement
-there has been.
+Now that it has evidence, its reasons are specific enough to act on:
 
-## Reproducing this
+- **gq-014 (0.9)** — *"the '19 commits' figure is anomalously cited to [E4][E5]"*. The answer
+  attached a count to markers that do not establish it.
+- **gq-022 (0.8)** — the PR details are fully supported, but *"the claim that dotnet-1.79.0
+  'shipped the fix'"* rests on an inference the cited evidence does not carry.
+
+Both are real, both are the kind of quiet over-claiming this metric exists to find, and
+neither would be visible from recall, precision or `must_contain` — all three of which are
+perfect on those queries.
+
+## Known limits of this measurement
+
+- **N=5.** One observation per category.
+- **Run-to-run variance is real.** An intermediate run today put gq-029 at $0.0322 against
+  $0.0581 here — the agent's tool-call count varies. Treat single-query costs as indicative.
+- **Cost is agent-side only.** `total_cost_usd` sums the answering calls. The judge is priced
+  separately by `estimated_cost_usd_before_run`.
+- **Coverage starts in 2024** for commits. The aggregate tools report the corpus bounds with
+  every result, but a question about 2023 commits is answerable only about the corpus.
+- **`search_commits` still cannot say when its page is full.** `HybridRetriever` emits a note
+  only when *fewer* than *k* chunks come back, so the genuinely-capped case carries no signal.
+  Known, unfixed, and the largest remaining defect of that shape.
+
+## Reproducing
 
 With Postgres up, the API running, and `ANTHROPIC_API_KEY` set:
 
 ```bash
-curl -sS -X POST http://localhost:8000/eval/run -H "Content-Type: application/json" -d '{"api_base_url":"http://127.0.0.1:5274","api_key":"<key>","per_category":1,"dry_run":true}'
+curl -sS -X POST http://localhost:8000/eval/run -H "Content-Type: application/json" -d '{"api_base_url":"http://127.0.0.1:5274","api_key":"<key>","per_category":1}'
 ```
 
-Drop `dry_run` to score groundedness as well; that adds a judge call per answered query.
-Raise `per_category`, or omit it entirely for all 43 — at roughly $8 for the full set on
-the numbers above.
+Raise `per_category`, or omit it for all 43. Add `"dry_run":true` to price a sweep from one
+query per category before committing to it.
+
+---
+
+# Previous: baseline of 11 August 2026
+
+The first measured run, at commit `3e25a6d`, run id `6bf37544-…`. Kept for comparison.
+
+| Metric | Value |
+|---|---|
+| Queries | 5, one per category |
+| Citation recall | 1.000 |
+| Citation precision (answerable) | 0.090 |
+| must_contain pass rate | 1.000 |
+| Unanswerable handled correctly | 1 of 1 |
+| Groundedness | not measured — the run was a dry run, which skips the judge |
+| p50 / p95 latency | 15,876 ms / 58,028 ms |
+| Total cost | $0.9200 |
+
+Per query: gq-036 $0.0093 · gq-001 $0.0117 · gq-014 $0.0266 · gq-022 $0.1522 ·
+**gq-029 $0.7202, 58,028 ms, 48 citations, 337,570 input tokens**.
+
+That last row is why the aggregate tools exist. It also priced a full 43-query sweep at
+$8.01, against a remaining balance near $3.40 — which is why both runs are five queries and
+not forty-three, recorded here so a later reader does not read the sample size as
+carelessness.
+
+Corpus at the time: 22,288 chunks, with issues and commits covering only a June 2026 window.
+The 12 August run is against 41,825 chunks with commits back to January 2024, so the two runs
+are not measuring retrieval over the same corpus.

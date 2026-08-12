@@ -20,64 +20,72 @@ over.
 
 ## Evaluation
 
-Measured 11 August 2026 at commit `3e25a6d`. Full write-up, including method and caveats:
+Measured 12 August 2026 at commit `121ec0e`, against a corpus of 41,825 chunks. Full
+write-up, including method, caveats and the previous run for comparison:
 **[eval/baseline.md](eval/baseline.md)**.
 
-> **These numbers are historical, not current.** Since they were taken, the corpus has grown
-> from 22,288 chunks to 41,825 and two aggregate tools have been added specifically to fix
-> what this run exposed. The measurements below are exactly what was observed at that commit,
-> and they are left unedited rather than quietly refreshed — but they describe a system that
-> has since changed underneath them. A re-measure is pending.
+| Metric | 11 Aug | 12 Aug |
+|---|---|---|
+| Golden query set | 43 queries | 43 queries · 5 categories |
+| **Queries in this run** | 5 | **5 — one per category** |
+| **Groundedness (LLM-judge)** | not measured | **0.940** (scored 5 of 5) |
+| Citation recall | 1.000 | **1.000** |
+| Citation precision (answerable) | 0.090 | **0.588** |
+| must_contain pass rate | 1.000 | **1.000** |
+| **Unanswerable handled correctly** | 1 of 1 | **1 of 1** |
+| p50 / p95 latency | 15,876 / 58,028 ms | 20,863 / **22,647** ms |
+| Total cost, 5 queries | $0.9200 | **$0.2367** |
+| Worst single query | $0.7202 | **$0.0581** |
 
-| Metric | Result |
-|---|---|
-| Golden query set | 43 queries · 5 categories |
-| **Queries in this run** | **5 — one per category** |
-| Citation recall | 1.000 |
-| Citation precision (answerable queries) | 0.090 |
-| must_contain pass rate | 1.000 |
-| **Unanswerable handled correctly** | **1 of 1** |
-| Groundedness (LLM-judge) | not measured yet |
-| p50 / p95 latency | 15,876 ms / 58,028 ms |
-| Cost per query | $0.009 – $0.720 |
+**Read the sample size before the results.** Five queries, one per category. Real
+measurements rather than estimates, but five of them, and no rate should be derived from
+them. Five is what the remaining API balance allowed; the 11 August run priced a full
+43-query sweep at $8.01 and that reasoning is recorded rather than left to be guessed at.
 
-**Read the sample size before the results.** Five queries, one per category. They are real
-measurements rather than estimates, but they are five measurements, and a rate cannot be
-derived from them. The run cost $0.92 and priced a full 43-query sweep at $8.01, which was
-more than the remaining API balance — the reasoning is recorded in the baseline rather than
-left for a reader to guess at.
+Three things this table is deliberately not claiming:
 
-Three things that table is deliberately not claiming:
-
-- **Groundedness has no number.** The run was a pricing run, which skips the LLM-judge. The
-  harness implements the judge; it has not yet been paid to run.
-- **Precision is 0.090, not the 0.272 the harness reports.** Recall and precision both return
-  a vacuous 1.0 for queries that expect no citations, which is every `unanswerable` entry. The
+- **Precision is 0.588, not the 0.669 the harness reports.** Recall and precision both return
+  a vacuous 1.0 for queries expecting no citations, which is every `unanswerable` entry. The
   figure above is over the four answerable queries only.
-- **"1 of 1" is not 100%.** It is one correct refusal.
+- **"1 of 1" is not 100%.** One correct refusal.
+- **The precision columns are not comparable with each other.** Until `e94e9f7` the response
+  returned every artefact any tool had touched, so precision measured how many rows a tool
+  returned rather than anything about the answer. Most of that rise is the measurement
+  becoming correct, not the system improving.
 
 The row that matters most is the unanswerable one. Eight of the 43 queries have no answer in
 the evidence, and the correct response is to say so. A system that scores well on the other
 four categories and invents an answer here is confidently wrong, which is worse than being
 unable to answer.
 
-### What the baseline found
+### The loop this is here to demonstrate
 
-**Cost spans 77× across categories.** One query — *"List every Java release tag ever
-published"* — cost $0.72, took 58 seconds and pushed 337,570 input tokens, which is 78% of the
-whole run. At the time there was no counting tool, so an aggregation question could only be
-answered by retrieving its way to completeness. Prompt caching served just 6.6% of input
-tokens because each iteration moves the cache boundary.
+The 11 August run found cost spanning **77× across categories**: *"list every Java release
+tag"* cost $0.72, took 58 seconds and pushed 337,570 input tokens — 78% of the whole run.
+Nothing in the system computed anything; every tool returned evidence chunks, so an
+aggregation question could only be answered by retrieving toward completeness.
 
-This is the finding that justified `count_evidence` and `list_releases`, which answer that
-class of question with one bounded aggregate instead of a retrieval loop. The tools exist
-because a measurement said they should, not because they seemed like a good idea — and
-whether they actually moved the number is a question for the next run, not a claim for this
-one.
+That measurement justified `count_evidence` and `list_releases`. The same query now costs
+**$0.0581 and runs in 21.7 seconds**, and p95 across the run fell from 58.0s to 22.6s. The
+tools exist because a number said they should, and a later number says whether they worked.
 
-**Recall 1.000 against precision 0.090** means retrieval finds the right evidence and the
-model then cites nearly everything it saw — 48 artefacts on the query above. Headroom, not a
-wall: precision can rise without recall falling.
+The same run also showed the harness measuring itself rather than the system in two places,
+both since fixed: citations were not filtered to the ones the answer used, and the
+groundedness judge had never received anything but bare identifiers — it was being asked
+whether claims were supported by the string `issue:14111`, correctly answering that it could
+not tell, and scoring zero for it.
+
+**Recall did not fall, and it was expected to.** Filtering citations to those the answer used
+should have exposed queries where retrieval found the right artefact and the model wrote
+around it. It stayed at 1.000.
+
+### What the judge caught once it could see
+
+With real evidence, its findings are specific enough to act on. On gq-014 it flagged that a
+*"'19 commits' figure is anomalously cited to [E4][E5]"* — markers that do not establish it.
+On gq-022, that *"dotnet-1.79.0 shipped the fix"* rests on an inference the cited evidence
+does not carry. Both are quiet over-claiming, and neither is visible from recall, precision
+or `must_contain`, all three of which are perfect on those queries.
 
 ## What it does that a tutorial RAG does not
 
@@ -225,7 +233,7 @@ Embeddings were already local. With this, nothing leaves the machine.
 dotnet test
 ```
 
-199 tests. Unit tests for chunking, normalisation and the provider adapters against mocked
+246 tests. Unit tests for chunking, normalisation and the provider adapters against mocked
 transports; integration tests against real PostgreSQL via Testcontainers, including the
 row-level security proofs.
 
@@ -233,8 +241,9 @@ row-level security proofs.
 cd eval && python -m pytest
 ```
 
-17 tests over the metrics and the golden set — structure, uniqueness, category validity and
-the sampling that keeps a partial sweep representative.
+31 tests over the metrics, the judge, the runner and the golden set — structure, uniqueness,
+category validity, and the sampling that keeps a partial sweep representative. The judge and
+runner tests drive a fake Anthropic client, so the suite never spends money.
 
 The golden query set itself is the regression corpus and runs on demand, because it costs
 money.
