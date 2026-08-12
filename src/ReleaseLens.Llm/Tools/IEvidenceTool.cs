@@ -8,16 +8,46 @@ namespace ReleaseLens.Llm.Tools;
 /// <summary>One artefact the answer is allowed to cite, produced by the tool that found it.</summary>
 public sealed record EvidenceCitation(EntityType Type, string EntityKey, string Title, string Url);
 
-public sealed record ToolExecutionResult(string Content, IReadOnlyList<EvidenceCitation> Citations, bool IsError)
+/// <summary>
+/// One fragment of the evidence text a tool put in front of the model, attributed to the
+/// artefact it came from. This is what makes a citation checkable: <c>issue:14111</c> names
+/// an artefact, and only its text says whether a claim about it is true.
+/// </summary>
+/// <remarks>
+/// Deliberately NOT a field on <see cref="EvidenceCitation"/>. A citation identifies an
+/// artefact and is deduplicated to exactly one entry per artefact, so text riding on it
+/// would be discarded for every fragment after the first: a commit split across four chunks
+/// would surface only chunk one, and a claim resting on chunk three would read as
+/// unsupported by a reader who was shown chunk one. Excerpts are therefore a separate,
+/// undeduplicated list — several may share one (Type, EntityKey), and all of them belong to
+/// that artefact's marker.
+/// </remarks>
+public sealed record EvidenceExcerpt(EntityType Type, string EntityKey, string Text);
+
+public sealed record ToolExecutionResult(
+    string Content,
+    IReadOnlyList<EvidenceCitation> Citations,
+    bool IsError,
+    IReadOnlyList<EvidenceExcerpt> Excerpts)
 {
+    /// <summary>
+    /// For results whose artefacts carry no attributable text — an empty search, or a
+    /// computed aggregate that cites nothing.
+    /// </summary>
     public static ToolExecutionResult Ok(string content, IReadOnlyList<EvidenceCitation> citations)
-        => new(content, citations, false);
+        => new(content, citations, false, []);
+
+    public static ToolExecutionResult Ok(
+        string content,
+        IReadOnlyList<EvidenceCitation> citations,
+        IReadOnlyList<EvidenceExcerpt> excerpts)
+        => new(content, citations, false, excerpts);
 
     /// <summary>
     /// Errors go back to the model as content, not as exceptions. A tool that throws
     /// ends the turn; a tool that reports "no release tagged v9.9" lets the model recover.
     /// </summary>
-    public static ToolExecutionResult Error(string message) => new(message, [], true);
+    public static ToolExecutionResult Error(string message) => new(message, [], true, []);
 }
 
 public interface IEvidenceTool

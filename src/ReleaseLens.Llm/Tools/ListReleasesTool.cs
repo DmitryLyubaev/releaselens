@@ -104,18 +104,27 @@ public sealed class ListReleasesTool(EvidenceQueries queries) : IEvidenceTool
 
         var citations = new List<EvidenceCitation>(releases.Count);
 
+        // One row per release is all this tool ever showed the model about a release, so it
+        // is the whole of the evidence behind any claim citing one.
+        var excerpts = new List<EvidenceExcerpt>(releases.Count);
+
         foreach (var release in releases)
         {
-            content.Append("  ")
-                   .Append(release.PublishedAt is { } published
-                       ? published.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-                       : "(unpublished)")
-                   .Append("  ").AppendLine(release.Tag);
+            var day = release.PublishedAt is { } published
+                ? published.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : "(unpublished)";
+
+            content.Append("  ").Append(day).Append("  ").AppendLine(release.Tag);
 
             citations.Add(new EvidenceCitation(
                 EntityType.Release, release.Tag,
                 string.IsNullOrWhiteSpace(release.Name) ? release.Tag : release.Name!,
                 $"releases/tag/{release.Tag}"));
+
+            excerpts.Add(new EvidenceExcerpt(EntityType.Release, release.Tag,
+                string.IsNullOrWhiteSpace(release.Name)
+                    ? $"release {release.Tag}, published {day} (listed by list_releases)"
+                    : $"release {release.Tag} \"{release.Name}\", published {day} (listed by list_releases)"));
         }
 
         // Requirement, not decoration: a list that stops at the cap and does not say so
@@ -140,7 +149,7 @@ public sealed class ListReleasesTool(EvidenceQueries queries) : IEvidenceTool
 
         AggregateWindow.AppendCoverage(content, "release.published", coverage, since, until);
 
-        return ToolExecutionResult.Ok(content.ToString(), citations);
+        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts);
     }
 
     private static string Describe(string? tagPrefix, WindowBound? since, WindowBound? until)

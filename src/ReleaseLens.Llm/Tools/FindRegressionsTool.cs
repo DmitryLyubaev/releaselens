@@ -75,25 +75,34 @@ public sealed class FindRegressionsTool(EvidenceQueries queries) : IEvidenceTool
 
         var citations = new List<EvidenceCitation>(candidates.Count);
 
+        // The row is the whole of what this tool showed about that issue, so it is what a
+        // claim resting on it must be checkable against. Thin, but not nothing — and
+        // nothing is what left the groundedness judge unable to score.
+        var excerpts = new List<EvidenceExcerpt>(candidates.Count);
+
         foreach (var candidate in candidates)
         {
-            content.Append("  #").Append(candidate.Number).Append(' ')
-                   .Append('[').Append(candidate.State).Append("] ")
-                   .Append(candidate.Title)
-                   .Append("  (opened ")
-                   .Append(candidate.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
-                   .Append(", labels: ").Append(string.Join(", ", candidate.Labels)).Append(')');
+            var row = new StringBuilder()
+                .Append('#').Append(candidate.Number).Append(' ')
+                .Append('[').Append(candidate.State).Append("] ")
+                .Append(candidate.Title)
+                .Append("  (opened ")
+                .Append(candidate.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
+                .Append(", labels: ").Append(string.Join(", ", candidate.Labels)).Append(')');
 
             if (candidate.FixedByPullRequest is { } pr)
             {
-                content.Append("  fixed by PR #").Append(pr);
+                row.Append("  fixed by PR #").Append(pr);
             }
 
-            content.AppendLine();
+            content.Append("  ").AppendLine(row.ToString());
+
+            var number = candidate.Number.ToString(CultureInfo.InvariantCulture);
 
             citations.Add(new EvidenceCitation(
-                EntityType.Issue, candidate.Number.ToString(CultureInfo.InvariantCulture),
-                candidate.Title, $"issues/{candidate.Number}"));
+                EntityType.Issue, number, candidate.Title, $"issues/{candidate.Number}"));
+            excerpts.Add(new EvidenceExcerpt(EntityType.Issue, number,
+                $"{row} (listed by find_regressions)"));
         }
 
         // Requirement, not decoration. A capped list that does not announce the cap reads
@@ -118,6 +127,6 @@ public sealed class FindRegressionsTool(EvidenceQueries queries) : IEvidenceTool
                    .AppendLine(" in the corpus; the list was not capped.");
         }
 
-        return ToolExecutionResult.Ok(content.ToString(), citations);
+        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts);
     }
 }

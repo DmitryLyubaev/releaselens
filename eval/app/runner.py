@@ -14,7 +14,7 @@ from .metrics import (
     latency_percentiles,
     unanswerable_correct,
 )
-from .models import QueryOutcome, RunReport, RunRequest
+from .models import CitedEvidence, QueryOutcome, RunReport, RunRequest
 
 # Sonnet 5 introductory input pricing, USD per million tokens. Reverts to 3.00 on
 # 1 September 2026 — see ModelPricing in the .NET side for the authoritative table.
@@ -28,6 +28,36 @@ _JUDGE_INPUT_USD_PER_MTOK = 2.00
 # or two tool calls while a temporal or causal question sends the agent hunting. Pricing
 # a mixed sweep from a handful of factual queries underestimates it several times over.
 _DRY_RUN_PER_CATEGORY = 1
+
+
+def citation_ids(body: dict) -> list[str]:
+    """The "type:key" identifiers citation_recall and citation_precision score.
+
+    Unchanged by the evidence work and deliberately kept separate from it: these two
+    metrics are about WHICH artefacts were cited, and adding the text of those artefacts
+    must not be able to move them. Whatever the API puts in `evidence` is invisible here.
+    """
+    return [f"{c['type']}:{c['key']}" for c in body["citations"]]
+
+
+def cited_evidence(body: dict) -> list[CitedEvidence]:
+    """The same artefacts, with the text the judge needs in order to check a claim.
+
+    `evidence` is absent unless the request asked for it, and empty when the artefact
+    reached the agent as an identifier with no attributable text. Both come through as an
+    empty `text`, which the judge prompt reports out loud rather than passing off as
+    evidence that says nothing.
+    """
+    return [
+        CitedEvidence(
+            marker=c["marker"],
+            id=f"{c['type']}:{c['key']}",
+            title=c["title"],
+            url=c["url"],
+            text=c.get("evidence") or [],
+        )
+        for c in body["citations"]
+    ]
 
 
 def _stratify(queries: list, per_category: int) -> list:
@@ -62,6 +92,12 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     outcomes: list[QueryOutcome] = []
 
+    # Held beside the outcomes rather than on them. The evidence for one query runs to tens
+    # of kilobytes and every outcome is written to reports/<run_id>.json; folding it in
+    # would turn a metrics report into an evidence dump nobody can read. The judge's reason
+    # for each score still lands on the outcome, which is what a reader of the report needs.
+    evidence_by_query: dict[str, list[CitedEvidence]] = {}
+
     async with httpx.AsyncClient(timeout=180.0) as client:
         for query in queries:
             started = time.perf_counter()
@@ -69,7 +105,15 @@ async def run_eval(request: RunRequest) -> RunReport:
                 response = await client.post(
                     f"{request.api_base_url}/query",
                     headers={"X-Api-Key": request.api_key},
-                    json={"question": query.question, "k": request.k},
+                    json={
+                        "question": query.question,
+                        "k": request.k,
+                        # The judge scores whether each claim is supported by the evidence
+                        # cited, which is unanswerable from an identifier. Opt-in on the
+                        # API, so the harness has to ask; production responses do not carry
+                        # it and are not paying for this.
+                        "includeEvidence": True,
+                    },
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -91,7 +135,8 @@ async def run_eval(request: RunRequest) -> RunReport:
             latency_ms = (time.perf_counter() - started) * 1000
             answer = body["answer"]
             metadata = body["metadata"]
-            citations = [f"{c['type']}:{c['key']}" for c in body["citations"]]
+            citations = citation_ids(body)
+            evidence_by_query[query.id] = cited_evidence(body)
 
             outcomes.append(
                 QueryOutcome(
@@ -123,7 +168,11 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     if request.judge:
         judge = GroundednessJudge(request.judge_model)
-        scorable = [(o.question, o.answer, o.citations) for o in outcomes if not o.error]
+        scorable = [
+            (o.question, o.answer, evidence_by_query.get(o.id, []))
+            for o in outcomes
+            if not o.error
+        ]
 
         # Free, and it prices the sweep before any money is spent on it.
         estimated_tokens = await judge.estimate_cost(scorable)
@@ -141,7 +190,8 @@ async def run_eval(request: RunRequest) -> RunReport:
             for outcome in outcomes:
                 if outcome.error:
                     continue
-                score, reason = await judge.score(outcome.question, outcome.answer, outcome.citations)
+                score, reason = await judge.score(
+                    outcome.question, outcome.answer, evidence_by_query.get(outcome.id, []))
                 outcome.groundedness = None if score < 0 else score
                 outcome.groundedness_reason = reason
 

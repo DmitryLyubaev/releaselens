@@ -88,16 +88,23 @@ public sealed class DiffBetweenReleasesTool(EvidenceQueries queries) : IEvidence
 
         var citations = new List<EvidenceCitation>(commits.Count);
 
+        // A row is thin evidence, but it is the evidence: it is the entirety of what this
+        // tool showed the model about that commit, so it is what any claim resting on this
+        // tool has to be checkable against. Emitting nothing here would leave a cited commit
+        // looking like a bare identifier, which is the defect being fixed.
+        var excerpts = new List<EvidenceExcerpt>(commits.Count);
+
         foreach (var commit in commits)
         {
             var subject = commit.Message.Split('\n')[0];
             var shortSha = commit.Sha.Length >= 7 ? commit.Sha[..7] : commit.Sha;
+            var row = $"{shortSha}  {FormatDay(commit.CommittedAt)}  {subject}";
 
-            content.Append("  ").Append(shortSha).Append("  ")
-                   .Append(FormatDay(commit.CommittedAt))
-                   .Append("  ").AppendLine(subject);
+            content.Append("  ").AppendLine(row);
 
             citations.Add(new EvidenceCitation(EntityType.Commit, commit.Sha, subject, $"commit/{commit.Sha}"));
+            excerpts.Add(new EvidenceExcerpt(EntityType.Commit, commit.Sha,
+                $"{row}  (listed by diff_between_releases between {fromTag} and {toTag})"));
         }
 
         // Requirement, not decoration, and the cap is stated rather than inferred. The page
@@ -121,7 +128,7 @@ public sealed class DiffBetweenReleasesTool(EvidenceQueries queries) : IEvidence
                    .Append(" and ").Append(toTag).AppendLine("; the list was not capped.");
         }
 
-        return ToolExecutionResult.Ok(content.ToString(), citations);
+        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts);
     }
 
     /// <summary>

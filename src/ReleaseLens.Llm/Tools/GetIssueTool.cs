@@ -54,10 +54,16 @@ public sealed class GetIssueTool(EvidenceRepository evidence) : IEvidenceTool
 
         content.AppendLine().AppendLine(issue.Body);
 
-        return ToolExecutionResult.Ok(content.ToString(),
-        [
-            new EvidenceCitation(EntityType.Issue, issue.Number.ToString(CultureInfo.InvariantCulture),
-                issue.Title, $"issues/{issue.Number}")
-        ]);
+        var issueKey = issue.Number.ToString(CultureInfo.InvariantCulture);
+        var rendered = content.ToString();
+
+        // The whole rendered issue is this artefact's excerpt, header included. The header
+        // carries the state, labels, author and dates, and those are exactly the claims a
+        // groundedness check on an issue answer has to verify — dropping them and quoting
+        // only the body would make "reported by Alice on 2024-03-02" unverifiable.
+        return ToolExecutionResult.Ok(
+            rendered,
+            [new EvidenceCitation(EntityType.Issue, issueKey, issue.Title, $"issues/{issue.Number}")],
+            [new EvidenceExcerpt(EntityType.Issue, issueKey, rendered)]);
     }
 }

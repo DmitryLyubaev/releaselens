@@ -82,6 +82,11 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
 
         var citations = new List<EvidenceCitation>();
 
+        // One excerpt per chunk, NOT per citation: citations collapse to one entry per
+        // artefact and the excerpts must not collapse with them, or an artefact retrieved
+        // as four chunks would only ever be quotable from its first.
+        var excerpts = new List<EvidenceExcerpt>(result.Chunks.Count);
+
         foreach (var chunk in result.Chunks)
         {
             content.Append(chunk.Content).AppendLine()
@@ -91,9 +96,11 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
 
             citations.Add(new EvidenceCitation(
                 chunk.Type, chunk.EntityKey, FirstLine(chunk.Content), BuildUrl(chunk.Type, chunk.EntityKey)));
+
+            excerpts.Add(new EvidenceExcerpt(chunk.Type, chunk.EntityKey, chunk.Content));
         }
 
-        return ToolExecutionResult.Ok(content.ToString(), Deduplicate(citations));
+        return ToolExecutionResult.Ok(content.ToString(), Deduplicate(citations), excerpts);
     }
 
     internal static string FirstLine(string content)

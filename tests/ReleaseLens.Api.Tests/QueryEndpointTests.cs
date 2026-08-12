@@ -64,11 +64,18 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         await _factory.DisposeAsync();
     }
 
-    private HttpRequestMessage Query(string question, string? apiKey)
+    /// <summary>
+    /// When <paramref name="includeEvidence"/> is null the field is left OUT of the request
+    /// body entirely, rather than sent as false. That is the shape every existing client
+    /// sends, and it is the one the "off by default" contract has to hold for.
+    /// </summary>
+    private HttpRequestMessage Query(string question, string? apiKey, bool? includeEvidence = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/query")
         {
-            Content = JsonContent.Create(new { question, k = 5 })
+            Content = includeEvidence is null
+                ? JsonContent.Create(new { question, k = 5 })
+                : JsonContent.Create(new { question, k = 5, includeEvidence = includeEvidence.Value })
         };
 
         if (apiKey is not null)
@@ -289,6 +296,135 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
             Assert.StartsWith("sha_api_", citation.GetProperty("key").GetString(), StringComparison.Ordinal);
             Assert.StartsWith("https://github.com/microsoft/semantic-kernel/",
                 citation.GetProperty("url").GetString(), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Runs one scripted query and hands back the parsed body, so the evidence tests below
+    /// differ only in the flag they send.
+    /// </summary>
+    private async Task<JsonElement> ScriptedQueryAsync(string answer, bool? includeEvidence)
+    {
+        await using var scripted = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IChatProvider>();
+                services.AddSingleton<IChatProvider>(new ScriptedChatProvider(answer));
+            }));
+
+        using var client = scripted.CreateClient();
+
+        var response = await client.SendAsync(
+            Query("planner", _apiKey, includeEvidence), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Query_WithoutTheEvidenceFlag_CarriesNoEvidenceText()
+    {
+        await SeedCommitsAsync(4);
+
+        var body = await ScriptedQueryAsync("Caused by [E1], fixed by [E3].", includeEvidence: null);
+        var citations = body.GetProperty("citations").EnumerateArray().ToArray();
+
+        Assert.NotEmpty(citations);
+
+        // Absent, not null and not empty. A chunk is around a thousand characters and an
+        // answer can cite twenty artefacts; every production response paying that so one
+        // consumer can read it is the thing the flag exists to prevent.
+        foreach (var citation in citations)
+        {
+            Assert.False(citation.TryGetProperty("evidence", out _));
+        }
+
+        // And the flag being off must not have cost the response anything else.
+        Assert.Equal([1, 3], citations.Select(c => c.GetProperty("marker").GetInt32()).ToArray());
+    }
+
+    [Fact]
+    public async Task Query_WithTheEvidenceFlag_CarriesTheTextOfEachCitedArtefact()
+    {
+        await SeedCommitsAsync(4);
+
+        var body = await ScriptedQueryAsync("Caused by [E1], fixed by [E3].", includeEvidence: true);
+        var citations = body.GetProperty("citations").EnumerateArray().ToArray();
+
+        Assert.Equal([1, 3], citations.Select(c => c.GetProperty("marker").GetInt32()).ToArray());
+
+        foreach (var citation in citations)
+        {
+            Assert.True(citation.TryGetProperty("evidence", out var evidence));
+
+            var fragments = evidence.EnumerateArray().Select(e => e.GetString()!).ToArray();
+            Assert.NotEmpty(fragments);
+
+            // SeedCommitsAsync gives each commit the unique subject "fix: planner defect
+            // number N", and the key is sha_api_N — so this pins the text to the artefact
+            // its marker resolves to, not merely to some artefact.
+            var key = citation.GetProperty("key").GetString()!;
+            var subject = "defect number " + key["sha_api_".Length..];
+
+            Assert.All(fragments, fragment =>
+                Assert.Contains(subject, fragment, StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>
+    /// citation_recall and citation_precision in the eval harness are computed over the
+    /// "type:key" identifiers in this list. The flag must be inert with respect to them, so
+    /// the same query with the flag on and off has to produce an identical citation list.
+    /// </summary>
+    [Fact]
+    public async Task Query_TheEvidenceFlag_ChangesNothingAboutWhichArtefactsAreCited()
+    {
+        await SeedCommitsAsync(4);
+
+        const string Answer = "Caused by [E1], fixed by [E3]; see [E3] again for the test.";
+
+        static string[] Identifiers(JsonElement body) =>
+            [.. body.GetProperty("citations").EnumerateArray().Select(c =>
+                $"{c.GetProperty("marker").GetInt32()}|{c.GetProperty("type").GetString()}:" +
+                $"{c.GetProperty("key").GetString()}|{c.GetProperty("url").GetString()}")];
+
+        var without = await ScriptedQueryAsync(Answer, includeEvidence: null);
+        var with = await ScriptedQueryAsync(Answer, includeEvidence: true);
+
+        Assert.Equal(Identifiers(without), Identifiers(with));
+        Assert.Equal(
+            without.GetProperty("metadata").GetProperty("accumulatedCitationCount").GetInt32(),
+            with.GetProperty("metadata").GetProperty("accumulatedCitationCount").GetInt32());
+    }
+
+    /// <summary>
+    /// The degraded path honours the flag too. Its answer is the evidence block verbatim so
+    /// the text is redundant there — but a consumer that asked for evidence and received an
+    /// empty list would score the response ungrounded for a reason that is entirely the
+    /// harness's, which is the defect this change removes.
+    /// </summary>
+    [Fact]
+    public async Task Query_WhenDegraded_StillCarriesEvidenceTextWhenAsked()
+    {
+        await SeedCommitsAsync(3);
+
+        // The default client's providers point at an unroutable address, so this is the
+        // real degraded path rather than a mock of it.
+        var response = await _client.SendAsync(
+            Query("planner", _apiKey, includeEvidence: true), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.True(body.GetProperty("metadata").GetProperty("degraded").GetBoolean());
+
+        var citations = body.GetProperty("citations").EnumerateArray().ToArray();
+        Assert.NotEmpty(citations);
+
+        foreach (var citation in citations)
+        {
+            Assert.True(citation.TryGetProperty("evidence", out var evidence));
+            Assert.NotEmpty(evidence.EnumerateArray().Select(e => e.GetString()!).ToArray());
         }
     }
 

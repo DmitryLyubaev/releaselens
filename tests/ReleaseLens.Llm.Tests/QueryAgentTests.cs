@@ -553,4 +553,160 @@ public class QueryAgentTests(PostgresFixture fixture)
             Assert.Contains(citation.Citation.EntityKey, answer.Answer, StringComparison.Ordinal);
         }
     }
+
+    /// <summary>
+    /// SeedManyAsync gives every commit a unique subject, "fix: planner defect number N", and
+    /// that subject is in the chunk header. So the text filed under a marker can be checked
+    /// against the artefact that marker resolves to, rather than merely checked for being
+    /// non-empty — which is what "the text corresponds to the right marker" has to mean.
+    /// </summary>
+    private static string SubjectOf(string entityKey)
+        => "defect number " + entityKey["sha_many_".Length..];
+
+    /// <summary>
+    /// The defect: the response carried "issue:14111" and nothing else, so a groundedness
+    /// judge asked whether the answer's claims were supported could only report that it had
+    /// been given bare identifiers. Every cited artefact now carries the text the model read.
+    /// </summary>
+    [Fact]
+    public async Task Answer_CitedArtefacts_CarryTheTextTheModelWasShown()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-evidence-text", 8);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("The regression came in via [E2] and was reverted by [E5].")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 8,
+            TestContext.Current.CancellationToken);
+
+        var evidenceBlock = provider.Requests[0].Messages[0].Text!;
+
+        Assert.Equal([2, 5], answer.Citations.Select(c => c.Marker).ToArray());
+
+        foreach (var citation in answer.Citations)
+        {
+            Assert.NotEmpty(citation.Excerpts);
+
+            foreach (var excerpt in citation.Excerpts)
+            {
+                // The text belongs to THIS artefact, not to whichever one happened to be
+                // retrieved first. A ledger keyed by anything but the marker would pass an
+                // "is not empty" assertion while handing the judge another commit's message.
+                Assert.Contains(SubjectOf(citation.Citation.EntityKey), excerpt, StringComparison.Ordinal);
+
+                // And it is the text the model itself read, not a paraphrase or a rebuild.
+                Assert.Contains(excerpt, evidenceBlock, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The decision that the judge's verdict actually turns on. An artefact split across
+    /// chunks shares ONE marker, and the evidence behind that marker is every one of its
+    /// chunks: a claim supported by the last chunk reads as unsupported to a reader shown
+    /// only the first, which is a false groundedness failure caused by the harness.
+    /// </summary>
+    [Fact]
+    public async Task Answer_EvidenceForAMarker_IsEveryChunkOfTheArtefact_NotJustTheFirst()
+    {
+        var (factory, tenantId, splitChunks) = await SeedSplitEntityAsync("agent-evidence-chunks");
+
+        Assert.True(splitChunks.Count >= 2,
+            $"fixture must split the commit into at least two chunks, got {splitChunks.Count}");
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => Text("Both of these are relevant: [E1] and [E2].")]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 20,
+            TestContext.Current.CancellationToken);
+
+        var split = Assert.Single(answer.Citations, c => c.Citation.EntityKey == "sha_split");
+
+        Assert.True(split.Excerpts.Count >= 2,
+            $"expected every chunk of sha_split, got {split.Excerpts.Count}");
+
+        var joined = string.Join("\n", split.Excerpts);
+
+        // The sentinels sit at opposite ends of the commit body, so both being present is
+        // the whole artefact rather than a lucky first chunk.
+        Assert.Contains("sentinel-alpha", joined, StringComparison.Ordinal);
+        Assert.Contains("sentinel-omega", joined, StringComparison.Ordinal);
+
+        // The single-chunk artefact is unaffected: one marker, one fragment, no padding
+        // borrowed from its neighbour.
+        var solo = Assert.Single(answer.Citations, c => c.Citation.EntityKey == "sha_solo");
+        Assert.Single(solo.Excerpts);
+        Assert.DoesNotContain("sentinel-alpha", solo.Excerpts[0], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Text arriving from a tool is filed under the marker its artefact already holds, and
+    /// filing it must not itself create an artefact: an excerpt that appended to the pool
+    /// would move AccumulatedCitationCount and could make an out-of-range marker resolve.
+    /// </summary>
+    [Fact]
+    public async Task Answer_EvidenceFromAToolResult_IsFiledUnderItsArtefactsMarker_WithoutWideningThePool()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-evidence-tool", 6);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // k = 1, so the seed contributes one artefact and search_commits contributes the rest.
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => CallTool("search_commits", """{"query":"planner","limit":4}"""),
+            () => Text("Everything relevant: [E1], [E2], [E3], [E4].")
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 1,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.AccumulatedCitationCount > 1,
+            "the tool call must have added artefacts beyond the seed, or this proves nothing");
+
+        // Every marker the tool contributed resolves, and the pool is exactly the artefacts
+        // the seed and the tool cited between them — the excerpts added none of their own.
+        Assert.Empty(answer.Metadata.UnresolvedCitationMarkers);
+        Assert.Equal(
+            answer.Metadata.AccumulatedCitationCount,
+            answer.Citations.Select(c => c.Citation.EntityKey).Distinct().Count());
+
+        foreach (var citation in answer.Citations)
+        {
+            Assert.NotEmpty(citation.Excerpts);
+            Assert.All(citation.Excerpts, excerpt =>
+                Assert.Contains(SubjectOf(citation.Citation.EntityKey), excerpt, StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>
+    /// The degraded response is the evidence block verbatim, so its text is redundant — and
+    /// it is carried anyway. Withholding it would hand anything scoring groundedness an
+    /// empty evidence list for a response that is nothing BUT evidence, and score it zero
+    /// for a harness reason: the same failure this change exists to remove.
+    /// </summary>
+    [Fact]
+    public async Task Answer_AllProvidersDown_StillCarriesTheTextOfWhatItCites()
+    {
+        var (factory, tenantId) = await SeedManyAsync("agent-evidence-degraded", 3);
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => throw new AllProvidersUnavailableException(["anthropic", "openai"])]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner", 3,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.Degraded);
+        Assert.NotEmpty(answer.Citations);
+
+        foreach (var citation in answer.Citations)
+        {
+            Assert.NotEmpty(citation.Excerpts);
+            Assert.All(citation.Excerpts, excerpt =>
+                Assert.Contains(SubjectOf(citation.Citation.EntityKey), excerpt, StringComparison.Ordinal));
+        }
+    }
 }

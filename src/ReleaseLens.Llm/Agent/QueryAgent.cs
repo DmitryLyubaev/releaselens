@@ -38,7 +38,8 @@ public sealed partial class QueryAgent(
         var seed = await retriever.RetrieveAsync(scope, new RetrievalRequest(question, queryVector, k), cancellationToken);
 
         var citations = new List<EvidenceCitation>();
-        var evidenceBlock = FormatEvidence(seed, citations);
+        var ledger = new EvidenceLedger();
+        var evidenceBlock = FormatEvidence(seed, citations, ledger);
 
         var messages = new List<ChatMessage>
         {
@@ -109,6 +110,11 @@ public sealed partial class QueryAgent(
 
                     var appended = AppendCitations(execution.Citations, citations);
 
+                    // After the citations, never before: an excerpt is filed under the marker
+                    // its artefact already holds, and that marker only exists once the citation
+                    // has been resolved.
+                    RecordExcerpts(execution.Excerpts, citations, ledger);
+
                     results.Add(new ToolResult(
                         call.Id,
                         appended.Count > 0
@@ -162,7 +168,14 @@ public sealed partial class QueryAgent(
                 // they were handed. What it drops is anything a tool returned before the
                 // provider died - those artefacts appear nowhere in this response's text, so
                 // shipping them would be the same "everything we looked at" bug in miniature.
-                SelectCitedEvidence(degradedAnswer, citations),
+                //
+                // The evidence text rides along on this path too, and the API surfaces it
+                // when asked exactly as it does on the synthesised path. It is redundant
+                // here - the degraded answer IS the evidence block, so the caller already
+                // holds the prose - but withholding it would hand any consumer that scores
+                // groundedness an empty evidence list for a response that is nothing but
+                // evidence, and score it zero for a harness reason.
+                SelectCitedEvidence(degradedAnswer, citations, ledger),
                 new AgentMetadata(
                     iterations, toolsCalled, usage,
                     // Providers can fail on iteration 2+, after earlier iterations already spent
@@ -186,7 +199,7 @@ public sealed partial class QueryAgent(
         // in it as in-range while reporting nothing else at all - or, worse under a different
         // ordering, brand every unused marker a hallucination.
         var unresolved = FindUnresolvedMarkers(answerText, citations.Count);
-        var cited = SelectCitedEvidence(answerText, citations);
+        var cited = SelectCitedEvidence(answerText, citations, ledger);
         var cost = ModelPricing.CostUsd(modelName, usage, DateOnly.FromDateTime(DateTime.UtcNow));
 
         activity?.SetTag("tokens_in", usage.InputTokens);
@@ -216,7 +229,8 @@ public sealed partial class QueryAgent(
         return string.IsNullOrWhiteSpace(name) ? "the indexed" : name;
     }
 
-    private static string FormatEvidence(RetrievalResult result, List<EvidenceCitation> citations)
+    private static string FormatEvidence(
+        RetrievalResult result, List<EvidenceCitation> citations, EvidenceLedger ledger)
     {
         if (result.Chunks.Count == 0)
         {
@@ -239,6 +253,11 @@ public sealed partial class QueryAgent(
                 chunk.Type, chunk.EntityKey,
                 SearchCommitsTool.FirstLine(chunk.Content),
                 SearchCommitsTool.BuildUrl(chunk.Type, chunk.EntityKey)), citations);
+
+            // Every chunk, under the one marker its artefact shares. The citation list
+            // collapses here and the evidence must not collapse with it - the model is shown
+            // all of this text, so anything asked to check the model's claims has to be too.
+            ledger.Record(marker, chunk.Content);
 
             // The chunk's own header carries a truncated identifier (a 7-char sha, say) for
             // readability in the embedding text. The full entity key is repeated here so the
@@ -267,6 +286,33 @@ public sealed partial class QueryAgent(
         }
 
         return markers;
+    }
+
+    /// <summary>
+    /// Files each excerpt under the marker its artefact already holds.
+    /// </summary>
+    /// <remarks>
+    /// Lookup only, deliberately never find-or-add. An excerpt is text ABOUT an artefact,
+    /// not a new artefact; letting one append to the pool would inflate
+    /// <c>AccumulatedCitationCount</c> and could make an otherwise out-of-range marker
+    /// resolve, silently moving the groundedness signal the eval service scores — from a
+    /// field whose entire job is to be inert. An excerpt whose artefact is not in the pool
+    /// is dropped rather than added; in practice there are none, because tools list the
+    /// citation for every artefact they excerpt.
+    /// </remarks>
+    private static void RecordExcerpts(
+        IReadOnlyList<EvidenceExcerpt> excerpts, List<EvidenceCitation> accumulated, EvidenceLedger ledger)
+    {
+        foreach (var excerpt in excerpts)
+        {
+            var index = accumulated.FindIndex(
+                c => c.Type == excerpt.Type && c.EntityKey == excerpt.EntityKey);
+
+            if (index >= 0)
+            {
+                ledger.Record(index + 1, excerpt.Text);
+            }
+        }
     }
 
     /// <summary>
@@ -309,7 +355,7 @@ public sealed partial class QueryAgent(
     /// inferring markers from position: <c>[E3]</c> alone lands at index 0.
     /// </summary>
     private static IReadOnlyList<CitedEvidence> SelectCitedEvidence(
-        string answer, List<EvidenceCitation> accumulated)
+        string answer, List<EvidenceCitation> accumulated, EvidenceLedger ledger)
     {
         // Keyed by marker, so a repeat collapses; sorted, so the order is deterministic
         // rather than a function of which sentence happened to mention what first.
@@ -324,7 +370,60 @@ public sealed partial class QueryAgent(
             }
         }
 
-        return [.. cited.Select(entry => new CitedEvidence(entry.Key, entry.Value))];
+        return [.. cited.Select(entry =>
+            new CitedEvidence(entry.Key, entry.Value, ledger.For(entry.Key)))];
+    }
+
+    /// <summary>
+    /// The evidence text behind each marker: every fragment the agent put in front of the
+    /// model for that artefact, in the order it saw them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Nothing here is capped, and that is a decision rather than an oversight. The point of
+    /// the text is that a reader can check a claim against it, and a cap would recreate the
+    /// starvation this exists to fix one level down — a reader shown a cut fragment cannot
+    /// tell "the evidence does not support this" from "the part that supported it was
+    /// removed", and would score the first while looking at the second. What bounds it
+    /// instead is construction: every fragment here was already in the prompt the agent sent,
+    /// so the whole ledger is smaller than one model context, and the API only serialises it
+    /// when a request asks for it. If a cap is ever genuinely needed it must announce itself
+    /// in the payload, the way the list tools announce theirs.
+    /// </para>
+    /// <para>
+    /// Exact duplicates are dropped. Seed retrieval and a later <c>search_commits</c> for a
+    /// similar query routinely return the identical chunk, and repeating it costs whoever
+    /// reads this real tokens while making one artefact look like it says a thing twice.
+    /// Only exact matches: two overlapping-but-different chunks are two different fragments
+    /// and both are kept, because guessing which one subsumes the other is how text goes
+    /// missing.
+    /// </para>
+    /// </remarks>
+    private sealed class EvidenceLedger
+    {
+        private readonly Dictionary<int, List<string>> _byMarker = [];
+
+        public void Record(int marker, string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            if (!_byMarker.TryGetValue(marker, out var fragments))
+            {
+                fragments = [];
+                _byMarker[marker] = fragments;
+            }
+
+            if (!fragments.Contains(text, StringComparer.Ordinal))
+            {
+                fragments.Add(text);
+            }
+        }
+
+        public IReadOnlyList<string> For(int marker)
+            => _byMarker.TryGetValue(marker, out var fragments) ? fragments : [];
     }
 
     private static IReadOnlyList<string> FindUnresolvedMarkers(string answer, int citationCount)

@@ -120,6 +120,20 @@ against the full accumulated evidence pool, whose size is reported as
 narrowed to the artefacts the answer actually cites. Because that array is a subset, each entry
 carries its `marker` explicitly and a consumer must never infer one from array position.
 
+A citation names an artefact; only its **text** says whether a claim about it is true. A
+request may set `includeEvidence: true` to receive that text on each citation's `evidence`
+field — every passage of the artefact the agent read, not the first, because an artefact
+split across chunks shares one marker and a claim resting on its third chunk would read as
+unsupported to anyone shown only its first. It is off by default and absent from the payload
+when off: a chunk runs to roughly a thousand characters and an answer can cite twenty
+artefacts, so the cost falls on the one consumer that needs it — the groundedness judge in
+the eval harness, which was scoring 0.0 on sound answers because bare identifiers are
+unfalsifiable. Nothing in `evidence` is truncated; an empty array means the artefact reached
+the agent with no attributable text, which is a different fact from the field being absent.
+The degraded path honours the flag too, and the flag changes nothing else about the
+response — the same query with it on and off yields an identical citation list, so
+`citation_recall` and `citation_precision` cannot move because of it.
+
 ## Designed failure modes
 
 Each of these has a test.

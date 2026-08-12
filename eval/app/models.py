@@ -13,6 +13,26 @@ class GoldenQuery(BaseModel):
     notes: str | None = None
 
 
+class CitedEvidence(BaseModel):
+    """One artefact the answer cited, with the text the system actually showed the model.
+
+    `id` is the same "type:key" identifier citation_recall and citation_precision are
+    computed over, so the judge and the deterministic metrics are looking at one set of
+    artefacts described two ways rather than at two lists that could drift.
+
+    `text` holds every fragment of that artefact — an artefact split across chunks shares
+    one marker, and a claim supported by its third chunk reads as unsupported to a judge
+    shown only the first. Empty means the API returned the artefact with no attributable
+    text, which the prompt says out loud rather than passing off as "no evidence".
+    """
+
+    marker: int
+    id: str
+    title: str
+    url: str
+    text: list[str] = Field(default_factory=list)
+
+
 class QueryOutcome(BaseModel):
     id: str
     category: str

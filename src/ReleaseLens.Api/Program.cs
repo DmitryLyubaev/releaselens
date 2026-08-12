@@ -184,11 +184,18 @@ app.MapPost("/query", async (
         ? string.Empty
         : $"https://github.com/{tenant.RepoOwner}/{tenant.RepoName}/";
 
+    // Opt-in, and it changes nothing but this one field: the citation list itself - which
+    // artefacts, which markers, in which order - is identical either way, so a consumer
+    // measuring citation recall or precision reads the same numbers whether it asks for the
+    // text or not.
+    var includeEvidence = request.IncludeEvidence ?? false;
+
     return Results.Ok(new QueryResponse(
         answer.Answer,
         [.. answer.Citations.Select(c => new CitationDto(
             c.Marker, c.Citation.Type.ToWireName(), c.Citation.EntityKey, c.Citation.Title,
-            repositoryBaseUrl + c.Citation.Url))],
+            repositoryBaseUrl + c.Citation.Url,
+            includeEvidence ? c.Excerpts : null))],
         new QueryMetadataDto(
             answer.Metadata.Iterations,
             answer.Metadata.ToolsCalled,

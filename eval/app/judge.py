@@ -12,11 +12,19 @@ import os
 
 from anthropic import AsyncAnthropic
 
+from .models import CitedEvidence
+
 _JUDGE_SYSTEM = """You score whether an answer is grounded in the evidence it cites.
 
 You are given a question, an answer, and the evidence the answer cites. This is what the
 answer rests on, not everything the system retrieved — so a claim resting on something the
 answer did not cite is unsupported here, which is the point.
+
+Each piece of evidence is given as its marker exactly as the answer writes it ([E1], [E2],
+…), its identifier, its title, and then the full text the system showed. An artefact may
+have several passages; they are all shown, so treat them together as that artefact's
+evidence. An artefact whose text says "(no text was available for this artefact)" cannot
+support anything — score claims resting only on it as unsupported.
 
 Score groundedness from 0.0 to 1.0:
 - 1.0 — every factual claim in the answer is supported by the evidence shown.
@@ -26,6 +34,21 @@ Score groundedness from 0.0 to 1.0:
 
 An answer that correctly states the evidence does not contain what was asked scores 1.0.
 Declining to answer is grounded behaviour, not a failure.
+
+One kind of claim carries no marker by design. The system has tools that COMPUTE over the
+whole corpus — a count, or an enumeration — rather than retrieving passages from it. Their
+results are not artefacts, so they get no citation, and the answering model is explicitly
+instructed not to attach one. Such a figure is stated together with the predicate that
+produced it: the entity counted, the date field, and the window. Do not mark a computed
+figure unsupported merely because no evidence backs it — that is the system working as
+designed, and penalising it would reward retrieving toward an answer over calculating one.
+
+You are not being asked whether such a number is arithmetically right; you cannot check
+that and neither can the evidence. Judge only whether the answer represents it honestly:
+stating the predicate, not silently widening it, and saying so when the tool reported that
+the corpus does not cover the whole window asked about. An answer that quietly presents a
+count over a partial corpus as a count of the repository IS ungrounded, and that is the
+failure worth catching here.
 
 Reply with JSON only: {"score": <float>, "reason": "<one sentence>"}"""
 
@@ -38,12 +61,41 @@ class GroundednessJudge:
         self._client = AsyncAnthropic(api_key=api_key)
         self._model = model
 
-    def _prompt(self, question: str, answer: str, evidence: list[str]) -> str:
-        joined = "\n".join(f"- {item}" for item in evidence) or "(no evidence was cited)"
-        return f"Question:\n{question}\n\nAnswer:\n{answer}\n\nEvidence cited:\n{joined}"
+    @staticmethod
+    def _render(evidence: list[CitedEvidence]) -> str:
+        """The cited artefacts, each with its marker, identifier and full text.
 
-    async def estimate_cost(self, items: list[tuple[str, str, list[str]]]) -> int:
-        """Total input tokens for the whole sweep. count_tokens is free — call it first."""
+        The marker is printed because it is how the answer refers to the artefact: without
+        it the judge has to guess which of five passages "[E3]" meant. Absent text is
+        stated explicitly rather than rendered as a blank — a judge shown an empty space
+        cannot tell "this artefact says nothing relevant" from "nobody sent me the text",
+        and that confusion is exactly what scored two real answers 0.0.
+        """
+        if not evidence:
+            return "(the answer cited no evidence)"
+
+        blocks = []
+        for item in evidence:
+            body = "\n\n".join(item.text) if item.text else "(no text was available for this artefact)"
+            blocks.append(f"[E{item.marker}] {item.id} — {item.title}\n{body}")
+
+        return "\n\n---\n\n".join(blocks)
+
+    def _prompt(self, question: str, answer: str, evidence: list[CitedEvidence]) -> str:
+        return (
+            f"Question:\n{question}\n\n"
+            f"Answer:\n{answer}\n\n"
+            f"Evidence cited:\n{self._render(evidence)}"
+        )
+
+    async def estimate_cost(self, items: list[tuple[str, str, list[CitedEvidence]]]) -> int:
+        """Total input tokens for the whole sweep. count_tokens is free — call it first.
+
+        Counts the same system prompt and the same _prompt() the scoring call sends, so the
+        estimate moves with the evidence text automatically. Its whole purpose is to be
+        trusted before money is spent, so the two must not be able to drift apart: any
+        cheaper approximation here would have gone stale the moment evidence text was added.
+        """
         total = 0
         for question, answer, evidence in items:
             counted = await self._client.messages.count_tokens(
@@ -54,7 +106,9 @@ class GroundednessJudge:
             total += counted.input_tokens
         return total
 
-    async def score(self, question: str, answer: str, evidence: list[str]) -> tuple[float, str]:
+    async def score(
+        self, question: str, answer: str, evidence: list[CitedEvidence]
+    ) -> tuple[float, str]:
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=256,
