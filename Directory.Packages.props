@@ -6,7 +6,7 @@
   <ItemGroup Label="Data">
     <PackageVersion Include="Npgsql" Version="9.0.3" />
     <PackageVersion Include="Npgsql.DependencyInjection" Version="9.0.3" />
-    <PackageVersion Include="Dapper" Version="2.1.66" />
+    <PackageVersion Include="Dapper" Version="2.1.79" />
     <PackageVersion Include="Pgvector" Version="0.3.0" />
     <PackageVersion Include="Pgvector.Dapper" Version="0.3.0" />
   </ItemGroup>
