@@ -42,7 +42,26 @@ public class EvidenceToolTests(PostgresFixture fixture)
             new CommitEvidence(tenantId, "sha_late", "feat: streaming tool results", "Bob", "b@example.com",
                 new DateTimeOffset(2026, 4, 15, 0, 0, 0, TimeSpan.Zero),
                 new DateTimeOffset(2026, 4, 15, 0, 0, 0, TimeSpan.Zero),
-                "https://github.com/microsoft/semantic-kernel/commit/sha_late", [])
+                "https://github.com/microsoft/semantic-kernel/commit/sha_late", []),
+            // Three filler commits so the v1.0 -> v2.0 window holds four, which is what
+            // lets the diff_between_releases cap be exercised over the limit, exactly at
+            // it, and under it. Their dates are chosen to leave every other assertion in
+            // this file untouched: all three sit inside February, so they are outside the
+            // 2026-01-01..2026-02-01 counting window and strictly between the earliest
+            // (2026-01-15) and latest (2026-04-15) commits, so neither the counts nor the
+            // reported coverage span move.
+            new CommitEvidence(tenantId, "sha_w1", "chore: bump dependency pins", "Carol", "c@example.com",
+                new DateTimeOffset(2026, 2, 5, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 2, 5, 0, 0, 0, TimeSpan.Zero),
+                "https://github.com/microsoft/semantic-kernel/commit/sha_w1", []),
+            new CommitEvidence(tenantId, "sha_w2", "docs: tidy the connector table", "Dave", "d@example.com",
+                new DateTimeOffset(2026, 2, 12, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 2, 12, 0, 0, 0, TimeSpan.Zero),
+                "https://github.com/microsoft/semantic-kernel/commit/sha_w2", []),
+            new CommitEvidence(tenantId, "sha_w3", "test: widen the serialisation cases", "Erin", "e@example.com",
+                new DateTimeOffset(2026, 2, 20, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 2, 20, 0, 0, 0, TimeSpan.Zero),
+                "https://github.com/microsoft/semantic-kernel/commit/sha_w3", [])
         };
 
         await evidence.UpsertCommitsAsync(scope, commits, TestContext.Current.CancellationToken);
@@ -244,6 +263,72 @@ public class EvidenceToolTests(PostgresFixture fixture)
 
         Assert.True(result.IsError);
         Assert.Contains("v9.9", result.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The cap announced with a true total beside it, as list_releases and find_regressions
+    /// already do. Four commits sit in the v1.0 -> v2.0 window; two are shown.
+    /// </summary>
+    [Fact]
+    public async Task DiffBetweenReleases_WhenTheCapBites_ReportsTheTrueTotalAndSaysSo()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-diff-capped");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("diff_between_releases", scope,
+            Args("""{"from_tag":"v1.0","to_tag":"v2.0","limit":2}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Equal(2, result.Citations.Count);
+
+        Assert.Contains("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.Contains("Showing 2 of 4", result.Content, StringComparison.Ordinal);
+        Assert.Contains("limit=2", result.Content, StringComparison.Ordinal);
+
+        // The number dropped, which the old count == limit heuristic could never say.
+        Assert.Contains("2 later commit(s)", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("not capped", result.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The case the <c>commits.Count == limit</c> heuristic got backwards. The window holds
+    /// exactly four commits and four were asked for, so the list is complete — announcing
+    /// that more exist is a plain statement of a false fact, and the model has no way to
+    /// tell it apart from a real cap.
+    /// </summary>
+    [Fact]
+    public async Task DiffBetweenReleases_ExactFitAtTheLimit_DoesNotClaimMoreExist()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-diff-exactfit");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("diff_between_releases", scope,
+            Args("""{"from_tag":"v1.0","to_tag":"v2.0","limit":4}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Equal(4, result.Citations.Count);
+
+        // Asserted before the formatting: this is the false statement itself, not a
+        // question of how the result is worded.
+        Assert.DoesNotContain("more exist", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.Contains("Showing 4 of 4", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiffBetweenReleases_UnderTheLimit_ClaimsNeitherACapNorMoreCommits()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-diff-fits");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await BuildRegistry().ExecuteAsync("diff_between_releases", scope,
+            Args("""{"from_tag":"v1.0","to_tag":"v2.0"}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Contains("Showing 4 of 4", result.Content, StringComparison.Ordinal);
+        Assert.Contains("not capped", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("TRUNCATED", result.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("more exist", result.Content, StringComparison.Ordinal);
     }
 
     [Fact]

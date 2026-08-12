@@ -254,15 +254,33 @@ public sealed class EvidenceQueries
     public async Task<IReadOnlyList<CommitSummary>> GetCommitsBetweenAsync(
         TenantScope scope, DateTimeOffset from, DateTimeOffset to, int limit, CancellationToken cancellationToken)
         => [.. await scope.Connection.QueryAsync<CommitSummary>(new CommandDefinition(
-            """
+            $"""
             select sha as Sha, message as Message, author_name as AuthorName,
                    committed_at as CommittedAt, url as Url
             from commits
-            where committed_at > @from and committed_at <= @to
+            where {CommitWindowFilter}
             order by committed_at
             limit @limit
             """,
             new { from, to, limit }, scope.Transaction, cancellationToken: cancellationToken))];
+
+    /// <summary>
+    /// How many commits fall in a release window, computed separately from the page so the
+    /// tool can say "40 of 212" instead of inferring truncation from a full page — an
+    /// inference that is wrong on an exact fit and can never name the number dropped.
+    /// </summary>
+    public async Task<long> CountCommitsBetweenAsync(
+        TenantScope scope, DateTimeOffset from, DateTimeOffset to, CancellationToken cancellationToken)
+        => await scope.Connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            $"select count(*) from commits where {CommitWindowFilter}",
+            new { from, to }, scope.Transaction, cancellationToken: cancellationToken));
+
+    /// <summary>
+    /// Shared so the count and the page can never disagree about what "in the window"
+    /// means. Half-open at the lower end: the commit that a release was cut from belongs to
+    /// that release, not to the next one.
+    /// </summary>
+    private const string CommitWindowFilter = "committed_at > @from and committed_at <= @to";
 
     public async Task<IReadOnlyList<RegressionCandidate>> FindRegressionCandidatesAsync(
         TenantScope scope, string area, DateTimeOffset? since, int limit, CancellationToken cancellationToken)

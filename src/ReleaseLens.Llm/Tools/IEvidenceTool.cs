@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Storage;
@@ -107,8 +108,31 @@ internal static class JsonArgs
         return true;
     }
 
+    /// <summary>
+    /// Reads a date argument as an instant in UTC, returning null when it is absent or
+    /// unparseable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The styles are not optional and are the same pair <see cref="AggregateWindow.TryRead"/>
+    /// uses. Default parsing reads a bare "2024-01-01" in the process's local zone, so the
+    /// same question put to a container in Sydney and one in London covers two windows
+    /// eleven hours apart — and a container's zone is rarely the one anyone reasoned about.
+    /// Every caller sends this value straight into a <c>timestamptz</c> comparison, where
+    /// the shift is silent: the query still returns rows, and they are the wrong ones only
+    /// near the edges.
+    /// </para>
+    /// <para>
+    /// Returning null for unparseable text is deliberately kept. These callers are
+    /// retrieval tools, where a dropped date filter widens the result set and the model
+    /// reads what came back; <see cref="AggregateWindow.TryRead"/> errors instead because a
+    /// dropped filter on a count cannot be seen in the number.
+    /// </para>
+    /// </remarks>
     public static DateTimeOffset? Date(JsonElement arguments, string name)
-        => String(arguments, name) is { } text && DateTimeOffset.TryParse(text, out var parsed)
+        => String(arguments, name) is { } text
+           && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+               DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed)
             ? parsed
             : null;
 

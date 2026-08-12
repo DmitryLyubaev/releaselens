@@ -17,4 +17,14 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
+  <!--
+    JsonArgs is internal because nothing outside the tools should be reading tool
+    arguments. Its date parsing still needs a direct test: whether "2024-01-01" lands
+    on midnight UTC or on midnight somewhere else is invisible in every public result,
+    which is exactly why the bug survived.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="ReleaseLens.Llm.Tests" />
+  </ItemGroup>
+
 </Project>
