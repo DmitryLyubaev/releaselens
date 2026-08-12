@@ -111,7 +111,13 @@ class GroundednessJudge:
     ) -> tuple[float, str]:
         response = await self._client.messages.create(
             model=self._model,
-            max_tokens=256,
+            # 256 was enough when the judge saw bare identifiers and had nothing to reason
+            # about. Given the actual evidence it reasons first and answers second, and three
+            # of five judgements in one run were cut off before emitting a single '{' —
+            # scoring nothing, on exactly the queries carrying the most evidence. The reply is
+            # one float and one sentence; the headroom costs nothing when unused, and output
+            # tokens are a rounding error against the evidence in the prompt.
+            max_tokens=2048,
             system=_JUDGE_SYSTEM,
             messages=[{"role": "user", "content": self._prompt(question, answer, evidence)}],
         )

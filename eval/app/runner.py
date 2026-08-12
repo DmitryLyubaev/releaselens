@@ -206,6 +206,7 @@ async def run_eval(request: RunRequest) -> RunReport:
         mean_citation_recall=_mean([o.citation_recall for o in outcomes]),
         mean_citation_precision=_mean([o.citation_precision for o in outcomes]),
         mean_groundedness=_mean([o.groundedness for o in scored]) if scored else None,
+        groundedness_scored_count=len(scored),
         unanswerable_accuracy=(
             sum(1 for o in unanswerable if o.unanswerable_handled) / len(unanswerable)
             if unanswerable else None

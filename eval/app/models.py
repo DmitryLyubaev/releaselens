@@ -63,6 +63,13 @@ class RunReport(BaseModel):
     mean_citation_recall: float
     mean_citation_precision: float
     mean_groundedness: float | None
+
+    # How many queries the groundedness mean is actually over. A judgement that could not be
+    # parsed scores None rather than zero — deliberately, so a harness fault never masquerades
+    # as a hallucinating system — but that leaves the mean computed over the survivors. One run
+    # reported groundedness 1.000 from two scored queries out of five, which reads as a perfect
+    # score and is not one. Report the denominator so it cannot.
+    groundedness_scored_count: int
     unanswerable_accuracy: float | None
     must_contain_pass_rate: float
     p50_latency_ms: float
