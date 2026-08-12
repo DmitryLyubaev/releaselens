@@ -250,6 +250,15 @@ money.
 
 ## Deployment
 
+**Prerequisite on a fresh subscription:** register the Container Apps resource provider.
+Azure subscriptions that have never deployed Container Apps do not have it, and the apply
+fails partway through with `MissingSubscriptionRegistration ... namespace 'Microsoft.App'` --
+after the database has already been created. It is idempotent and free.
+
+```bash
+az provider register --namespace Microsoft.App
+```
+
 ```bash
 cd infra/terraform
 terraform apply -target=azurerm_consumption_budget_subscription.this
@@ -263,7 +272,24 @@ is a budget with alerts at 50/80/100 percent plus a forecast alert. The control 
 works is `terraform destroy` when you stop working, and the Container App scales to zero so an
 idle deployment costs nothing but the database.
 
-This has been planned and written but not applied to a live subscription.
+### Verified against a live subscription
+
+Applied to a real Azure subscription on 12 August 2026: **16 resources, roughly 12 minutes**,
+and then destroyed. The deployed API answered `/health` with HTTP 200 in **7.6 seconds cold**
+-- that figure is the `min_replicas = 0` trade-off made concrete, since the first request pays
+for the container to start. Subsequent requests returned immediately.
+
+Three things that only an apply could establish, and which `plan` and `validate` both passed
+without noticing:
+
+- the `Microsoft.App` registration above, which is why it is documented here at all
+- that Azure can pull the image from a public GHCR package -- the Container App has no
+  registry credentials by design, so a private package cannot be deployed without adding them
+- that the SKUs, region and quota in this configuration are actually satisfiable
+
+What the run did **not** establish: `/health` returns a literal, so it exercises neither Key
+Vault nor the database, and the deployed database was empty -- no migrations, no corpus. The
+deployment is proven; an end-to-end demo over real evidence is a separate exercise.
 
 ## What this is not
 
