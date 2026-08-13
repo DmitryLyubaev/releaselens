@@ -44,5 +44,17 @@
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.1.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.5.0" />
+    <!--
+      Transitive pin, not a direct dependency. Testcontainers.PostgreSql 4.1.0 pulls in
+      SSH.NET for its remote-Docker-over-SSH support, which this project does not use.
+      Versions up to and including 2025.1.0 carry GHSA-q939-rpr3-3284 (high, CVSS 7.1):
+      ScpClient.Download() does not validate server-supplied filenames during a recursive
+      download, so a malicious server can traverse out of the target directory. Nothing
+      here calls that method, but NuGet audit flags the package regardless and
+      TreatWarningsAsErrors turns the warning into a failed restore. 2026.0.0 is the first
+      patched release. Remove this pin once Testcontainers ships a version that references
+      2026.0.0 or later itself.
+    -->
+    <PackageVersion Include="SSH.NET" Version="2026.0.0" />
   </ItemGroup>
 </Project>
