@@ -5,12 +5,16 @@ from a real run; nothing is estimated. The August 11 baseline is kept at the end
 project that only reports its latest numbers is not showing you a measurement, it is showing
 you a claim.
 
-- **Commit:** `121ec0e`
+- **Code state:** after the judge fixes described under "What changed between the two runs"
 - **Run id:** `64b3ee8b-1dbd-41f2-9030-8d7dba313554`
 - **Started:** 2026-08-12T02:25:01Z
 - **Answering model:** Claude Sonnet 5, `k=8` seed chunks · **Judge:** Claude Sonnet 5
 - **Corpus:** 41,825 chunks — 2,921 commits, 3,805 issues, 7,121 pull requests, 276 releases
 - **Raw report:** `eval/reports/64b3ee8b-….json` (git-ignored — it embeds answer and evidence text)
+
+> This file names no commit hashes. The repository's history was rewritten after these runs,
+> so the hashes they were taken at no longer exist here; changes are named by what they did
+> instead. The run ids above are the durable identifiers.
 
 ## Method
 
@@ -61,25 +65,26 @@ shrinks the denominator, so the denominator now travels with the number.
 
 **"1 of 1" is not 100%.** One correct refusal.
 
-**The 12 Aug precision figure is not comparable with anything before `e94e9f7`.** Until that
-commit the response returned every artefact any tool had touched, so precision measured how
-many rows a tool returned rather than anything about the answer. The rise from 0.090 is
-mostly the measurement becoming correct, not the system improving.
+**The 12 Aug precision figure is not comparable with the 11 Aug one.** Until citations were
+filtered to the artefacts the answer actually cites, the response carried every artefact any
+tool had touched, so precision measured how many rows a tool returned rather than anything
+about the answer. The rise from 0.090 is mostly the measurement becoming correct, not the
+system improving.
 
 ## What changed between the two runs, and what it bought
 
 Four defects were found and fixed, each by measuring rather than by reasoning:
 
-**Aggregation cost — `count_evidence` and `list_releases` (`0e74352`).** The 11 Aug run
+**Aggregation cost — `count_evidence` and `list_releases`.** The 11 Aug run
 showed cost spanning 77× across categories, with *"list every Java release tag"* at $0.72,
 58 seconds and 337,570 input tokens — 78% of the whole run. Nothing computed; every tool
 returned evidence chunks, so an aggregation could only be answered by retrieving toward
 completeness. That query now costs **$0.0581 and runs in 21.7 seconds**, and p95 across the
 run fell from 58.0s to 22.6s.
 
-**Citations were not filtered to what the answer used (`e94e9f7`).** See above.
+**Citations were not filtered to what the answer used.** See above.
 
-**The judge had never worked (`56dede6`, `121ec0e`).** It received bare identifiers —
+**The judge had never worked.** It received bare identifiers —
 `['issue:14111']` — and was asked whether every claim was supported by them. It correctly
 reported it could not tell and scored 0.0. The defect stayed hidden because every earlier run
 was a dry run, which skips the judge. It now receives the text of each cited artefact, opt-in
@@ -131,7 +136,7 @@ query per category before committing to it.
 
 # Previous: baseline of 11 August 2026
 
-The first measured run, at commit `3e25a6d`, run id `6bf37544-…`. Kept for comparison.
+The first measured run, run id `6bf37544-…`. Kept for comparison.
 
 | Metric | Value |
 |---|---|

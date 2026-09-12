@@ -20,7 +20,7 @@ over.
 
 ## Evaluation
 
-Measured 12 August 2026 at commit `121ec0e`, against a corpus of 41,825 chunks. Full
+Measured 12 August 2026, against a corpus of 41,825 chunks. Full
 write-up, including method, caveats and the previous run for comparison:
 **[eval/baseline.md](eval/baseline.md)**.
 
@@ -48,7 +48,7 @@ Three things this table is deliberately not claiming:
   a vacuous 1.0 for queries expecting no citations, which is every `unanswerable` entry. The
   figure above is over the four answerable queries only.
 - **"1 of 1" is not 100%.** One correct refusal.
-- **The precision columns are not comparable with each other.** Until `e94e9f7` the response
+- **The precision columns are not comparable with each other.** Until the citation-filtering fix, the response
   returned every artefact any tool had touched, so precision measured how many rows a tool
   returned rather than anything about the answer. Most of that rise is the measurement
   becoming correct, not the system improving.
