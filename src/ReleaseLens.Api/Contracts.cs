@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using ReleaseLens.Core.Evidence;
 
@@ -67,3 +68,8 @@ public sealed record QueryResponse(
     string Answer,
     IReadOnlyList<CitationDto> Citations,
     QueryMetadataDto Metadata);
+
+/// <summary>One tool as published to an external client, mirroring MCP's tool shape.</summary>
+public sealed record EvidenceToolDto(string Name, string Description, JsonElement InputSchema);
+
+public sealed record EvidenceToolListResponse(IReadOnlyList<EvidenceToolDto> Tools);

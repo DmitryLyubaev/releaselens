@@ -130,6 +130,25 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
+app.MapGet("/evidence/tools", async (
+    HttpContext context,
+    ApiKeyAuthenticator authenticator,
+    ToolRegistry registry,
+    CancellationToken cancellationToken) =>
+{
+    // Authenticated even though the list is not tenant-specific: an unauthenticated schema
+    // dump tells an attacker exactly what the surface accepts, and costs nothing to refuse.
+    var tenantId = await authenticator.ResolveTenantAsync(context, cancellationToken);
+
+    if (tenantId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new EvidenceToolListResponse(
+        [.. registry.Definitions.Select(d => new EvidenceToolDto(d.Name, d.Description, d.JsonSchema))]));
+});
+
 app.MapPost("/query", async (
     QueryRequest request,
     HttpContext context,
