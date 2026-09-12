@@ -255,7 +255,7 @@ Embeddings were already local. With this, nothing leaves the machine.
 dotnet test
 ```
 
-246 tests. Unit tests for chunking, normalisation and the provider adapters against mocked
+256 tests. Unit tests for chunking, normalisation and the provider adapters against mocked
 transports; integration tests against real PostgreSQL via Testcontainers, including the
 row-level security proofs.
 
