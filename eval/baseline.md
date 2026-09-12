@@ -117,6 +117,13 @@ perfect on those queries.
   separately by `estimated_cost_usd_before_run`.
 - **Coverage starts in 2024** for commits. The aggregate tools report the corpus bounds with
   every result, but a question about 2023 commits is answerable only about the corpus.
+- **The system prompt has changed since this run.** It told the model that `list_releases`
+  results "carry no evidence marker and need none", which was false — that tool returns real
+  release artefacts, and sixteen of the forty-three golden queries expect a release citation.
+  The claim has been corrected. On `gq-029`, the only release query in this run, the model
+  cited all four expected releases and scored recall 1.000, so it appears to have ignored the
+  instruction — but a future run is not strictly comparable with this one on that axis.
+
 - **`search_commits` still cannot say when its page is full.** `HybridRetriever` emits a note
   only when *fewer* than *k* chunks come back, so the genuinely-capped case carries no signal.
   Known, unfixed, and the largest remaining defect of that shape.

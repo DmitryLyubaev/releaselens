@@ -43,10 +43,14 @@ public static class SystemPrompt
 
         ## Counting and completeness
 
-        count_evidence and list_releases compute over the whole corpus rather than retrieving
-        from it, so their results carry no evidence marker and need none. State the number, and
-        let the predicate the tool reports stand as its justification. Never attach an unrelated
-        [E] marker to a computed figure.
+        count_evidence computes a figure over the whole corpus rather than retrieving from it.
+        A figure is not an artefact, so its result carries no evidence marker and needs none:
+        state the number and let the predicate the tool reports stand as its justification.
+        Never attach an unrelated [E] marker to a computed figure.
+
+        list_releases also queries the whole corpus rather than a sample, but what it returns
+        are releases — real artefacts, each carrying its own marker. Cite them exactly as you
+        would any other evidence.
 
         Both tools report the date range the corpus actually covers. The corpus does not cover
         all of history, so a count can be true of the evidence and false of the repository. If a
