@@ -114,4 +114,125 @@ public class EvidenceEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         Assert.DoesNotContain("tenant", serialised, StringComparison.OrdinalIgnoreCase);
     }
+
+    private HttpRequestMessage AuthorisedPost(string url, string json)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Headers.Add("X-Api-Key", _apiKey);
+        request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    [Fact]
+    public async Task Execute_WithoutAKey_Is401()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/evidence/tools/count_evidence")
+        {
+            Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json")
+        };
+
+        var response = await _client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Execute_CountEvidence_ReportsKindComputed()
+    {
+        var response = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/count_evidence",
+                """{"entity_type":"release","date_field":"published"}"""),
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("computed", body.GetProperty("kind").GetString());
+        Assert.Empty(body.GetProperty("citations").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Execute_UnknownTool_IsAToolErrorNotACrash()
+    {
+        var response = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/no_such_tool", "{}"),
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+
+        // An unknown tool is a recoverable condition the caller can act on, not a 500.
+        Assert.True(body.GetProperty("isError").GetBoolean());
+        Assert.Contains("no_such_tool", body.GetProperty("content").GetString()!);
+    }
+
+    [Fact]
+    public async Task Execute_CannotReachAnotherTenantsEvidence()
+    {
+        // The cross-tenant rejection test, over the evidence path rather than /query.
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        var otherTenant = await new TenantRepository(connections).CreateAsync(
+            new TenantDefinition(
+                "evidence-other-" + Guid.NewGuid().ToString("n")[..12],
+                "Other tenant", "github", "other", "repo", 1000),
+            TestContext.Current.CancellationToken);
+
+        const string otherTag = "other-tenant-only-1.0.0";
+
+        await using (var otherScope = await connections.OpenAsync(
+            otherTenant, TestContext.Current.CancellationToken))
+        {
+            await new EvidenceRepository().UpsertReleasesAsync(
+                otherScope,
+                [new ReleaseEvidence(otherTenant, otherTag, "Other", "body",
+                    DateTimeOffset.UtcNow, null, "https://example.invalid/r")],
+                TestContext.Current.CancellationToken);
+
+            await otherScope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Control: the same request, run under the seeded tenant's own key, must find the
+        // release. Without this, a broken query (wrong prefix, wrong argument name) would
+        // return nothing for either tenant, and the negative assertion below would pass for
+        // a reason that has nothing to do with isolation.
+        var otherApiKey = await new ApiKeyRepository(connections).CreateKeyAsync(
+            otherTenant, "evidence-other-tests", TestContext.Current.CancellationToken);
+
+        var ownRequest = new HttpRequestMessage(HttpMethod.Post, "/evidence/tools/list_releases")
+        {
+            Content = new StringContent("""{"tag_prefix":"other-tenant-only"}""",
+                System.Text.Encoding.UTF8, "application/json")
+        };
+        ownRequest.Headers.Add("X-Api-Key", otherApiKey);
+
+        var ownResponse = await _client.SendAsync(ownRequest, TestContext.Current.CancellationToken);
+        ownResponse.EnsureSuccessStatusCode();
+
+        var ownBody = await ownResponse.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains(otherTag, ownBody.GetProperty("content").GetString()!);
+        Assert.NotEmpty(ownBody.GetProperty("citations").EnumerateArray());
+
+        var response = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/list_releases", """{"tag_prefix":"other-tenant-only"}"""),
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+
+        // Asserted against the full tag, not just the shared prefix: the caller's own
+        // "tag_prefix" argument is echoed back into a zero-match response too (e.g. "No
+        // releases match tag prefix 'other-tenant-only'."), so asserting on the bare prefix
+        // fails even when isolation holds. The full tag appears only if a matching row from
+        // the other tenant actually leaked into this response.
+        Assert.DoesNotContain(otherTag, body.GetProperty("content").GetString()!);
+        Assert.Empty(body.GetProperty("citations").EnumerateArray());
+    }
 }

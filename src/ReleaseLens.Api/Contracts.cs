@@ -73,3 +73,14 @@ public sealed record QueryResponse(
 public sealed record EvidenceToolDto(string Name, string Description, JsonElement InputSchema);
 
 public sealed record EvidenceToolListResponse(IReadOnlyList<EvidenceToolDto> Tools);
+
+public sealed record EvidenceCitationDto(string Type, string Key, string Title, string Url);
+
+public sealed record EvidenceExcerptDto(string Type, string Key, string Text);
+
+public sealed record EvidenceToolResultResponse(
+    string Kind,
+    string Content,
+    bool IsError,
+    IReadOnlyList<EvidenceCitationDto> Citations,
+    IReadOnlyList<EvidenceExcerptDto> Excerpts);

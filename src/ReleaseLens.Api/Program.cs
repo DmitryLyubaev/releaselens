@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -147,6 +148,41 @@ app.MapGet("/evidence/tools", async (
 
     return Results.Ok(new EvidenceToolListResponse(
         [.. registry.Definitions.Select(d => new EvidenceToolDto(d.Name, d.Description, d.JsonSchema))]));
+});
+
+app.MapPost("/evidence/tools/{name}", async (
+    string name,
+    JsonElement arguments,
+    HttpContext context,
+    ApiKeyAuthenticator authenticator,
+    TenantConnectionFactory connections,
+    ToolRegistry registry,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = await authenticator.ResolveTenantAsync(context, cancellationToken);
+
+    if (tenantId is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    // Tenant comes from the key, never from the body. There is deliberately no route,
+    // query or body parameter through which a caller could name a different one.
+    await using var scope = await connections.OpenAsync(tenantId.Value, cancellationToken);
+
+    var result = await registry.ExecuteAsync(name, scope, arguments, cancellationToken);
+
+    // No token budget check: these tools make no model calls. The daily budget meters
+    // model spend, and metering a database read against it would refuse work that costs
+    // nothing. Rate limiting, if it is ever needed here, is a different control.
+    return Results.Ok(new EvidenceToolResultResponse(
+        result.Kind == ResultKind.Computed ? "computed" : "evidence",
+        result.Content,
+        result.IsError,
+        [.. result.Citations.Select(c => new EvidenceCitationDto(
+            c.Type.ToWireName(), c.EntityKey, c.Title, c.Url))],
+        [.. result.Excerpts.Select(e => new EvidenceExcerptDto(
+            e.Type.ToWireName(), e.EntityKey, e.Text))]));
 });
 
 app.MapPost("/query", async (
