@@ -156,6 +156,7 @@ app.MapPost("/evidence/tools/{name}", async (
     HttpContext context,
     ApiKeyAuthenticator authenticator,
     TenantConnectionFactory connections,
+    TenantRepository tenants,
     ToolRegistry registry,
     CancellationToken cancellationToken) =>
 {
@@ -172,15 +173,25 @@ app.MapPost("/evidence/tools/{name}", async (
 
     var result = await registry.ExecuteAsync(name, scope, arguments, cancellationToken);
 
-    // No token budget check: these tools make no model calls. The daily budget meters
-    // model spend, and metering a database read against it would refuse work that costs
-    // nothing. Rate limiting, if it is ever needed here, is a different control.
+    // A citation's Url is a repo-relative fragment (e.g. "releases/tag/java-1.0"); /query
+    // resolves the same fragment against the tenant's repo, and an external consumer needs
+    // the same absolute link rather than a path with nowhere implied to resolve it from.
+    var tenant = await tenants.FindByIdAsync(tenantId.Value, cancellationToken);
+    var repositoryBaseUrl = tenant is null
+        ? string.Empty
+        : $"https://github.com/{tenant.RepoOwner}/{tenant.RepoName}/";
+
+    // No token budget check: these tools make no billed model call. search_commits embeds
+    // the query locally through OnnxEmbedder, which costs nothing to meter. The daily budget
+    // meters model spend, and metering a database read (or a local embedding) against it
+    // would refuse work that costs nothing. Rate limiting, if it is ever needed here, is a
+    // different control.
     return Results.Ok(new EvidenceToolResultResponse(
         result.Kind == ResultKind.Computed ? "computed" : "evidence",
         result.Content,
         result.IsError,
         [.. result.Citations.Select(c => new EvidenceCitationDto(
-            c.Type.ToWireName(), c.EntityKey, c.Title, c.Url))],
+            c.Type.ToWireName(), c.EntityKey, c.Title, repositoryBaseUrl + c.Url))],
         [.. result.Excerpts.Select(e => new EvidenceExcerptDto(
             e.Type.ToWireName(), e.EntityKey, e.Text))]));
 });

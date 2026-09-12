@@ -216,7 +216,19 @@ public class EvidenceEndpointTests(PostgresFixture fixture) : IAsyncLifetime
             TestContext.Current.CancellationToken);
 
         Assert.Contains(otherTag, ownBody.GetProperty("content").GetString()!);
-        Assert.NotEmpty(ownBody.GetProperty("citations").EnumerateArray());
+        var ownCitations = ownBody.GetProperty("citations").EnumerateArray().ToArray();
+        Assert.NotEmpty(ownCitations);
+
+        // Pins the citation field mapping (type/key/title/url are assembled positionally in
+        // Program.cs, so a swapped pair would otherwise pass every other assertion here) and
+        // that the url is absolute, the same way /query resolves it against the tenant's repo,
+        // rather than the bare repo-relative fragment the tool itself returns.
+        var ownCitation = ownCitations[0];
+        Assert.Equal("release", ownCitation.GetProperty("type").GetString());
+        Assert.Equal(otherTag, ownCitation.GetProperty("key").GetString());
+        Assert.Equal(
+            $"https://github.com/other/repo/releases/tag/{otherTag}",
+            ownCitation.GetProperty("url").GetString());
 
         var response = await _client.SendAsync(
             AuthorisedPost("/evidence/tools/list_releases", """{"tag_prefix":"other-tenant-only"}"""),
@@ -234,5 +246,13 @@ public class EvidenceEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         // the other tenant actually leaked into this response.
         Assert.DoesNotContain(otherTag, body.GetProperty("content").GetString()!);
         Assert.Empty(body.GetProperty("citations").EnumerateArray());
+
+        // isError:true with empty citations also describes a tool that failed outright
+        // (ToolRegistry.ExecuteAsync turns any exception into that exact shape), which would
+        // make this test pass for a reason that has nothing to do with isolation. Requiring
+        // isError:false, plus the specific wording of a genuine empty result, pins this down
+        // to "looked under the caller's tenant and found nothing" rather than "could not look".
+        Assert.False(body.GetProperty("isError").GetBoolean());
+        Assert.Contains("No releases match", body.GetProperty("content").GetString()!);
     }
 }
