@@ -305,9 +305,8 @@ public class HybridRetrieverTests(PostgresFixture fixture)
     public async Task Retrieve_TextMatchesExceedPool_ReportsCountAboveThePoolAndNotesTheCap()
     {
         // 60 comfortably clears the 50-row floor of CandidatePoolSize (Math.Max(50, K*4) at
-        // K=8) without going anywhere near the 1001-row counting cap, so this exercises
-        // "more text matches than the blend can see" without needing a fabricated pool size
-        // or a four-figure seed.
+        // K=8), so this exercises "more text matches than the blend can see" without needing
+        // a fabricated pool size. The four-figure case has its own test below.
         var (factory, tenantId) = await SeedTextOnlyAsync("retrieve-text-capped", 60, "gizmotron");
         await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
 
@@ -319,7 +318,6 @@ public class HybridRetrieverTests(PostgresFixture fixture)
         // content ever stops matching the tsquery, rather than passing vacuously because
         // nothing matched.
         Assert.Equal(60, result.TextMatchCount);
-        Assert.False(result.TextMatchCountIsLowerBound);
         Assert.True(result.TextMatchCount > result.CandidatePoolSize);
         Assert.NotNull(result.Note);
         Assert.Contains("capped", result.Note, StringComparison.OrdinalIgnoreCase);
@@ -336,10 +334,31 @@ public class HybridRetrieverTests(PostgresFixture fixture)
             TestContext.Current.CancellationToken);
 
         Assert.Equal(5, result.TextMatchCount);
-        Assert.False(result.TextMatchCountIsLowerBound);
         Assert.True(result.TextMatchCount < result.CandidatePoolSize);
         Assert.False(result.FewerThanRequested);
         Assert.Null(result.Note);
+    }
+
+    /// <summary>
+    /// The count was once taken by a separate CTE that stopped at 1001 rows and reported
+    /// 1000 with a lower-bound flag, so every figure above a thousand was the same figure.
+    /// It is now taken by count(*) over () on the scan that ranks the pool, which counts
+    /// every match. Only a four-figure seed can tell those two implementations apart.
+    /// </summary>
+    [Fact]
+    public async Task Retrieve_TextMatchesExceedTheOldCountingCap_ReportsTheExactCount()
+    {
+        var (factory, tenantId) = await SeedTextOnlyAsync("retrieve-text-above-cap", 1200, "thingamajig");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("thingamajig", NearVector, K: 8),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1200, result.TextMatchCount);
+        Assert.NotNull(result.Note);
+        Assert.Contains("1200", result.Note, StringComparison.Ordinal);
+        Assert.DoesNotContain("at least", result.Note, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -353,7 +372,6 @@ public class HybridRetrieverTests(PostgresFixture fixture)
             TestContext.Current.CancellationToken);
 
         Assert.Equal(0, result.TextMatchCount);
-        Assert.False(result.TextMatchCountIsLowerBound);
         Assert.Null(result.Note);
     }
 }

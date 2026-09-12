@@ -49,9 +49,23 @@ public sealed class HybridRetriever
                 order by e.embedding <=> @queryVector
                 limit @poolSize
             ),
+            -- count(*) over () is evaluated after WHERE and before ORDER BY/LIMIT, so it
+            -- counts every match under these filters while the CTE still returns only the
+            -- top @poolSize. That makes the breadth signal exact and nearly free: the scan
+            -- that ranks the pool is the same scan that counts it, rather than a second one.
+            --
+            -- A separate counting CTE was measured first and cost a full duplicate scan --
+            -- 142ms against 72ms on a rare term. It is not the tsquery that is expensive, it
+            -- is that this scan cannot use evidence_chunks_tsv_idx at all: ts_match_vq is not
+            -- leakproof, so under RLS Postgres refuses to evaluate the @@ qual as an index
+            -- condition ahead of the tenant security qual, and the arm degrades to a
+            -- sequential scan of the tenant's chunks. Every text retrieval pays that scan
+            -- whether or not anything is counted, which is why counting on top of it is
+            -- nearly free -- and why a bounding cap bought nothing and was removed.
             fts as (
                 select c.chunk_id,
-                       ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', @queryText)) as text_score
+                       ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', @queryText)) as text_score,
+                       (count(*) over ())::int as text_match_count
                 from evidence_chunks c
                 where @hasText
                   and c.content_tsv @@ websearch_to_tsquery('english', @queryText)
@@ -60,26 +74,11 @@ public sealed class HybridRetriever
                 order by text_score desc
                 limit @poolSize
             ),
-            -- Same predicates as fts above (hasText, the tsquery match, entity type, date/path)
-            -- so this counts matches to the same question fts answers, not a different one.
-            -- Capped at 1001 rows so a broad GIN match can't add latency to every retrieval;
-            -- the count is truncated back down to 1000 in code, with a flag, when it hits the cap.
-            fts_count as (
-                select count(*)::int as text_match_count
-                from (
-                    select 1
-                    from evidence_chunks c
-                    where @hasText
-                      and c.content_tsv @@ websearch_to_tsquery('english', @queryText)
-                      and (@entityType is null or c.entity_type = @entityType)
-                      {EntityDateFilter()}
-                    limit 1001
-                ) capped
-            ),
             merged as (
                 select coalesce(v.chunk_id, f.chunk_id) as chunk_id,
                        coalesce(v.vector_score, 0)      as vector_score,
-                       coalesce(f.text_score, 0)        as text_score
+                       coalesce(f.text_score, 0)        as text_score,
+                       f.text_match_count               as text_match_count
                 from vec v
                 full outer join fts f on f.chunk_id = v.chunk_id
             ),
@@ -89,6 +88,10 @@ public sealed class HybridRetriever
             -- single-arm hits the full outer join is there to keep.
             normalised as (
                 select chunk_id, vector_score, text_score,
+                       -- Rows the vector arm found alone carry a null count; every fts row
+                       -- carries the same value, so the maximum is that value, and 0 only
+                       -- when the text arm matched nothing at all.
+                       coalesce(max(text_match_count) over (), 0)::int as text_match_count,
                        case when max(text_score) over () > 0
                             then text_score / max(text_score) over ()
                             else 0 end as text_score_norm
@@ -102,10 +105,9 @@ public sealed class HybridRetriever
                    n.vector_score as VectorScore,
                    n.text_score::double precision as TextScore,
                    (@alpha * n.vector_score) + ((1 - @alpha) * n.text_score_norm) as BlendedScore,
-                   fc.text_match_count as TextMatchCount
+                   n.text_match_count as TextMatchCount
             from normalised n
             join evidence_chunks c on c.chunk_id = n.chunk_id
-            cross join fts_count fc
             order by BlendedScore desc
             limit @k
             """;
@@ -140,18 +142,15 @@ public sealed class HybridRetriever
         // = false, so any consumer alerting on truncation read it exactly backwards.
         var fewerThanRequested = chunks.Count < request.K;
 
-        // fts_count is cross-joined onto every returned row, so any row carries the same
-        // value; there is no row to read it from only when both arms came back empty, in
-        // which case the true text match count is 0 anyway.
-        var rawTextMatchCount = rows.Count > 0 ? rows[0].TextMatchCount : 0;
-        var textMatchCountIsLowerBound = rawTextMatchCount > 1000;
-        var textMatchCount = textMatchCountIsLowerBound ? 1000 : rawTextMatchCount;
+        // Every returned row carries the same count, so any row will do; there is no row to
+        // read it from only when both arms came back empty, in which case the true text
+        // match count is 0 anyway.
+        var textMatchCount = rows.Count > 0 ? rows[0].TextMatchCount : 0;
         var textCandidatesCapped = textMatchCount > request.CandidatePoolSize;
 
         activity?.SetTag("retrieved_count", chunks.Count);
         activity?.SetTag("retrieval_fewer_than_requested", fewerThanRequested);
         activity?.SetTag("text_match_count", textMatchCount);
-        activity?.SetTag("text_match_count_is_lower_bound", textMatchCountIsLowerBound);
 
         var fewerThanRequestedMessage = fewerThanRequested
             ? string.Create(CultureInfo.InvariantCulture,
@@ -160,7 +159,7 @@ public sealed class HybridRetriever
 
         var textCappedMessage = textCandidatesCapped
             ? string.Create(CultureInfo.InvariantCulture,
-                $"The text query matched {(textMatchCountIsLowerBound ? "at least " : string.Empty)}{textMatchCount} chunks under the applied filters, more than the candidate pool of {request.CandidatePoolSize}. The text candidates were capped before blending: the top k was chosen from a truncated pool of text candidates, not from every textual match. Narrow the query to see chunks outside the current pool.")
+                $"The text query matched {textMatchCount} chunks under the applied filters, more than the candidate pool of {request.CandidatePoolSize}. The text candidates were capped before blending: the top k was chosen from a truncated pool of text candidates, not from every textual match. Narrow the query to see chunks outside the current pool.")
             : null;
 
         var note = (fewerThanRequestedMessage, textCappedMessage) switch
@@ -177,8 +176,7 @@ public sealed class HybridRetriever
             request.CandidatePoolSize,
             fewerThanRequested,
             note,
-            textMatchCount,
-            textMatchCountIsLowerBound);
+            textMatchCount);
     }
 
     /// <summary>

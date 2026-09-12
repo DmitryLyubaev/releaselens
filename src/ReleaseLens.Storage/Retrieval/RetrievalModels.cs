@@ -37,10 +37,6 @@ public sealed record RetrievalResult(
     /// (entity type, date/path). Zero when there is no text query. This counts only the
     /// text arm -- the vector arm has no equivalent "match count" because every chunk is
     /// a candidate at some distance, so there is nothing analogous to report for it.
+    /// Exact, never a lower bound: the scan that ranks the candidate pool also counts it.
     /// </summary>
-    int TextMatchCount = 0,
-    /// <summary>
-    /// True when the text match count hit its counting cap (1000, reported after a
-    /// 1001-row probe) rather than reflecting the exact number of matches.
-    /// </summary>
-    bool TextMatchCountIsLowerBound = false);
+    int TextMatchCount = 0);
