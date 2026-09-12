@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -6,6 +7,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Hosting;
+using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
@@ -151,6 +153,76 @@ public class EvidenceEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         Assert.Equal("computed", body.GetProperty("kind").GetString());
         Assert.Empty(body.GetProperty("citations").EnumerateArray());
+    }
+
+    /// <summary>
+    /// Deterministic stand-in for a real embedding, good enough to store a chunk with a
+    /// legal vector(384) value. search_commits is reached here through full-text matching
+    /// on a nonsense term, so nothing in this test depends on the vector actually being
+    /// semantically meaningful - only on it satisfying the column's dimension check.
+    /// </summary>
+    private static float[] PlaceholderVector(string text)
+    {
+        var vector = new float[384];
+        var hash = text.GetHashCode(StringComparison.Ordinal);
+        for (var i = 0; i < vector.Length; i++)
+        {
+            vector[i] = MathF.Sin((hash % 1000) + i);
+        }
+
+        var magnitude = MathF.Sqrt(vector.Sum(x => x * x));
+        for (var i = 0; i < vector.Length; i++)
+        {
+            vector[i] /= magnitude;
+        }
+
+        return vector;
+    }
+
+    /// <summary>
+    /// bounds travels on the wire, or the MCP server this API feeds would have to parse
+    /// prose to recover the same fact. coverage must NOT ride along on an evidence result -
+    /// that field means something only for a computed figure (see ToolExecutionResult.Kind).
+    /// </summary>
+    [Fact]
+    public async Task Execute_SearchCommits_ReportsBoundsOnTheWire_AndCarriesNoCoverage()
+    {
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        var evidence = new EvidenceRepository();
+        var chunkRepository = new ChunkRepository();
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+
+        await using (var scope = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken))
+        {
+            var commit = new CommitEvidence(_tenantId, "sha_bounds_wire",
+                "fix: resolve the gizmowire defect", "Author", "author@example.invalid",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                "https://example.invalid/commit/sha_bounds_wire", []);
+
+            await evidence.UpsertCommitsAsync(scope, [commit], TestContext.Current.CancellationToken);
+
+            var chunks = chunker.Chunk(commit);
+            var ids = await chunkRepository.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
+            var vectors = chunks.Select(c => PlaceholderVector(c.Content)).ToArray();
+            await chunkRepository.UpsertEmbeddingsAsync(scope, [.. ids.Zip(vectors)], "placeholder",
+                TestContext.Current.CancellationToken);
+
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        var response = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/search_commits", """{"query":"gizmowire","limit":10}"""),
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+
+        // bounds travels on the wire, or the MCP server would have to parse prose to recover it.
+        var bounds = body.GetProperty("bounds");
+        Assert.True(bounds.GetProperty("matched").GetInt32() >= bounds.GetProperty("returned").GetInt32());
+        Assert.False(body.TryGetProperty("coverage", out var coverage) && coverage.ValueKind != JsonValueKind.Null,
+            "an evidence result must not carry coverage");
     }
 
     [Fact]

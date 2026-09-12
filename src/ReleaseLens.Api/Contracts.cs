@@ -78,9 +78,20 @@ public sealed record EvidenceCitationDto(string Type, string Key, string Title, 
 
 public sealed record EvidenceExcerptDto(string Type, string Key, string Text);
 
+public sealed record EvidenceBoundsDto(int Returned, int Matched, bool Truncated);
+
+/// <summary>
+/// <paramref name="Earliest"/> and <paramref name="Latest"/> are ISO-8601 strings
+/// (<c>DateTimeOffset.ToString("O")</c>) rather than <see cref="DateTimeOffset"/>, so the wire
+/// shape does not depend on how the serialiser happens to render dates.
+/// </summary>
+public sealed record EvidenceCoverageDto(string? Earliest, string? Latest, bool CompleteForWindow);
+
 public sealed record EvidenceToolResultResponse(
     string Kind,
     string Content,
     bool IsError,
     IReadOnlyList<EvidenceCitationDto> Citations,
-    IReadOnlyList<EvidenceExcerptDto> Excerpts);
+    IReadOnlyList<EvidenceExcerptDto> Excerpts,
+    EvidenceBoundsDto? Bounds = null,
+    EvidenceCoverageDto? Coverage = null);

@@ -43,12 +43,49 @@ public enum ResultKind
     Computed
 }
 
+/// <summary>
+/// How much of the matching evidence this result actually contains. Present on evidence
+/// results only. A caller outside this process has no prompt telling it not to count the
+/// rows it was handed, so the result says how many it was not handed.
+/// </summary>
+/// <remarks>
+/// What one unit of "Returned"/"Matched" means is chosen per tool, not fixed by this record.
+/// <see cref="FindRegressionsTool"/>, <see cref="ListReleasesTool"/> and
+/// <see cref="DiffBetweenReleasesTool"/> count artefacts (one issue, one release, one
+/// commit), because every row each of those tools returns is exactly one artefact, and the
+/// corpus-wide match count each already computes (<c>CountRegressionCandidatesAsync</c>,
+/// <c>CountReleasesAsync</c>, <c>CountCommitsBetweenAsync</c>) is over that same table with
+/// the same filter. <see cref="SearchCommitsTool"/> is different: it collapses several
+/// chunks into one citation per artefact, but the only corpus-wide match figure it holds -
+/// <c>RetrievalResult.TextMatchCount</c> - counts chunks that matched the full-text query,
+/// not distinct artefacts. Pairing a deduplicated citation count against a chunk-level match
+/// count would produce a number in no unit at all, so for that tool both
+/// <see cref="Returned"/> and <see cref="Matched"/> are chunk counts, not artefact counts.
+/// </remarks>
+/// <param name="Returned">How many of this tool's unit (see remarks) are in this result.</param>
+/// <param name="Matched">How many of that same unit match the query under the same filters,
+/// in the whole corpus. Never an estimate and never a lower bound.</param>
+/// <param name="Truncated">True when <paramref name="Matched"/> exceeds
+/// <paramref name="Returned"/>.</param>
+public sealed record ToolResultBounds(int Returned, int Matched, bool Truncated);
+
+/// <summary>
+/// What the corpus actually spans, against the window that was asked about. Present on
+/// computed results only. The corpus does not cover all of history, so a count can be true
+/// of the evidence and false of the repository; <see cref="CompleteForWindow"/> is how a
+/// caller tells those apart.
+/// </summary>
+public sealed record ToolCoverage(
+    DateTimeOffset? Earliest, DateTimeOffset? Latest, bool CompleteForWindow);
+
 public sealed record ToolExecutionResult(
     string Content,
     IReadOnlyList<EvidenceCitation> Citations,
     bool IsError,
     IReadOnlyList<EvidenceExcerpt> Excerpts,
-    ResultKind Kind = ResultKind.Evidence)
+    ResultKind Kind = ResultKind.Evidence,
+    ToolResultBounds? Bounds = null,
+    ToolCoverage? Coverage = null)
 {
     /// <summary>
     /// For results whose artefacts carry no attributable text — an empty search, or a
@@ -69,6 +106,16 @@ public sealed record ToolExecutionResult(
     /// </summary>
     public static ToolExecutionResult Computed(string content)
         => new(content, [], false, [], ResultKind.Computed);
+
+    /// <summary>
+    /// Same as <see cref="Computed(string)"/>, plus the corpus coverage the content already
+    /// describes in prose. There is deliberately no way to attach a <see cref="ToolCoverage"/>
+    /// without also carrying <see cref="ResultKind.Computed"/>: coverage answers "what span of
+    /// history is this figure true over", a question that only makes sense for a computed
+    /// figure, never for a page of retrieved artefacts.
+    /// </summary>
+    public static ToolExecutionResult Computed(string content, ToolCoverage coverage)
+        => new(content, [], false, [], ResultKind.Computed, Bounds: null, Coverage: coverage);
 
     /// <summary>
     /// Errors go back to the model as content, not as exceptions. A tool that throws

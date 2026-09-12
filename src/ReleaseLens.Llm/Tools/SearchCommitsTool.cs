@@ -69,9 +69,15 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
             PathFilter = JsonArgs.String(arguments, "path")
         }, cancellationToken);
 
+        // Bounds are chunk counts, not artefact counts - see the remarks on
+        // ToolResultBounds. result.TextMatchCount is already chunk-level and exact (see its
+        // own doc comment on RetrievalResult), so nothing here is recomputed.
         if (result.Chunks.Count == 0)
         {
-            return ToolExecutionResult.Ok("No matching evidence found for that query.", []);
+            return ToolExecutionResult.Ok("No matching evidence found for that query.", []) with
+            {
+                Bounds = new ToolResultBounds(0, result.TextMatchCount, result.TextMatchCount > 0)
+            };
         }
 
         var content = new StringBuilder();
@@ -100,7 +106,17 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
             excerpts.Add(new EvidenceExcerpt(chunk.Type, chunk.EntityKey, chunk.Content));
         }
 
-        return ToolExecutionResult.Ok(content.ToString(), Deduplicate(citations), excerpts);
+        // Chunk counts, not artefact counts: chunks.Count is what this tool actually
+        // returned before the citation list collapsed several chunks into one entry per
+        // artefact, and TextMatchCount is the corpus-wide count in that same chunk unit -
+        // see the remarks on ToolResultBounds for why an artefact count cannot pair with it.
+        var bounds = new ToolResultBounds(
+            result.Chunks.Count, result.TextMatchCount, result.TextMatchCount > result.Chunks.Count);
+
+        return ToolExecutionResult.Ok(content.ToString(), Deduplicate(citations), excerpts) with
+        {
+            Bounds = bounds
+        };
     }
 
     internal static string FirstLine(string content)

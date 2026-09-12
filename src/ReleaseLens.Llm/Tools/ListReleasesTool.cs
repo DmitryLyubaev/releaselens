@@ -93,7 +93,14 @@ public sealed class ListReleasesTool(EvidenceQueries queries) : IEvidenceTool
                 .Append("No releases match ").Append(filters).AppendLine(".");
 
             AggregateWindow.AppendCoverage(empty, "release.published", coverage, since, until);
-            return ToolExecutionResult.Ok(empty.ToString(), []);
+
+            // matching is necessarily 0 here too: ListReleasesAsync and CountReleasesAsync
+            // share ReleaseFilter, so an empty page means an empty count under the same
+            // predicate.
+            return ToolExecutionResult.Ok(empty.ToString(), []) with
+            {
+                Bounds = new ToolResultBounds(0, (int)matching, false)
+            };
         }
 
         var content = new StringBuilder()
@@ -149,7 +156,12 @@ public sealed class ListReleasesTool(EvidenceQueries queries) : IEvidenceTool
 
         AggregateWindow.AppendCoverage(content, "release.published", coverage, since, until);
 
-        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts);
+        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts) with
+        {
+            // Same unit throughout: releases.Count and matching are both release counts,
+            // the count this tool already prints as "Showing X of Y releases" above.
+            Bounds = new ToolResultBounds(releases.Count, (int)matching, matching > releases.Count)
+        };
     }
 
     private static string Describe(string? tagPrefix, WindowBound? since, WindowBound? until)

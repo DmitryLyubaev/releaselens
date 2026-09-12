@@ -156,7 +156,11 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
         // span of history is held at all", which the label filter does not change, and a
         // filtered version would quietly redefine INCOMPLETE COVERAGE to mean "no issue
         // with this label falls outside the window" - a different and far weaker claim.
-        AggregateWindow.AppendCoverage(content, label, coverage, since, until);
+        //
+        // The returned bool is the exact same completeness AppendCoverage just used to
+        // decide whether to print "INCOMPLETE COVERAGE" above - not a second computation
+        // of it - so ToolCoverage.CompleteForWindow below can never disagree with the prose.
+        var completeForWindow = AggregateWindow.AppendCoverage(content, label, coverage, since, until);
 
         // A count is computed, not retrieved, so there is no artefact to point at and no
         // citation is produced. Without this the model is caught between a system prompt
@@ -171,7 +175,9 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
                .Append("Write the figure exactly as printed above, in digits, with no thousands separator ")
                .AppendLine("and no rounding or hedging.");
 
-        return ToolExecutionResult.Computed(content.ToString());
+        return ToolExecutionResult.Computed(
+            content.ToString(),
+            new ToolCoverage(coverage.Earliest, coverage.Latest, completeForWindow));
     }
 
     private static string Alternatives(EntityType type)

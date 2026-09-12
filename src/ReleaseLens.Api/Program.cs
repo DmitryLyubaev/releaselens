@@ -194,7 +194,14 @@ app.MapPost("/evidence/tools/{name}", async (
         [.. result.Citations.Select(c => new EvidenceCitationDto(
             c.Type.ToWireName(), c.EntityKey, c.Title, repositoryBaseUrl + c.Url))],
         [.. result.Excerpts.Select(e => new EvidenceExcerptDto(
-            e.Type.ToWireName(), e.EntityKey, e.Text))]));
+            e.Type.ToWireName(), e.EntityKey, e.Text))],
+        result.Bounds is null ? null
+            : new EvidenceBoundsDto(result.Bounds.Returned, result.Bounds.Matched, result.Bounds.Truncated),
+        result.Coverage is null ? null
+            : new EvidenceCoverageDto(
+                result.Coverage.Earliest?.ToString("O"),
+                result.Coverage.Latest?.ToString("O"),
+                result.Coverage.CompleteForWindow)));
 });
 
 app.MapPost("/query", async (

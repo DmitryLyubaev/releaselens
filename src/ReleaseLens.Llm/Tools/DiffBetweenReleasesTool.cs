@@ -74,7 +74,13 @@ public sealed class DiffBetweenReleasesTool(EvidenceQueries queries) : IEvidence
 
         if (commits.Count == 0)
         {
-            return ToolExecutionResult.Ok($"No commits were recorded between {fromTag} and {toTag}.", []);
+            // matching is necessarily 0 here too: GetCommitsBetweenAsync and
+            // CountCommitsBetweenAsync share CommitWindowFilter, so an empty page means an
+            // empty count under the same predicate.
+            return ToolExecutionResult.Ok($"No commits were recorded between {fromTag} and {toTag}.", []) with
+            {
+                Bounds = new ToolResultBounds(0, (int)matching, false)
+            };
         }
 
         var content = new StringBuilder()
@@ -128,7 +134,13 @@ public sealed class DiffBetweenReleasesTool(EvidenceQueries queries) : IEvidence
                    .Append(" and ").Append(toTag).AppendLine("; the list was not capped.");
         }
 
-        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts);
+        return ToolExecutionResult.Ok(content.ToString(), citations, excerpts) with
+        {
+            // Same unit throughout: commits.Count and matching are both counts of rows in
+            // the commits table under CommitWindowFilter - the count this tool already
+            // prints as "Showing X of Y commit(s)" above.
+            Bounds = new ToolResultBounds(commits.Count, (int)matching, matching > commits.Count)
+        };
     }
 
     /// <summary>

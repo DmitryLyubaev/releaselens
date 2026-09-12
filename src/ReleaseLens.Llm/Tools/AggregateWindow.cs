@@ -124,7 +124,14 @@ internal static class AggregateWindow
     /// window that runs past either end of the corpus is called out explicitly rather
     /// than left for the reader to work out from two dates.
     /// </summary>
-    public static void AppendCoverage(
+    /// <returns>
+    /// True when the requested window falls entirely inside the corpus, so a caller can
+    /// treat the figure as complete. This is <see cref="ToolCoverage.CompleteForWindow"/>
+    /// for <see cref="CountEvidenceTool"/> - the same boolean that decided whether the
+    /// "INCOMPLETE COVERAGE" line above was printed, not a second calculation of it. The
+    /// prose and the structure would otherwise be free to disagree.
+    /// </returns>
+    public static bool AppendCoverage(
         StringBuilder content, string label, EvidenceCoverage coverage, WindowBound? since, WindowBound? until)
     {
         content.AppendLine();
@@ -133,7 +140,10 @@ internal static class AggregateWindow
         {
             content.Append("Corpus coverage: no ").Append(label)
                    .AppendLine(" records are held at all, so this result reflects an empty corpus, not the repository.");
-            return;
+
+            // An empty corpus cannot be shown to cover the requested window, whatever it
+            // was, so this is incomplete rather than vacuously complete.
+            return false;
         }
 
         content.Append("Corpus coverage for ").Append(label).Append(": ")
@@ -163,5 +173,7 @@ internal static class AggregateWindow
                        "This result is therefore true of the indexed corpus but not of the repository's full history. " +
                        "Say so in the answer, or decline, rather than presenting it as the complete figure.");
         }
+
+        return gaps.Count == 0;
     }
 }
