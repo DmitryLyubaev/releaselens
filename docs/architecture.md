@@ -22,6 +22,8 @@ IEvidenceSource ───────────────┤  ingest  · iss
                                    ▼
      ┌───────────────────────────────────────────────────────────┐
      │  API (ASP.NET Core minimal)                               │
+     │  routes: /query · /health                                 │
+     │          GET /evidence/tools · POST /evidence/tools/{name}│
      │  api-key auth → budget check → QueryAgent                 │
      │                                                           │
      │  QueryAgent: seed evidence + tool loop                    │
@@ -133,6 +135,11 @@ the agent with no attributable text, which is a different fact from the field be
 The degraded path honours the flag too, and the flag changes nothing else about the
 response — the same query with it on and off yields an identical citation list, so
 `citation_recall` and `citation_precision` cannot move because of it.
+
+A tool result carries its `ResultKind` — `Evidence` or `Computed`. Internally the difference
+is enforced by the system prompt, which tells the model a computed figure takes no marker.
+Nothing outside the process can read a prompt, so the evidence API publishes the kind on the
+response instead: an external consumer can honour the rule without having been told it.
 
 ## Designed failure modes
 

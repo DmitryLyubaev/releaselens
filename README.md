@@ -131,6 +131,28 @@ foreign key is rejected.
 the retrieved evidence unsynthesised rather than a 500. Retrieval finds fewer than *k* → say
 so in the metadata rather than truncate silently. Budget exhausted → 429.
 
+### Evidence API
+
+Alongside `/query`, which answers a question, ReleaseLens publishes the evidence tools
+themselves so an external agent can retrieve evidence and compose its own answer.
+
+```
+GET  /evidence/tools         the six tools, with descriptions and JSON schemas
+POST /evidence/tools/{name}  run one, under the tenant the API key belongs to
+```
+
+A result declares whether it is `evidence` — retrieved artefacts, with citations — or
+`computed`: a figure produced by a bounded aggregate, carrying no citations because a
+computed figure is not an artefact. That distinction is a property of the response, not a
+convention a caller has to know.
+
+Tenant is derived from the API key. No schema published by `/evidence/tools` accepts a
+tenant parameter, and no route or body field offers one, so a caller has no way to ask for
+another tenant's evidence.
+
+**Unproven:** these endpoints exist and are tested, but nothing has yet been built on top of
+them, and no measurement of an external agent using them has been taken.
+
 ## Corpus
 
 Counts from the running database, 12 August 2026.
