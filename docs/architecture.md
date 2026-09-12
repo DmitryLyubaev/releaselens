@@ -105,6 +105,44 @@ post-filter; without iterative scan, a tenant whose vectors are sparse relative 
 index gets back fewer rows than its corpus actually contains. `relaxed_order` is sufficient
 because the vector CTE is a candidate pool that the blend re-ranks, not a final ordering.
 
+### The text arm does not use its index, and cannot
+
+`evidence_chunks_tsv_idx` is a GIN index on `content_tsv`. Under RLS it is never used. The
+same `count(*)` over a rare term, against a 41,825-chunk corpus:
+
+| | plan | rows examined | time |
+|---|---|---|---|
+| As a superuser, RLS not applied | GIN index scan, 5 heap blocks | 5 | 21 ms |
+| Under `releaselens_app` | Seq Scan | 41,825 | 262 ms |
+| Under `releaselens_app`, `enable_seqscan = off` | tenant btree, then filter | 41,825 | 110 ms |
+
+Forcing sequential scans off does not reach the index — Postgres takes the tenant btree and
+discards 41,820 rows rather than touch the GIN index. A composite `gin (tenant_id, content_tsv)`
+via `btree_gin` was built and measured too, and changes nothing: still a Seq Scan.
+
+The cause is that `ts_match_vq`, the function behind `tsvector @@ tsquery`, is not leakproof
+(`pg_proc.proleakproof` is false). An RLS policy is a security qual, and Postgres will not
+evaluate a non-leakproof qual ahead of one — an index condition is evaluated during the scan,
+which would put the match ahead of the tenant check. So the `@@` predicate can only ever be a
+post-filter here, and no index shape changes that.
+
+The consequence is that every text retrieval scans the tenant's chunks: about 70 ms at the
+current corpus size, growing linearly with it. This is a property of combining RLS with
+full-text search, not of any one query, and it predates the retrieval code's current shape —
+it was found while measuring something else. It is recorded rather than fixed: the documented
+remedy is `ALTER FUNCTION ts_match_vq(tsvector, tsquery) LEAKPROOF`, which restores the index
+by permitting the match to run before the tenant check, and that is a tenancy decision — the
+isolation guarantee is the thing this project claims — not a performance tweak.
+
+One thing follows from it directly. `RetrievalResult.TextMatchCount` reports how many chunks
+the text query matched in total, so a caller can tell a full candidate pool from an exhausted
+corpus. It is counted by `count(*) over ()` on the scan that ranks the pool, not by a second
+query: since that scan reads every matching row regardless, counting costs almost nothing
+(72 ms against 71 ms unscanned on a rare term) and the count is exact. An earlier version used
+a separate CTE capped at 1001 rows, which cost a full duplicate scan — 142 ms against 72 ms —
+and reported every figure above a thousand as the same thousand. The cap was protecting against
+a cost the index would have made real; without the index there is nothing to protect.
+
 Deliberately not a reranking model — that is a stated non-goal.
 
 ## Citations

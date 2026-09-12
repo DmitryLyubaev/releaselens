@@ -124,9 +124,12 @@ perfect on those queries.
   cited all four expected releases and scored recall 1.000, so it appears to have ignored the
   instruction — but a future run is not strictly comparable with this one on that axis.
 
-- **`search_commits` still cannot say when its page is full.** `HybridRetriever` emits a note
-  only when *fewer* than *k* chunks come back, so the genuinely-capped case carries no signal.
-  Known, unfixed, and the largest remaining defect of that shape.
+- **`search_commits` could not say when its page was full, during this run.** `HybridRetriever`
+  emitted a note only when *fewer* than *k* chunks came back, so the case where the candidate
+  pool was full carried no signal at all. It has since been fixed: retrieval now reports how
+  many chunks the text query matched in total, and says so when that exceeds the pool. The
+  numbers above were measured before that, so an answer here that reads as confidently
+  complete may have been drawn from a pool that was quietly full.
 
 ## Reproducing
 
