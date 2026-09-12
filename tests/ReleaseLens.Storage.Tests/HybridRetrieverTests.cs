@@ -272,4 +272,88 @@ public class HybridRetrieverTests(PostgresFixture fixture)
         Assert.NotEmpty(result.Chunks);
         Assert.All(result.Chunks, c => Assert.Equal(0, c.TextScore));
     }
+
+    /// <summary>
+    /// Seeds chunks that all contain <paramref name="keyword"/>, with no embeddings at
+    /// all. Without an embedded vector the vec CTE never surfaces them, so the returned
+    /// chunks and the reported TextMatchCount both trace back to the fts arm alone --
+    /// there is nothing here for the vector arm to contribute or to interfere with.
+    /// </summary>
+    private async Task<(TenantConnectionFactory Factory, Guid TenantId)> SeedTextOnlyAsync(
+        string slug, int count, string keyword)
+    {
+        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        var tenantId = await new TenantRepository(factory).CreateAsync(
+            new TenantDefinition(slug, slug, "github", "microsoft", "semantic-kernel", 1_000_000),
+            TestContext.Current.CancellationToken);
+
+        var chunks = new ChunkRepository();
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var toInsert = Enumerable.Range(0, count)
+            .Select(i => new Chunk(tenantId, EntityType.Commit, $"bulk_{i}", 0,
+                $"[commit bulk_{i}] {keyword} shows up in this chunk describing routine maintenance work", 14))
+            .ToList();
+
+        await chunks.UpsertChunksAsync(scope, toInsert, TestContext.Current.CancellationToken);
+        await scope.CommitAsync(TestContext.Current.CancellationToken);
+
+        return (factory, tenantId);
+    }
+
+    [Fact]
+    public async Task Retrieve_TextMatchesExceedPool_ReportsCountAboveThePoolAndNotesTheCap()
+    {
+        // 60 comfortably clears the 50-row floor of CandidatePoolSize (Math.Max(50, K*4) at
+        // K=8) without going anywhere near the 1001-row counting cap, so this exercises
+        // "more text matches than the blend can see" without needing a fabricated pool size
+        // or a four-figure seed.
+        var (factory, tenantId) = await SeedTextOnlyAsync("retrieve-text-capped", 60, "gizmotron");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("gizmotron", NearVector, K: 8),
+            TestContext.Current.CancellationToken);
+
+        // Asserting the exact count (not just ">") makes this fail loudly if the seeded
+        // content ever stops matching the tsquery, rather than passing vacuously because
+        // nothing matched.
+        Assert.Equal(60, result.TextMatchCount);
+        Assert.False(result.TextMatchCountIsLowerBound);
+        Assert.True(result.TextMatchCount > result.CandidatePoolSize);
+        Assert.NotNull(result.Note);
+        Assert.Contains("capped", result.Note, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Retrieve_TextMatchesBelowPool_ReportsTrueCountWithNoCappingClaim()
+    {
+        var (factory, tenantId) = await SeedTextOnlyAsync("retrieve-text-uncapped", 5, "widgetronic");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("widgetronic", NearVector, K: 5),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(5, result.TextMatchCount);
+        Assert.False(result.TextMatchCountIsLowerBound);
+        Assert.True(result.TextMatchCount < result.CandidatePoolSize);
+        Assert.False(result.FewerThanRequested);
+        Assert.Null(result.Note);
+    }
+
+    [Fact]
+    public async Task Retrieve_NoTextQuery_ReportsZeroMatchCountAndNoCappingClaim()
+    {
+        var (factory, tenantId) = await SeedAsync("retrieve-no-text-count");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var result = await new HybridRetriever().RetrieveAsync(scope,
+            new RetrievalRequest("   ", NearVector, K: 3),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.TextMatchCount);
+        Assert.False(result.TextMatchCountIsLowerBound);
+        Assert.Null(result.Note);
+    }
 }

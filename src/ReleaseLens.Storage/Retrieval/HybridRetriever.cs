@@ -60,6 +60,22 @@ public sealed class HybridRetriever
                 order by text_score desc
                 limit @poolSize
             ),
+            -- Same predicates as fts above (hasText, the tsquery match, entity type, date/path)
+            -- so this counts matches to the same question fts answers, not a different one.
+            -- Capped at 1001 rows so a broad GIN match can't add latency to every retrieval;
+            -- the count is truncated back down to 1000 in code, with a flag, when it hits the cap.
+            fts_count as (
+                select count(*)::int as text_match_count
+                from (
+                    select 1
+                    from evidence_chunks c
+                    where @hasText
+                      and c.content_tsv @@ websearch_to_tsquery('english', @queryText)
+                      and (@entityType is null or c.entity_type = @entityType)
+                      {EntityDateFilter()}
+                    limit 1001
+                ) capped
+            ),
             merged as (
                 select coalesce(v.chunk_id, f.chunk_id) as chunk_id,
                        coalesce(v.vector_score, 0)      as vector_score,
@@ -85,14 +101,16 @@ public sealed class HybridRetriever
                    c.content      as Content,
                    n.vector_score as VectorScore,
                    n.text_score::double precision as TextScore,
-                   (@alpha * n.vector_score) + ((1 - @alpha) * n.text_score_norm) as BlendedScore
+                   (@alpha * n.vector_score) + ((1 - @alpha) * n.text_score_norm) as BlendedScore,
+                   fc.text_match_count as TextMatchCount
             from normalised n
             join evidence_chunks c on c.chunk_id = n.chunk_id
+            cross join fts_count fc
             order by BlendedScore desc
             limit @k
             """;
 
-        var rows = await scope.Connection.QueryAsync<Row>(new CommandDefinition(sql, new
+        var rows = (await scope.Connection.QueryAsync<Row>(new CommandDefinition(sql, new
         {
             queryVector = new Vector(request.QueryVector),
             queryText = hasText ? request.Query : string.Empty,
@@ -104,7 +122,7 @@ public sealed class HybridRetriever
             poolSize = request.CandidatePoolSize,
             alpha = request.Alpha,
             k = request.K
-        }, scope.Transaction, cancellationToken: cancellationToken));
+        }, scope.Transaction, cancellationToken: cancellationToken))).ToList();
 
         var chunks = rows.Select(r => new RetrievedChunk(
             r.ChunkId,
@@ -122,18 +140,45 @@ public sealed class HybridRetriever
         // = false, so any consumer alerting on truncation read it exactly backwards.
         var fewerThanRequested = chunks.Count < request.K;
 
+        // fts_count is cross-joined onto every returned row, so any row carries the same
+        // value; there is no row to read it from only when both arms came back empty, in
+        // which case the true text match count is 0 anyway.
+        var rawTextMatchCount = rows.Count > 0 ? rows[0].TextMatchCount : 0;
+        var textMatchCountIsLowerBound = rawTextMatchCount > 1000;
+        var textMatchCount = textMatchCountIsLowerBound ? 1000 : rawTextMatchCount;
+        var textCandidatesCapped = textMatchCount > request.CandidatePoolSize;
+
         activity?.SetTag("retrieved_count", chunks.Count);
         activity?.SetTag("retrieval_fewer_than_requested", fewerThanRequested);
+        activity?.SetTag("text_match_count", textMatchCount);
+        activity?.SetTag("text_match_count_is_lower_bound", textMatchCountIsLowerBound);
+
+        var fewerThanRequestedMessage = fewerThanRequested
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"Retrieval returned {chunks.Count} chunks, fewer than the requested k={request.K}. The corpus does not contain more matching evidence; results were not truncated by a limit.")
+            : null;
+
+        var textCappedMessage = textCandidatesCapped
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"The text query matched {(textMatchCountIsLowerBound ? "at least " : string.Empty)}{textMatchCount} chunks under the applied filters, more than the candidate pool of {request.CandidatePoolSize}. The text candidates were capped before blending: the top k was chosen from a truncated pool of text candidates, not from every textual match. Narrow the query to see chunks outside the current pool.")
+            : null;
+
+        var note = (fewerThanRequestedMessage, textCappedMessage) switch
+        {
+            (not null, not null) => $"{fewerThanRequestedMessage} Separately, {char.ToLowerInvariant(textCappedMessage[0])}{textCappedMessage[1..]}",
+            (not null, null) => fewerThanRequestedMessage,
+            (null, not null) => textCappedMessage,
+            _ => null
+        };
 
         return new RetrievalResult(
             chunks,
             request.K,
             request.CandidatePoolSize,
             fewerThanRequested,
-            fewerThanRequested
-                ? string.Create(CultureInfo.InvariantCulture,
-                    $"Retrieval returned {chunks.Count} chunks, fewer than the requested k={request.K}. The corpus does not contain more matching evidence; results were not truncated by a limit.")
-                : null);
+            note,
+            textMatchCount,
+            textMatchCountIsLowerBound);
     }
 
     /// <summary>
@@ -154,5 +199,6 @@ public sealed class HybridRetriever
 
     private sealed record Row(
         long ChunkId, string EntityTypeWire, string EntityKey, int ChunkIndex,
-        string Content, double VectorScore, double TextScore, double BlendedScore);
+        string Content, double VectorScore, double TextScore, double BlendedScore,
+        int TextMatchCount);
 }
