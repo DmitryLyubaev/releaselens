@@ -90,9 +90,12 @@ or `must_contain`, all three of which are perfect on those queries.
 ## What it does that a tutorial RAG does not
 
 **The model gets tools, not just chunks.** `search_commits`, `get_issue`,
-`diff_between_releases` and `find_regressions` retrieve evidence; `count_evidence` and
-`list_releases` compute over the whole corpus instead of sampling it. It runs its own
-follow-up searches when the first pass is not enough. Agentic retrieval, not single-shot.
+`diff_between_releases` and `find_regressions` retrieve evidence by sampling it.
+`count_evidence` computes a figure over the whole corpus instead of sampling — the one tool
+that returns no citation, because a count is not an artefact. `list_releases` also runs an
+exhaustive query rather than a sampled one, but what it returns are citable release rows, so
+it is retrieval too. It runs its own follow-up searches when the first pass is not enough.
+Agentic retrieval, not single-shot.
 
 **Counting is a tool, not a guess.** A retrieval system asked "how many releases shipped in
 2024" can only count what it happened to retrieve, and a sample counted is a fabrication with
@@ -141,10 +144,25 @@ GET  /evidence/tools         the six tools, with descriptions and JSON schemas
 POST /evidence/tools/{name}  run one, under the tenant the API key belongs to
 ```
 
-A result declares whether it is `evidence` — retrieved artefacts, with citations — or
+A `POST /evidence/tools/{name}` response carries `content` (the tool's rendered text),
+`isError` (a recoverable tool failure — an unknown tag, a malformed argument — not an HTTP
+error; the route itself still returns 200), `citations` (the artefacts the result names) and
+`excerpts` (the attributable text behind each citation, keyed to it by `(type, key)`).
+
+A result also declares whether it is `evidence` — a citable artefact, with citations — or
 `computed`: a figure produced by a bounded aggregate, carrying no citations because a
-computed figure is not an artefact. That distinction is a property of the response, not a
-convention a caller has to know.
+computed figure is not an artefact. `count_evidence` is the only tool that returns
+`computed`; every other tool, including `list_releases` (which runs an exhaustive query
+rather than a sampled one, but still returns citable rows), reports `evidence` with real
+citations. That distinction is a property of the response, not a convention a caller has to
+know.
+
+Unlike `/query`, where excerpt text is opt-in via `includeEvidence` — kept off by default
+there because a chunk runs to roughly a thousand characters across as many as twenty
+citations, a cost documented in `Contracts.cs` — this endpoint always returns `excerpts`. An
+evidence API exists so a caller can read the text behind a citation, so withholding it by
+default here would defeat the endpoint's purpose; the payload-size trade-off `/query` makes
+does not apply to a surface whose only job is handing evidence to an external caller.
 
 Tenant is derived from the API key. No schema published by `/evidence/tools` accepts a
 tenant parameter, and no route or body field offers one, so a caller has no way to ask for

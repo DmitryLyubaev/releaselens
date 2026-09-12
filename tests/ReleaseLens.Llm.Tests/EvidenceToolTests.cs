@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging.Abstractions;
 using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Ingestion.Tests;
@@ -155,7 +156,8 @@ public class EvidenceToolTests(PostgresFixture fixture)
         new FindRegressionsTool(new EvidenceQueries()),
         new CountEvidenceTool(new EvidenceQueries()),
         new ListReleasesTool(new EvidenceQueries())
-    ]);
+    ],
+    NullLogger<ToolRegistry>.Instance);
 
     private static JsonElement Args(string json) => JsonDocument.Parse(json).RootElement;
 
@@ -884,6 +886,29 @@ public class EvidenceToolTests(PostgresFixture fixture)
 
         Assert.Equal(ResultKind.Computed, result.Kind);
         Assert.Empty(result.Citations);
+    }
+
+    /// <summary>
+    /// The classification the wording bug in item 1 got wrong: list_releases runs an
+    /// exhaustive query rather than a sampled one, but what it returns are citable release
+    /// rows, so it is Evidence - not Computed - and its citations are non-empty here to
+    /// prove that, not merely absent the way an empty search's are.
+    /// </summary>
+    [Fact]
+    public async Task ListReleases_ReportsItsResultAsEvidence_WithRealCitations()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-list-releases-kind");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var tool = new ListReleasesTool(new EvidenceQueries());
+
+        var result = await tool.ExecuteAsync(
+            scope,
+            Args("""{}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.Equal(ResultKind.Evidence, result.Kind);
+        Assert.NotEmpty(result.Citations);
     }
 
     [Fact]

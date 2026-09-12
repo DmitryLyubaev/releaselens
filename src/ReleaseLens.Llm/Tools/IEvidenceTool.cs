@@ -25,14 +25,17 @@ public sealed record EvidenceCitation(EntityType Type, string EntityKey, string 
 public sealed record EvidenceExcerpt(EntityType Type, string EntityKey, string Text);
 
 /// <summary>
-/// Whether a tool result is retrieved evidence or a computed figure.
+/// Whether a tool result is a citable artefact or a computed figure.
 /// </summary>
 /// <remarks>
 /// This cannot be inferred from the citation list: a computed aggregate carries no citations
-/// by design, and so does a search that matched nothing. Internally the difference is carried
-/// by SystemPrompt.cs telling the model that a computed figure takes no marker. Nothing
-/// outside this process can read a prompt, so the distinction has to live on the type for an
-/// external consumer to honour it.
+/// by design, and so does a search that matched nothing. <see cref="Computed"/> means the
+/// result is a figure rather than an artefact — <see cref="CountEvidenceTool"/> is its only
+/// producer. <see cref="ListReleasesTool"/> runs an exhaustive query rather than a sampled
+/// one, but what it returns are citable release rows, so it reports <see cref="Evidence"/>
+/// with real citations, the same as any retrieval tool. The kind is therefore a property of
+/// what the result *is*, not of whether citations happen to be present, so an external
+/// consumer can honour it without reading anything this process keeps to itself.
 /// </remarks>
 public enum ResultKind
 {

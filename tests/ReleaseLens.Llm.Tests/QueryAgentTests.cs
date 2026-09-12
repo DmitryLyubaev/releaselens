@@ -196,7 +196,8 @@ public class QueryAgentTests(PostgresFixture fixture)
             new GetIssueTool(new EvidenceRepository()),
             new DiffBetweenReleasesTool(new EvidenceQueries()),
             new FindRegressionsTool(new EvidenceQueries())
-        ]),
+        ],
+        NullLogger<ToolRegistry>.Instance),
         new HybridRetriever(),
         _embedder,
         new AgentOptions { Model = "claude-sonnet-5", MaxIterations = 6 },

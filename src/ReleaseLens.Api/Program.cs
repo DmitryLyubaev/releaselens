@@ -65,7 +65,8 @@ builder.Services.AddSingleton(sp => new ToolRegistry(
     new FindRegressionsTool(sp.GetRequiredService<EvidenceQueries>()),
     new CountEvidenceTool(sp.GetRequiredService<EvidenceQueries>()),
     new ListReleasesTool(sp.GetRequiredService<EvidenceQueries>())
-]));
+],
+sp.GetRequiredService<ILogger<ToolRegistry>>()));
 
 builder.Services.AddSingleton<QueryAgent>();
 builder.Services.AddOpenApi();

@@ -27,9 +27,9 @@ IEvidenceSource ───────────────┤  ingest  · iss
      │  api-key auth → budget check → QueryAgent                 │
      │                                                           │
      │  QueryAgent: seed evidence + tool loop                    │
-     │    retrieve: search_commits · get_issue                   │
+     │    retrieve: search_commits · get_issue · list_releases   │
      │              diff_between_releases · find_regressions     │
-     │    compute:  count_evidence · list_releases               │
+     │    compute:  count_evidence                               │
      │                                                           │
      │  FallbackChatProvider → Anthropic ─┐                      │
      │                       → OpenAI-wire ┴─► degraded 200      │
@@ -136,10 +136,13 @@ The degraded path honours the flag too, and the flag changes nothing else about 
 response — the same query with it on and off yields an identical citation list, so
 `citation_recall` and `citation_precision` cannot move because of it.
 
-A tool result carries its `ResultKind` — `Evidence` or `Computed`. Internally the difference
-is enforced by the system prompt, which tells the model a computed figure takes no marker.
-Nothing outside the process can read a prompt, so the evidence API publishes the kind on the
-response instead: an external consumer can honour the rule without having been told it.
+A tool result carries its `ResultKind` — `Evidence` or `Computed`. `Computed` means the
+result is a figure rather than an artefact: `count_evidence` is its only producer, and it
+carries no citations because there is nothing to cite. Every other tool reports `Evidence`,
+including `list_releases`, which runs an exhaustive query rather than a sampled one but still
+returns citable release rows, with real citations attached. The kind is a property of what
+the result is, not a hint the model alone was given — so the evidence API can publish it on
+the response and an external consumer can honour it without having read the system prompt.
 
 ## Designed failure modes
 
