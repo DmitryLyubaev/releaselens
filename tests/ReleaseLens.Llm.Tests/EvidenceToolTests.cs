@@ -869,4 +869,49 @@ public class EvidenceToolTests(PostgresFixture fixture)
 
         Assert.True(result.IsError);
     }
+
+    [Fact]
+    public async Task CountEvidence_ReportsItsResultAsComputed()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-count-kind");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var tool = new CountEvidenceTool(new EvidenceQueries());
+
+        var result = await tool.ExecuteAsync(
+            scope,
+            Args("""{"entity_type":"release","date_field":"published"}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ResultKind.Computed, result.Kind);
+        Assert.Empty(result.Citations);
+    }
+
+    [Fact]
+    public async Task SearchCommits_ReportsItsResultAsEvidence_EvenWhenNothingMatched()
+    {
+        var (factory, tenantId) = await SeedAsync("tool-search-empty");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var tool = new SearchCommitsTool(new HybridRetriever(), _embedder);
+
+        // entity_type=issue guarantees zero chunks: only commits are chunked in SeedAsync,
+        // so this cannot match by luck of the fake embedder's hash-based vector - it is
+        // reliably an empty search, not merely an unlikely one.
+        var result = await tool.ExecuteAsync(
+            scope,
+            Args("""{"query":"zzzzz-no-such-term-zzzzz","entity_type":"issue"}"""),
+            TestContext.Current.CancellationToken);
+
+        // An empty search and a computed aggregate both return no citations. Kind is what
+        // separates them, and it must not be inferred from the citation count.
+        Assert.Equal(ResultKind.Evidence, result.Kind);
+    }
+
+    [Fact]
+    public void AToolError_IsEvidenceKind_SoKindNeverEncodesSuccess()
+    {
+        var result = ToolExecutionResult.Error("no release tagged v9.9");
+
+        Assert.True(result.IsError);
+        Assert.Equal(ResultKind.Evidence, result.Kind);
+    }
 }

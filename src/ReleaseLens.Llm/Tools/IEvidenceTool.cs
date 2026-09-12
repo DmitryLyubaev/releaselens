@@ -24,11 +24,28 @@ public sealed record EvidenceCitation(EntityType Type, string EntityKey, string 
 /// </remarks>
 public sealed record EvidenceExcerpt(EntityType Type, string EntityKey, string Text);
 
+/// <summary>
+/// Whether a tool result is retrieved evidence or a computed figure.
+/// </summary>
+/// <remarks>
+/// This cannot be inferred from the citation list: a computed aggregate carries no citations
+/// by design, and so does a search that matched nothing. Internally the difference is carried
+/// by SystemPrompt.cs telling the model that a computed figure takes no marker. Nothing
+/// outside this process can read a prompt, so the distinction has to live on the type for an
+/// external consumer to honour it.
+/// </remarks>
+public enum ResultKind
+{
+    Evidence,
+    Computed
+}
+
 public sealed record ToolExecutionResult(
     string Content,
     IReadOnlyList<EvidenceCitation> Citations,
     bool IsError,
-    IReadOnlyList<EvidenceExcerpt> Excerpts)
+    IReadOnlyList<EvidenceExcerpt> Excerpts,
+    ResultKind Kind = ResultKind.Evidence)
 {
     /// <summary>
     /// For results whose artefacts carry no attributable text — an empty search, or a
@@ -42,6 +59,13 @@ public sealed record ToolExecutionResult(
         IReadOnlyList<EvidenceCitation> citations,
         IReadOnlyList<EvidenceExcerpt> excerpts)
         => new(content, citations, false, excerpts);
+
+    /// <summary>
+    /// A figure computed over the corpus rather than retrieved from it. Carries no citations
+    /// and no excerpts, because a computed figure is not an artefact.
+    /// </summary>
+    public static ToolExecutionResult Computed(string content)
+        => new(content, [], false, [], ResultKind.Computed);
 
     /// <summary>
     /// Errors go back to the model as content, not as exceptions. A tool that throws

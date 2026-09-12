@@ -171,7 +171,7 @@ public sealed class CountEvidenceTool(EvidenceQueries queries) : IEvidenceTool
                .Append("Write the figure exactly as printed above, in digits, with no thousands separator ")
                .AppendLine("and no rounding or hedging.");
 
-        return ToolExecutionResult.Ok(content.ToString(), []);
+        return ToolExecutionResult.Computed(content.ToString());
     }
 
     private static string Alternatives(EntityType type)
