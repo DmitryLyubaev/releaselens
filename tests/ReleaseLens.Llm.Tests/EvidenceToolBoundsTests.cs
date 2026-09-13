@@ -384,6 +384,47 @@ public class EvidenceToolBoundsTests(PostgresFixture fixture)
         Assert.True(result.Bounds.Truncated);
     }
 
+    /// <summary>
+    /// Found live, not in review: the releaselens-mcp project's Task 7 ran its cross-tenant
+    /// test against a real two-tenant stack and every <c>get_issue</c> call came back rejected
+    /// downstream, because this was the one evidence tool (of six) that never set Bounds at
+    /// all. A direct fetch of one known issue is still an evidence result, and the contract
+    /// applies to it the same as to a search: Returned/Matched/Truncated for the trivial
+    /// single-artefact case are (1, 1, false), not absent.
+    /// </summary>
+    [Fact]
+    public async Task GetIssue_OnASuccessfulFetch_ReportsTrivialBounds()
+    {
+        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        var slug = $"bounds-issue-{Guid.NewGuid():n}"[..24];
+        var tenantId = await new TenantRepository(factory).CreateAsync(
+            new TenantDefinition(slug, slug, "github", "microsoft", "semantic-kernel", 1_000_000),
+            TestContext.Current.CancellationToken);
+
+        var evidence = new EvidenceRepository();
+        await using (var seedScope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await evidence.UpsertIssuesAsync(seedScope,
+            [
+                new IssueEvidence(tenantId, 42, "Something broke", "It broke like this.", "open",
+                    [], "reporter", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null,
+                    "https://example.invalid/issues/42")
+            ], TestContext.Current.CancellationToken);
+            await seedScope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var tool = new GetIssueTool(evidence);
+        var result = await tool.ExecuteAsync(
+            scope, Args("""{"number":42}"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.NotNull(result.Bounds);
+        Assert.Equal(1, result.Bounds!.Returned);
+        Assert.Equal(1, result.Bounds.Matched);
+        Assert.False(result.Bounds.Truncated);
+    }
+
     [Fact]
     public async Task DiffBetweenReleases_NoCommitsInWindow_StillReportsBounds()
     {

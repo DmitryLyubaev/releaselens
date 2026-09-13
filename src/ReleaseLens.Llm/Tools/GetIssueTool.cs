@@ -61,9 +61,21 @@ public sealed class GetIssueTool(EvidenceRepository evidence) : IEvidenceTool
         // carries the state, labels, author and dates, and those are exactly the claims a
         // groundedness check on an issue answer has to verify — dropping them and quoting
         // only the body would make "reported by Alice on 2024-03-02" unverifiable.
+        //
+        // Bounds(1, 1, false): the query named one issue by number, exactly one matched (the
+        // one just fetched), and nothing was omitted. This is the same shape every other
+        // evidence tool reports, just with the trivial single-artefact counts a direct lookup
+        // always has — not an exemption from the contract. Its absence here (found live,
+        // Task 7 of the releaselens-mcp plan) was the one evidence tool that never set Bounds
+        // at all: every consumer downstream that treats a bounds-less evidence result as "no
+        // count was ever reported" — which is the whole point of requiring bounds — read this
+        // tool's success as if it were that failure.
         return ToolExecutionResult.Ok(
             rendered,
             [new EvidenceCitation(EntityType.Issue, issueKey, issue.Title, $"issues/{issue.Number}")],
-            [new EvidenceExcerpt(EntityType.Issue, issueKey, rendered)]);
+            [new EvidenceExcerpt(EntityType.Issue, issueKey, rendered)]) with
+        {
+            Bounds = new ToolResultBounds(1, 1, false)
+        };
     }
 }
