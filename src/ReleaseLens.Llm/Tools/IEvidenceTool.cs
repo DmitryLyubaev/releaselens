@@ -49,8 +49,9 @@ public enum ResultKind
 /// rows it was handed, so the result says how many it was not handed.
 /// </summary>
 /// <remarks>
-/// What one unit of "Returned"/"Matched" means is chosen per tool, not fixed by this record.
-/// <see cref="FindRegressionsTool"/>, <see cref="ListReleasesTool"/> and
+/// <para>
+/// <b>Unit.</b> What one unit of "Returned"/"Matched" means is chosen per tool, not fixed by
+/// this record. <see cref="FindRegressionsTool"/>, <see cref="ListReleasesTool"/> and
 /// <see cref="DiffBetweenReleasesTool"/> count artefacts (one issue, one release, one
 /// commit), because every row each of those tools returns is exactly one artefact, and the
 /// corpus-wide match count each already computes (<c>CountRegressionCandidatesAsync</c>,
@@ -61,10 +62,32 @@ public enum ResultKind
 /// not distinct artefacts. Pairing a deduplicated citation count against a chunk-level match
 /// count would produce a number in no unit at all, so for that tool both
 /// <see cref="Returned"/> and <see cref="Matched"/> are chunk counts, not artefact counts.
+/// </para>
+/// <para>
+/// <b>Population, which matters more than unit and is what actually bit.</b> The two numbers
+/// must also count over the same <i>set of things</i>, not merely in the same unit. Matching
+/// units and mismatched populations still produce a ratio that means nothing, and it fails in
+/// the unsafe direction: <see cref="SearchCommitsTool"/> once paired
+/// <see cref="Returned"/> = the blended retrieval page (vector arm unioned with text arm)
+/// against <see cref="Matched"/> = the text arm's corpus-wide count. Both were chunk counts,
+/// so the unit rule above was satisfied — but the vector arm has no distance threshold, so it
+/// fills the page to <c>k</c> whatever the text arm found, and a query with three lexical
+/// matches published <c>returned: 8, matched: 3</c>: eight artefacts handed to an agent with
+/// the claim that three exist in the whole corpus. An agent reaching these tools over MCP has
+/// no prompt to warn it, and the consumer's <c>Math.Max(0, matched - returned)</c> hid the
+/// contradiction rather than surfacing it. So: <b>pick the population Matched can actually
+/// count, and make Returned a subset of it</b> — for that tool, the text arm under the same
+/// filters. <c>matched &gt;= returned</c> then holds by construction rather than by luck.
+/// Rows outside that population may still be returned (vector-only chunks are useful extra
+/// context); they are simply not part of this ratio.
+/// </para>
 /// </remarks>
-/// <param name="Returned">How many of this tool's unit (see remarks) are in this result.</param>
-/// <param name="Matched">How many of that same unit match the query under the same filters,
-/// in the whole corpus. Never an estimate and never a lower bound.</param>
+/// <param name="Returned">How many of this tool's unit (see remarks) are in this result
+/// <i>and</i> belong to the population <paramref name="Matched"/> counts. Not necessarily the
+/// number of rows in the result: a result may carry rows outside that population.</param>
+/// <param name="Matched">How many of that same unit, in that same population, match the query
+/// under the same filters, in the whole corpus. Never an estimate and never a lower bound, and
+/// never smaller than <paramref name="Returned"/>.</param>
 /// <param name="Truncated">True when <paramref name="Matched"/> exceeds
 /// <paramref name="Returned"/>.</param>
 public sealed record ToolResultBounds(int Returned, int Matched, bool Truncated);

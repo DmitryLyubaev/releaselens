@@ -69,9 +69,10 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
             PathFilter = JsonArgs.String(arguments, "path")
         }, cancellationToken);
 
-        // Bounds are chunk counts, not artefact counts - see the remarks on
-        // ToolResultBounds. result.TextMatchCount is already chunk-level and exact (see its
-        // own doc comment on RetrievalResult), so nothing here is recomputed.
+        // Bounds are chunk counts over the TEXT arm's population - see the remarks on
+        // ToolResultBounds, and TextMatchedCount below for why the blended page is not that
+        // population. result.TextMatchCount is already chunk-level and exact (see its own doc
+        // comment on RetrievalResult), so nothing here is recomputed.
         if (result.Chunks.Count == 0)
         {
             return ToolExecutionResult.Ok("No matching evidence found for that query.", []) with
@@ -106,18 +107,55 @@ public sealed class SearchCommitsTool(HybridRetriever retriever, IEmbedder embed
             excerpts.Add(new EvidenceExcerpt(chunk.Type, chunk.EntityKey, chunk.Content));
         }
 
-        // Chunk counts, not artefact counts: chunks.Count is what this tool actually
-        // returned before the citation list collapsed several chunks into one entry per
-        // artefact, and TextMatchCount is the corpus-wide count in that same chunk unit -
-        // see the remarks on ToolResultBounds for why an artefact count cannot pair with it.
+        // One population, not two. Matched is result.TextMatchCount, which counts ONLY the
+        // text arm; Returned must therefore be the returned chunks that the text arm also
+        // matched, never result.Chunks.Count. Chunks.Count is the blended page - the vector
+        // arm full-outer-joined onto the text arm - and HybridRetriever's vec CTE has no
+        // distance threshold, so on a real corpus it always contributes a full candidate pool
+        // and the page fills to k regardless of how few chunks matched lexically. Pairing that
+        // against a text-only match count published "returned: 8, matched: 3" for any query
+        // with fewer than k lexical matches, which is the ordinary case and the entire reason
+        // a vector arm exists: eight artefacts handed over with the claim that three exist in
+        // the whole corpus. The published statement is now "of the N chunks matching your text
+        // query, you were given M", and matched >= returned holds by construction. Chunks the
+        // vector arm alone found are still returned - they are extra context, not part of that
+        // ratio.
+        var textMatchedAndReturned = TextMatchedCount(result.Chunks);
         var bounds = new ToolResultBounds(
-            result.Chunks.Count, result.TextMatchCount, result.TextMatchCount > result.Chunks.Count);
+            textMatchedAndReturned, result.TextMatchCount,
+            result.TextMatchCount > textMatchedAndReturned);
 
         return ToolExecutionResult.Ok(content.ToString(), Deduplicate(citations), excerpts) with
         {
             Bounds = bounds
         };
     }
+
+    /// <summary>
+    /// How many of the returned chunks the full-text arm matched — the <c>Returned</c> half of
+    /// this tool's bounds, in the same population as <c>RetrievalResult.TextMatchCount</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>TextScore &gt; 0</c> is the discriminator, and it is exact rather than a heuristic:
+    /// in <c>HybridRetriever</c>'s <c>merged</c> CTE the join projects
+    /// <c>coalesce(f.text_score, 0) as text_score</c>, so a chunk the vector arm found alone
+    /// carries a hard zero rather than a null, and <c>normalised</c> passes that value straight
+    /// through to the <c>TextScore</c> column this reads. A chunk with a non-zero TextScore
+    /// came from the <c>fts</c> CTE, which is exactly the population
+    /// <c>TextMatchCount</c> counts.
+    /// </para>
+    /// <para>
+    /// The one shape that undercounts is a query whose tsquery matches only by negation
+    /// (<c>websearch_to_tsquery('english', '-foo')</c>): <c>ts_rank_cd</c> has no cover to
+    /// score and returns 0 for a row that did match. That errs low — <c>Returned</c> below
+    /// <c>Matched</c>, which understates what the caller was handed rather than overstating
+    /// what the corpus holds — so it stays on the safe side of the one thing these bounds
+    /// exist to prevent.
+    /// </para>
+    /// </remarks>
+    internal static int TextMatchedCount(IReadOnlyList<RetrievedChunk> chunks)
+        => chunks.Count(c => c.TextScore > 0);
 
     internal static string FirstLine(string content)
     {

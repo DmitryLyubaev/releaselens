@@ -373,6 +373,137 @@ public class EvidenceToolBoundsTests(PostgresFixture fixture)
         Assert.False(result.Bounds.Truncated);
     }
 
+    /// <summary>
+    /// Seeds <paramref name="matchingCount"/> commits containing <paramref name="term"/> and
+    /// <paramref name="nonMatchingCount"/> commits that contain nothing like it - one chunk
+    /// each, the same way <see cref="SeedCommitsMatchingAsync"/> does.
+    /// </summary>
+    /// <remarks>
+    /// This is the fixture shape no other bounds test has. Every other one seeds a tenant in
+    /// which <em>every</em> chunk matches the search term, so the text arm and the blended page
+    /// are the same set of rows and <c>matched == returned</c> holds by construction of the
+    /// fixture rather than of the code. Here the corpus is mostly non-matching, and
+    /// <c>HybridRetriever</c>'s <c>vec</c> CTE has no distance threshold, so the vector arm
+    /// contributes chunks the text arm never matched and the returned page fills to <c>k</c>
+    /// regardless. That is the ordinary case on a real corpus, and the only shape in which a
+    /// blended <c>Returned</c> paired against a text-arm <c>Matched</c> can be seen to lie.
+    /// </remarks>
+    private async Task<(TenantConnectionFactory Factory, Guid TenantId)> SeedMostlyNonMatchingCorpusAsync(
+        string term, int matchingCount, int nonMatchingCount)
+    {
+        var factory = new TenantConnectionFactory(fixture.ConnectionString);
+        var slug = $"bounds-vec-{Guid.NewGuid():n}"[..24];
+        var tenantId = await new TenantRepository(factory).CreateAsync(
+            new TenantDefinition(slug, slug, "github", "microsoft", "semantic-kernel", 1_000_000),
+            TestContext.Current.CancellationToken);
+
+        var evidence = new EvidenceRepository();
+        var chunkRepository = new ChunkRepository();
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var baseDate = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        var matching = Enumerable.Range(0, matchingCount)
+            .Select(i => new CommitEvidence(
+                tenantId, $"sha_m{i:D4}_{Guid.NewGuid():n}"[..40],
+                $"fix: resolve the {term} defect number {i}",
+                "Author", "author@example.invalid",
+                baseDate.AddMinutes(i), baseDate.AddMinutes(i),
+                $"https://example.invalid/commit/m{i}", []));
+
+        // Nothing in these shares a stem with the seeded term, so the fts CTE cannot match
+        // them; only the (thresholdless) vector arm can put them on the page.
+        var nonMatching = Enumerable.Range(0, nonMatchingCount)
+            .Select(i => new CommitEvidence(
+                tenantId, $"sha_n{i:D4}_{Guid.NewGuid():n}"[..40],
+                $"chore: bump the pinned toolchain and refresh lockfiles, batch {i}",
+                "Author", "author@example.invalid",
+                baseDate.AddMinutes(1000 + i), baseDate.AddMinutes(1000 + i),
+                $"https://example.invalid/commit/n{i}", []));
+
+        var commits = matching.Concat(nonMatching).ToArray();
+        await evidence.UpsertCommitsAsync(scope, commits, TestContext.Current.CancellationToken);
+
+        var chunks = commits.SelectMany(chunker.Chunk).ToList();
+        var ids = await chunkRepository.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
+        var vectors = await _embedder.EmbedDocumentsAsync(
+            [.. chunks.Select(c => c.Content)], TestContext.Current.CancellationToken);
+        await chunkRepository.UpsertEmbeddingsAsync(scope, [.. ids.Zip(vectors)], _embedder.ModelName,
+            TestContext.Current.CancellationToken);
+
+        await scope.CommitAsync(TestContext.Current.CancellationToken);
+        return (factory, tenantId);
+    }
+
+    /// <summary>
+    /// Final-review finding 1. <c>Returned</c> and <c>Matched</c> must count over one
+    /// population. <c>Matched</c> is <c>RetrievalResult.TextMatchCount</c>, which counts only
+    /// the full-text arm; pairing it against the blended page size published
+    /// <c>returned: 8, matched: 3</c> — eight artefacts handed to an agent that was told three
+    /// exist in the whole corpus, with the consumer's <c>Math.Max(0, matched - returned)</c>
+    /// clamping the contradiction out of sight.
+    /// </summary>
+    [Fact]
+    public async Task SearchCommits_WhenTheVectorArmFillsThePage_ReturnedNeverExceedsMatched()
+    {
+        const string term = "flubbergasket";
+        const int matchingCount = 3;
+        const int nonMatchingCount = 20;
+        const int limit = 8;
+
+        var (factory, tenantId) =
+            await SeedMostlyNonMatchingCorpusAsync(term, matchingCount, nonMatchingCount);
+
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // Verified, not assumed, and it is the assumption the production fix rests on: a chunk
+        // the vector arm alone found must carry TextScore == 0 rather than a null coalesced
+        // into something else. Read straight off the retriever, before the tool sees it.
+        var probe = await new HybridRetriever().RetrieveAsync(
+            scope, new RetrievalRequest(term, await _embedder.EmbedQueryAsync(
+                term, TestContext.Current.CancellationToken), limit),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(limit, probe.Chunks.Count);
+        Assert.Equal(matchingCount, probe.TextMatchCount);
+        Assert.Contains(probe.Chunks, c => c.TextScore == 0);
+        Assert.All(probe.Chunks, c => Assert.True(c.TextScore >= 0));
+
+        // The fixture shape itself, asserted rather than described: the page the tool returns
+        // is larger than everything the text arm matched in the entire tenant. No other bounds
+        // test in this file can reach this state.
+        Assert.True(probe.Chunks.Count > probe.TextMatchCount,
+            $"the vector arm was expected to fill the page beyond the {probe.TextMatchCount} "
+            + $"text matches, but only {probe.Chunks.Count} chunks came back - this test proves "
+            + "nothing unless the returned page exceeds the text arm's whole population.");
+
+        var tool = new SearchCommitsTool(new HybridRetriever(), _embedder);
+        var result = await tool.ExecuteAsync(
+            scope,
+            Args($$"""{"query":"{{term}}","limit":{{limit}}}"""),
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result.Bounds);
+        var bounds = result.Bounds!;
+
+        // Matched is the whole text-arm population under these filters, exactly.
+        Assert.Equal(matchingCount, bounds.Matched);
+
+        // The published bounds are coherent: a caller can never be handed more of the matched
+        // population than exists in it. This is the assertion the old code fails.
+        Assert.True(bounds.Returned <= bounds.Matched,
+            $"published bounds claim {bounds.Returned} of {bounds.Matched} returned, which says "
+            + "the caller was handed more of the matched population than the corpus contains.");
+
+        Assert.Equal(bounds.Matched > bounds.Returned, bounds.Truncated);
+
+        // And the vector-only chunks really were still handed over: this fix narrows the
+        // ratio's population, it does not drop rows from the result.
+        Assert.Equal(probe.Chunks.Count, result.Excerpts.Count);
+    }
+
     [Fact]
     public async Task DiffBetweenReleases_WhenMoreCommitsThanReturned_ReportsTruncatedWithBothCounts()
     {

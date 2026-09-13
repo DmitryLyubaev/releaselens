@@ -149,6 +149,30 @@ A `POST /evidence/tools/{name}` response carries `content` (the tool's rendered 
 error; the route itself still returns 200), `citations` (the artefacts the result names) and
 `excerpts` (the attributable text behind each citation, keyed to it by `(type, key)`).
 
+It also carries the two fields that make a result's *limits* machine-readable, so a caller
+never has to parse the prose to recover them:
+
+- **`bounds`** — on an `evidence` result: `returned`, `matched` and `truncated`. `matched` is
+  how many of the matching population exist under the same filters in the whole corpus;
+  `returned` is how many of that population this response contains. `matched` is exact, never
+  an estimate, and never less than `returned`. `truncated` is simply `matched > returned`.
+  Null on a `computed` result and on a tool error, which are not pages of results.
+  The unit and the population are per tool: `find_regressions`, `list_releases`,
+  `diff_between_releases` and `get_issue` count artefacts; `search_commits` counts *chunks
+  matched by the full-text arm*, because that is the only population it holds a corpus-wide
+  count for — chunks the vector arm alone retrieved are returned as context but are not part
+  of that ratio. See the remarks on `ToolResultBounds` for why the two numbers must share one
+  population and what goes wrong when they do not.
+- **`coverage`** — on a `computed` result: `earliest`, `latest` and `completeForWindow`. The
+  corpus does not span all of history, so a count can be true of the evidence and false of the
+  repository; `completeForWindow` is how a caller tells those apart. Null on an `evidence`
+  result.
+
+The two are mutually exclusive by construction — `bounds` belongs to a page of artefacts,
+`coverage` to a figure — and the MCP server in the sibling `releaselens-mcp` repository binds
+directly to them. They exist because an external agent has no system prompt telling it not to
+count the rows it was handed.
+
 A result also declares whether it is `evidence` — a citable artefact, with citations — or
 `computed`: a figure produced by a bounded aggregate, carrying no citations because a
 computed figure is not an artefact. `count_evidence` is the only tool that returns
