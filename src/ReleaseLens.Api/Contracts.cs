@@ -62,7 +62,10 @@ public sealed record QueryMetadataDto(
     // checked against, and the gap between the two is the signal that used to be the bug.
     int AccumulatedCitationCount,
     IReadOnlyList<string> UnresolvedCitationMarkers,
-    long ElapsedMs);
+    long ElapsedMs,
+    // Every provider that answered, once each, in first-answer order; `Provider` is the one
+    // that answered last. Empty when none did.
+    IReadOnlyList<string>? Providers = null);
 
 public sealed record QueryResponse(
     string Answer,

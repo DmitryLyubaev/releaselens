@@ -428,6 +428,36 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         }
     }
 
+    // T-A2, the providers half, at the wire
+    [Fact]
+    public async Task Query_Metadata_ListsTheProvidersThatAnswered()
+    {
+        await SeedCommitsAsync(2);
+
+        var body = await ScriptedQueryAsync("Fixed in [E1].", includeEvidence: null);
+        var metadata = body.GetProperty("metadata");
+
+        Assert.Equal(["scripted"],
+            metadata.GetProperty("providers").EnumerateArray().Select(p => p.GetString()!).ToArray());
+        Assert.Equal("scripted", metadata.GetProperty("provider").GetString());
+    }
+
+    [Fact]
+    public async Task Query_WhenNoProviderAnswers_ListsNoProviders()
+    {
+        // The test environment points both providers at an unroutable address, so nothing answers.
+        var response = await _client.SendAsync(Query("What changed recently?", _apiKey), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var metadata = (await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
+            .GetProperty("metadata");
+
+        Assert.True(metadata.GetProperty("degraded").GetBoolean());
+        Assert.Equal(JsonValueKind.Array, metadata.GetProperty("providers").ValueKind);
+        Assert.Empty(metadata.GetProperty("providers").EnumerateArray());
+    }
+
     [Fact]
     public async Task Swagger_IsServed()
     {

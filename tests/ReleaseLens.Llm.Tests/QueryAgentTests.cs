@@ -792,4 +792,170 @@ public class QueryAgentTests(PostgresFixture fixture)
                 Assert.Contains(SubjectOf(citation.Citation.EntityKey), excerpt, StringComparison.Ordinal));
         }
     }
+
+    /// <summary>
+    /// A chain member with a name of its own, for the tests that put a real
+    /// <see cref="FallbackChatProvider"/> in front of the agent. A null entry in the script is
+    /// an outage.
+    /// </summary>
+    private sealed class NamedProvider(string name, Queue<Func<ChatResponse>?> script) : IChatProvider
+    {
+        public string Name => name;
+        public int Calls { get; private set; }
+
+        public Task<ChatResponse> CompleteAsync(ChatRequest request, CancellationToken cancellationToken)
+        {
+            Calls++;
+
+            if (script.Count == 0)
+            {
+                throw new InvalidOperationException($"{name} ran out of responses.");
+            }
+
+            var next = script.Dequeue()
+                ?? throw new ProviderUnavailableException(name, $"{name} is down");
+
+            return Task.FromResult(next() with { Provider = name });
+        }
+    }
+
+    // T-A2, the providers half
+    [Fact]
+    public async Task Answer_ListsEachAnsweringProviderOnce_InTheOrderTheyFirstAnswered()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-order");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => CallTool("search_commits", """{"query":"planner"}""") with { Provider = "openai" },
+            () => CallTool("search_commits", """{"query":"planner"}""") with { Provider = "anthropic" },
+            () => Text("Fixed in [E1].") with { Provider = "openai" }
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["openai", "anthropic"], answer.Metadata.Providers);
+
+        // `provider` keeps its meaning: whoever answered the final iteration.
+        Assert.Equal("openai", answer.Metadata.Provider);
+    }
+
+    [Fact]
+    public async Task Answer_TheCeilingsFinalCall_CountsAsAnAnsweringProvider()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-ceiling");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var script = new Queue<Func<ChatResponse>>();
+        for (var i = 0; i < 6; i++)
+        {
+            script.Enqueue(() => CallTool("search_commits", """{"query":"planner"}"""));
+        }
+
+        script.Enqueue(() => Text("Reached the tool limit: [E1].") with { Provider = "openai", Model = "gpt-4o" });
+
+        var answer = await Build(new ScriptedProvider(script)).AnswerAsync(
+            scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["scripted", "openai"], answer.Metadata.Providers);
+        Assert.Equal("openai", answer.Metadata.Provider);
+        Assert.Equal("gpt-4o", answer.Metadata.Model);
+    }
+
+    [Fact]
+    public async Task Answer_GivesEveryCallOfAQuery_TheSameContext_AndEachQueryItsOwn()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-context");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // Query 1 hits the iteration ceiling, so its requests include the final no-tools call;
+        // query 2 answers at once.
+        var script = new Queue<Func<ChatResponse>>();
+        for (var i = 0; i < 6; i++)
+        {
+            script.Enqueue(() => CallTool("search_commits", """{"query":"planner"}"""));
+        }
+
+        script.Enqueue(() => Text("Reached the tool limit: [E1]."));
+        script.Enqueue(() => Text("Second query: [E1]."));
+
+        var provider = new ScriptedProvider(script);
+        var agent = Build(provider);
+
+        await agent.AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+        await agent.AnswerAsync(scope, "planner again?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(8, provider.Requests.Count);
+
+        var first = Assert.IsType<QueryContext>(provider.Requests[0].Context);
+        Assert.All(provider.Requests.Take(7), r => Assert.Same(first, r.Context));
+
+        var second = Assert.IsType<QueryContext>(provider.Requests[7].Context);
+        Assert.NotSame(first, second);
+
+        // The budget comes from AgentOptions.RateLimitWaitBudgetMs, whose default is 3000.
+        Assert.Equal(TimeSpan.FromMilliseconds(3000), second.RateLimitWaitRemaining);
+    }
+
+    [Fact]
+    public async Task Answer_ThroughTheFallbackChain_StaysOnTheProviderThatAnsweredFirst()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-sticky");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // A is down for the first iteration and healthy after. Without the query's context the
+        // chain would restart at A on iteration 2, and A would answer it.
+        var a = new NamedProvider("a", new Queue<Func<ChatResponse>?>(
+            [null, () => Text("A answered [E1].")]));
+        var b = new NamedProvider("b", new Queue<Func<ChatResponse>?>(
+        [
+            () => CallTool("search_commits", """{"query":"planner"}"""),
+            () => Text("B answered [E1].")
+        ]));
+
+        var chain = new FallbackChatProvider([a, b], NullLogger<FallbackChatProvider>.Instance);
+
+        var answer = await Build(chain).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal("B answered [E1].", answer.Answer);
+        Assert.Equal(["b"], answer.Metadata.Providers);
+        Assert.Equal("b", answer.Metadata.Provider);
+        Assert.Equal(1, a.Calls);
+        Assert.Equal(2, b.Calls);
+    }
+
+    [Fact]
+    public async Task Answer_AllProvidersDownMidQuery_StillListsTheProviderThatAnswered()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-degraded");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => CallTool("search_commits", """{"query":"planner"}"""),
+            () => throw new AllProvidersUnavailableException(["anthropic", "openai"])
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.Degraded);
+        Assert.Equal(["scripted"], answer.Metadata.Providers);
+    }
+
+    [Fact]
+    public async Task Answer_AllProvidersDownFromTheStart_ListsNoProviders()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-providers-none");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => throw new AllProvidersUnavailableException(["anthropic", "openai"])]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.Degraded);
+        Assert.NotNull(answer.Metadata.Providers);
+        Assert.Empty(answer.Metadata.Providers);
+    }
 }

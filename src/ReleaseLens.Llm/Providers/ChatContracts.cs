@@ -38,7 +38,14 @@ public sealed record ChatRequest(
     string SystemPrompt,
     IReadOnlyList<ChatMessage> Messages,
     IReadOnlyList<ToolDefinition> Tools,
-    int MaxTokens);
+    int MaxTokens)
+{
+    /// <summary>
+    /// The query this call belongs to. Null means a call with no query around it, which the
+    /// fallback chain treats as it always did: start at the top, remember nothing.
+    /// </summary>
+    public QueryContext? Context { get; init; }
+}
 
 public sealed record TokenUsage(
     int InputTokens,

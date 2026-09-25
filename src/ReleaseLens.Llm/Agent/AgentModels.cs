@@ -10,6 +10,13 @@ public sealed class AgentOptions
     public int MaxIterations { get; set; } = 6;
     public int MaxTokens { get; set; } = 2048;
     public int SeedRetrievalK { get; set; } = 8;
+
+    /// <summary>
+    /// The most one query may spend waiting out 429 responses, across all of its calls. It
+    /// travels on each request's <see cref="QueryContext"/>; a provider that waits on a 429
+    /// spends from it.
+    /// </summary>
+    public int RateLimitWaitBudgetMs { get; set; } = 3000;
 }
 
 public sealed record AgentMetadata(
@@ -31,7 +38,11 @@ public sealed record AgentMetadata(
     // range check that produced UnresolvedCitationMarkers, and "[E8] is unresolved" becomes an
     // assertion they have to take on faith.
     int AccumulatedCitationCount,
-    IReadOnlyList<string> UnresolvedCitationMarkers);
+    IReadOnlyList<string> UnresolvedCitationMarkers,
+    // Every provider that answered a call in this query, each once, in the order it first
+    // answered. `Provider` is only the one that answered last, so without this an answer
+    // written partly by one provider and partly by another reads as a single-provider answer.
+    IReadOnlyList<string>? Providers = null);
 
 /// <summary>
 /// An artefact the answer actually cites, paired with the marker the answer used for it.

@@ -287,7 +287,8 @@ app.MapPost("/query", async (
             answer.Metadata.RetrievalNote,
             answer.Metadata.AccumulatedCitationCount,
             answer.Metadata.UnresolvedCitationMarkers,
-            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds)));
+            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            answer.Metadata.Providers ?? [])));
 });
 
 app.Run();

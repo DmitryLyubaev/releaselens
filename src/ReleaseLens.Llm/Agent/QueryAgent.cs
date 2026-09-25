@@ -69,6 +69,11 @@ public sealed partial class QueryAgent(
         // The agent has no model of its own; until a provider answers there is none to report.
         var modelName = "none";
 
+        // One per query, never shared: it carries the sticky provider and the remaining 429
+        // budget, and the provider chain is a singleton that concurrent queries both use.
+        var context = new QueryContext(TimeSpan.FromMilliseconds(options.RateLimitWaitBudgetMs));
+        var providers = new List<string>();
+
         try
         {
             while (iterations < options.MaxIterations)
@@ -82,12 +87,13 @@ public sealed partial class QueryAgent(
                     systemPrompt,
                     messages,
                     tools.Definitions,
-                    options.MaxTokens), cancellationToken);
+                    options.MaxTokens) { Context = context }, cancellationToken);
 
                 usage += response.Usage;
                 cost += CostOf(response, pricedOn);
                 providerName = response.Provider;
                 modelName = response.Model;
+                RecordAnswering(providers, response.Provider);
 
                 iterationActivity?.SetTag("tokens_in", response.Usage.InputTokens);
                 iterationActivity?.SetTag("tokens_out", response.Usage.OutputTokens);
@@ -143,7 +149,7 @@ public sealed partial class QueryAgent(
 
                     var final = await provider.CompleteAsync(new ChatRequest(
                         systemPrompt,
-                        messages, [], options.MaxTokens), cancellationToken);
+                        messages, [], options.MaxTokens) { Context = context }, cancellationToken);
 
                     if (final.ToolCalls.Count > 0)
                     {
@@ -157,6 +163,11 @@ public sealed partial class QueryAgent(
 
                     usage += final.Usage;
                     cost += CostOf(final, pricedOn);
+                    // The final call answered the final iteration, so it is the provider and
+                    // model reported, and with a fallback chain it need not be the loop's.
+                    providerName = final.Provider;
+                    modelName = final.Model;
+                    RecordAnswering(providers, final.Provider);
                     answerText = final.Text ?? string.Empty;
                 }
             }
@@ -196,7 +207,8 @@ public sealed partial class QueryAgent(
                     Degraded: true,
                     DegradedReason: $"All providers unavailable: {string.Join(", ", unavailable.AttemptedProviders)}. " +
                                     "Returning retrieved evidence without synthesis.",
-                    seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, []));
+                    seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, [],
+                    Providers: providers));
         }
 
         answerText ??= "No answer was produced.";
@@ -217,7 +229,20 @@ public sealed partial class QueryAgent(
         return new AgentAnswer(answerText, cited, new AgentMetadata(
             iterations, toolsCalled, usage, cost, providerName, modelName,
             Degraded: false, DegradedReason: null,
-            seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, unresolved));
+            seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, unresolved,
+            Providers: providers));
+    }
+
+    /// <summary>
+    /// Adds <paramref name="provider"/> the first time it answers, so the list keeps
+    /// first-answer order and a provider that answers every iteration appears once.
+    /// </summary>
+    private static void RecordAnswering(List<string> providers, string provider)
+    {
+        if (!providers.Contains(provider))
+        {
+            providers.Add(provider);
+        }
     }
 
     /// <summary>
