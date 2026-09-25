@@ -65,7 +65,17 @@ public sealed record QueryMetadataDto(
     long ElapsedMs,
     // Every provider that answered, once each, in first-answer order; `Provider` is the one
     // that answered last. Empty when none did.
-    IReadOnlyList<string>? Providers = null);
+    IReadOnlyList<string>? Providers = null,
+    // Present only when a provider's content filter blocked the request. Absent otherwise, not
+    // null, so every response that was not filtered keeps exactly the shape it had before.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    FilteredOutcomeDto? Filtered = null);
+
+/// <summary>
+/// A content filter blocked the request: <paramref name="Stage"/> is <c>prompt</c> or
+/// <c>completion</c>, and <paramref name="Provider"/> is the provider whose filter it was.
+/// </summary>
+public sealed record FilteredOutcomeDto(string Stage, string Provider);
 
 public sealed record QueryResponse(
     string Answer,

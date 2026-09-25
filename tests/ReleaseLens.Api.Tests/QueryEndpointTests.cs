@@ -458,6 +458,110 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Empty(metadata.GetProperty("providers").EnumerateArray());
     }
 
+    private const string FilteredAnswer =
+        "The request was blocked by the model provider's content filter, so no answer was produced.";
+
+    /// <summary>
+    /// Runs one query against a host whose only chat provider is <paramref name="provider"/>,
+    /// and hands back the parsed body of the 200 it must return.
+    /// </summary>
+    private async Task<JsonElement> QueryWithAsync(IChatProvider provider)
+    {
+        await using var hosted = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IChatProvider>();
+                services.AddSingleton<IChatProvider>(provider);
+            }));
+
+        using var client = hosted.CreateClient();
+
+        var response = await client.SendAsync(Query("planner", _apiKey), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// T-A2, the filtered half. A filtered completion is its own outcome on the wire: HTTP 200,
+    /// the fixed answer, nothing cited, not degraded, and metadata.filtered naming the stage and
+    /// the provider, beside metadata.providers listing who answered before the filter fired.
+    /// </summary>
+    [Fact]
+    public async Task Query_WhenTheCompletionIsFiltered_ReportsFilteredAndTheProvidersThatAnswered()
+    {
+        var body = await QueryWithAsync(new FilteringChatProvider(ContentFilterStage.Completion, answeredCalls: 1));
+
+        Assert.Equal(FilteredAnswer, body.GetProperty("answer").GetString());
+        Assert.Empty(body.GetProperty("citations").EnumerateArray());
+
+        var metadata = body.GetProperty("metadata");
+        Assert.False(metadata.GetProperty("degraded").GetBoolean());
+
+        var filtered = metadata.GetProperty("filtered");
+        Assert.Equal(["provider", "stage"],
+            filtered.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal("completion", filtered.GetProperty("stage").GetString());
+        Assert.Equal("azure-openai", filtered.GetProperty("provider").GetString());
+
+        Assert.Equal(["azure-openai"],
+            metadata.GetProperty("providers").EnumerateArray().Select(p => p.GetString()!).ToArray());
+
+        // Both calls' tokens: the answered tool call's (10 in, 5 out) and the filtered
+        // completion's (20 in, 7 out).
+        Assert.Equal(30, metadata.GetProperty("tokensIn").GetInt32());
+        Assert.Equal(12, metadata.GetProperty("tokensOut").GetInt32());
+        Assert.True(metadata.GetProperty("costUsd").GetDecimal() > 0m, "a filtered Azure call is not free");
+
+        // And the filtered answer's usage counts against the tenant's daily budget like any other.
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        await using var check = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken);
+        var recorded = await new TokenUsageRepository().GetTodayAsync(
+            check, DateOnly.FromDateTime(DateTime.UtcNow), TestContext.Current.CancellationToken);
+
+        Assert.Equal(30, recorded.TokensIn);
+        Assert.Equal(12, recorded.TokensOut);
+        Assert.True(recorded.CostUsd > 0m);
+    }
+
+    [Fact]
+    public async Task Query_WhenThePromptIsFiltered_ReportsStagePromptAndNoAnsweringProvider()
+    {
+        var body = await QueryWithAsync(new FilteringChatProvider(ContentFilterStage.Prompt, answeredCalls: 0));
+
+        Assert.Equal(FilteredAnswer, body.GetProperty("answer").GetString());
+
+        var metadata = body.GetProperty("metadata");
+        Assert.False(metadata.GetProperty("degraded").GetBoolean());
+        Assert.Equal("prompt", metadata.GetProperty("filtered").GetProperty("stage").GetString());
+        Assert.Equal("azure-openai", metadata.GetProperty("filtered").GetProperty("provider").GetString());
+
+        // No provider answered: the only call was refused.
+        Assert.Equal(0, metadata.GetProperty("providers").GetArrayLength());
+        Assert.Equal(0, metadata.GetProperty("tokensIn").GetInt32());
+        Assert.Equal(0m, metadata.GetProperty("costUsd").GetDecimal());
+    }
+
+    /// <summary>
+    /// The field is additive: a response that was not filtered carries no "filtered" key at
+    /// all, so every existing consumer sees exactly the shape it saw before. Checked on a
+    /// synthesised answer and on the degraded one.
+    /// </summary>
+    [Fact]
+    public async Task Query_WhenNothingIsFiltered_OmitsTheFilteredField()
+    {
+        var answered = await QueryWithAsync(new ScriptedChatProvider("Nothing in the evidence answers this."));
+        Assert.False(answered.GetProperty("metadata").TryGetProperty("filtered", out _));
+
+        // The default host's providers point at an unroutable address, so this is the real
+        // degraded path.
+        var response = await _client.SendAsync(Query("planner", _apiKey), TestContext.Current.CancellationToken);
+        var degraded = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+
+        Assert.True(degraded.GetProperty("metadata").GetProperty("degraded").GetBoolean());
+        Assert.False(degraded.GetProperty("metadata").TryGetProperty("filtered", out _));
+    }
+
     [Fact]
     public async Task Swagger_IsServed()
     {

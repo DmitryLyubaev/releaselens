@@ -958,4 +958,154 @@ public class QueryAgentTests(PostgresFixture fixture)
         Assert.NotNull(answer.Metadata.Providers);
         Assert.Empty(answer.Metadata.Providers);
     }
+
+    private const string FilteredAnswer =
+        "The request was blocked by the model provider's content filter, so no answer was produced.";
+
+    private static readonly PricingIdentity AzureStandard =
+        new("azure-openai", "gpt-4.1-mini", "2025-04-14", "Standard");
+
+    /// <summary>1,000 uncached in, 50 out: 0.000528 at Azure's 0.44 / 1.76.</summary>
+    private static readonly TokenUsage AzureToolUsage = new(1000, 50, 0, 0);
+
+    /// <summary>
+    /// 2,000 uncached in, 500 cached in, 100 out: 0.001111 at Azure's 0.44 / 0.11 / 1.76. The
+    /// cached tokens make the filtered call's own rate visible in the total.
+    /// </summary>
+    private static readonly TokenUsage FilteredCompletionUsage = new(2000, 100, 500, 0);
+
+    // A versioned model string, as a real Azure response may carry: recorded, never priced.
+    private static ChatResponse AzureCallTool() =>
+        CallTool("search_commits", """{"query":"planner"}""") with
+        {
+            Usage = AzureToolUsage,
+            Model = "gpt-4.1-mini-2025-04-14",
+            Provider = "azure-openai",
+            Pricing = AzureStandard
+        };
+
+    private static ContentFilteredException AzureFiltered(ContentFilterStage stage, TokenUsage usage) =>
+        new("azure-openai", stage, usage, AzureStandard);
+
+    // T-C6
+    [Fact]
+    public async Task Answer_NormalIterationThenFilteredCompletion_CountsAndPricesBothIterations()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-filtered-completion");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            AzureCallTool,
+            () => throw AzureFiltered(ContentFilterStage.Completion, FilteredCompletionUsage)
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(FilteredAnswer, answer.Answer);
+        Assert.Empty(answer.Citations);
+        Assert.False(answer.Metadata.Degraded);
+        Assert.Null(answer.Metadata.DegradedReason);
+        Assert.Equal(new FilteredOutcome("completion", "azure-openai"), answer.Metadata.Filtered);
+
+        Assert.Equal(2, provider.Requests.Count);
+        Assert.Equal(2, answer.Metadata.Iterations);
+        Assert.Equal(["search_commits"], answer.Metadata.ToolsCalled);
+        Assert.Equal(["azure-openai"], answer.Metadata.Providers!);
+        Assert.Equal("azure-openai", answer.Metadata.Provider);
+
+        Assert.Equal(AzureToolUsage + FilteredCompletionUsage, answer.Metadata.Usage);
+
+        // 0.000528 for the answered iteration plus 0.001111 for the filtered one. Stopping at
+        // the iteration before the filter would give 0.000528.
+        Assert.Equal(0.001639m, answer.Metadata.CostUsd);
+    }
+
+    [Fact]
+    public async Task Answer_FilteredFinalNoToolsCall_IsCaughtCountedAndPriced()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-filtered-final");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // Six tool-calling iterations reach the ceiling; the no-tools call the ceiling makes on
+        // the way out is the one that is filtered.
+        var script = new Queue<Func<ChatResponse>>();
+        for (var i = 0; i < 6; i++)
+        {
+            script.Enqueue(AzureCallTool);
+        }
+
+        script.Enqueue(() => throw AzureFiltered(ContentFilterStage.Completion, FilteredCompletionUsage));
+
+        var provider = new ScriptedProvider(script);
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(FilteredAnswer, answer.Answer);
+        Assert.Empty(answer.Citations);
+        Assert.Equal(new FilteredOutcome("completion", "azure-openai"), answer.Metadata.Filtered);
+        Assert.Equal(7, provider.Requests.Count);
+        Assert.Empty(provider.Requests[^1].Tools);
+        Assert.Equal(6, answer.Metadata.Iterations);
+
+        // Six answered iterations at 0.000528 each, plus the filtered final call's 0.001111.
+        Assert.Equal(new TokenUsage(8000, 400, 500, 0), answer.Metadata.Usage);
+        Assert.Equal(0.004279m, answer.Metadata.CostUsd);
+    }
+
+    [Fact]
+    public async Task Answer_FilteredPromptOnTheFirstCall_ReturnsTheFilteredAnswerAndCostsNothing()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-filtered-prompt");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+            [() => throw AzureFiltered(ContentFilterStage.Prompt, TokenUsage.Zero)]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.Equal(FilteredAnswer, answer.Answer);
+        Assert.Equal(new FilteredOutcome("prompt", "azure-openai"), answer.Metadata.Filtered);
+        Assert.False(answer.Metadata.Degraded);
+
+        // Seed evidence was retrieved and shown to the model, but the answer rests on none of
+        // it, so none of it is returned as a citation.
+        Assert.True(answer.Metadata.AccumulatedCitationCount >= 1,
+            "seed retrieval must have found the commit, or the empty citation list proves nothing");
+        Assert.Empty(answer.Citations);
+
+        Assert.Single(provider.Requests);
+        Assert.Equal(TokenUsage.Zero, answer.Metadata.Usage);
+        Assert.Equal(0m, answer.Metadata.CostUsd);
+
+        // No provider answered: the only call was refused.
+        Assert.Empty(answer.Metadata.Providers!);
+        Assert.Equal("azure-openai", answer.Metadata.Provider);
+    }
+
+    [Fact]
+    public async Task Answer_FilteredWithoutAPricingIdentity_IsPricedByTheLastRecordedModelName()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-filtered-by-name");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        // A test fake may report no identity. The filtered call is then priced by the name of
+        // the model the query last recorded, as CostOf prices such a response.
+        var filteredUsage = new TokenUsage(2000, 100, 0, 0);
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => CallTool("search_commits", """{"query":"planner"}"""),
+            () => throw new ContentFilteredException("scripted", ContentFilterStage.Completion, filteredUsage)
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var expected = ModelPricing.CostUsd("claude-sonnet-5", new TokenUsage(800, 30, 0, 0), today)
+                     + ModelPricing.CostUsd("claude-sonnet-5", filteredUsage, today);
+
+        Assert.True(expected > 0m, "claude-sonnet-5 must have a name-based rate, or this test proves nothing");
+        Assert.Equal(expected, answer.Metadata.CostUsd);
+        Assert.Equal("claude-sonnet-5", answer.Metadata.Model);
+    }
 }

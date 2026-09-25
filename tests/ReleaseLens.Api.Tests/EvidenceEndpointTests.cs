@@ -327,4 +327,85 @@ public class EvidenceEndpointTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.False(body.GetProperty("isError").GetBoolean());
         Assert.Contains("No releases match", body.GetProperty("content").GetString()!);
     }
+
+    private static string[] Keys(JsonElement element)
+        => [.. element.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal)];
+
+    /// <summary>
+    /// T-A3. releaselens-mcp reads these responses, so their shape is a contract: every key,
+    /// not only the ones some other test happens to read. The tests above pin values; this
+    /// pins that no key is added, renamed or dropped, including that an absent bounds or
+    /// coverage is written as null rather than left out.
+    /// </summary>
+    [Fact]
+    public async Task EvidenceContract_ResponseShapes_AreExactlyTheCurrentOnes()
+    {
+        var list = await _client.SendAsync(
+            Authorised(HttpMethod.Get, "/evidence/tools"), TestContext.Current.CancellationToken);
+        list.EnsureSuccessStatusCode();
+
+        var listBody = await list.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.Equal(["tools"], Keys(listBody));
+
+        foreach (var tool in listBody.GetProperty("tools").EnumerateArray())
+        {
+            Assert.Equal(["description", "inputSchema", "name"], Keys(tool));
+        }
+
+        var connections = new TenantConnectionFactory(fixture.ConnectionString);
+        var chunker = new EvidenceChunker(ChunkOptions.Default);
+        var chunkRepository = new ChunkRepository();
+
+        await using (var scope = await connections.OpenAsync(_tenantId, TestContext.Current.CancellationToken))
+        {
+            var commit = new CommitEvidence(_tenantId, "sha_contract_shape",
+                "fix: resolve the gizmoshape defect", "Author", "author@example.invalid",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                "https://example.invalid/commit/sha_contract_shape", []);
+
+            await new EvidenceRepository().UpsertCommitsAsync(scope, [commit], TestContext.Current.CancellationToken);
+
+            var chunks = chunker.Chunk(commit);
+            var ids = await chunkRepository.UpsertChunksAsync(scope, chunks, TestContext.Current.CancellationToken);
+            await chunkRepository.UpsertEmbeddingsAsync(scope,
+                [.. ids.Zip(chunks.Select(c => PlaceholderVector(c.Content)))], "placeholder",
+                TestContext.Current.CancellationToken);
+
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        string[] resultKeys = ["bounds", "citations", "content", "coverage", "excerpts", "isError", "kind"];
+
+        // An evidence result: bounds set, coverage null, and one citation and excerpt to read.
+        var search = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/search_commits", """{"query":"gizmoshape","limit":10}"""),
+            TestContext.Current.CancellationToken);
+        search.EnsureSuccessStatusCode();
+
+        var evidence = await search.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.Equal(resultKeys, Keys(evidence));
+        Assert.Equal("evidence", evidence.GetProperty("kind").GetString());
+        Assert.Equal(["matched", "returned", "truncated"], Keys(evidence.GetProperty("bounds")));
+        Assert.Equal(JsonValueKind.Null, evidence.GetProperty("coverage").ValueKind);
+
+        var citation = Assert.Single(evidence.GetProperty("citations").EnumerateArray());
+        Assert.Equal(["key", "title", "type", "url"], Keys(citation));
+
+        var excerpt = evidence.GetProperty("excerpts").EnumerateArray().First();
+        Assert.Equal(["key", "text", "type"], Keys(excerpt));
+
+        // A computed result: coverage set, bounds null, no citations and no excerpts.
+        var count = await _client.SendAsync(
+            AuthorisedPost("/evidence/tools/count_evidence", """{"entity_type":"release","date_field":"published"}"""),
+            TestContext.Current.CancellationToken);
+        count.EnsureSuccessStatusCode();
+
+        var computed = await count.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.Equal(resultKeys, Keys(computed));
+        Assert.Equal("computed", computed.GetProperty("kind").GetString());
+        Assert.Equal(JsonValueKind.Null, computed.GetProperty("bounds").ValueKind);
+        Assert.Equal(["completeForWindow", "earliest", "latest"], Keys(computed.GetProperty("coverage")));
+        Assert.Empty(computed.GetProperty("citations").EnumerateArray());
+        Assert.Empty(computed.GetProperty("excerpts").EnumerateArray());
+    }
 }

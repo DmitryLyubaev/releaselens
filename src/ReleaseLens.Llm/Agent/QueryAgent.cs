@@ -22,6 +22,11 @@ public sealed partial class QueryAgent(
 {
     public static readonly ActivitySource ActivitySource = new("ReleaseLens.Agent");
 
+    // Fixed rather than model-written: a filtered completion can carry partial text, and none
+    // of it is returned.
+    private const string FilteredAnswer =
+        "The request was blocked by the model provider's content filter, so no answer was produced.";
+
     [GeneratedRegex(@"\[E(\d+)\]")]
     private static partial Regex CitationMarker();
 
@@ -171,6 +176,52 @@ public sealed partial class QueryAgent(
                     answerText = final.Text ?? string.Empty;
                 }
             }
+        }
+        catch (ContentFilteredException filtered)
+        {
+            var stage = filtered.Stage.ToString().ToLowerInvariant();
+
+            // Not an outage: FallbackChatProvider lets this through, because answering from
+            // another provider would route around the filter. The blocked call can still report
+            // usage (a filtered completion does; a filtered prompt reports none), so it is
+            // counted and priced like any other call, and the endpoint charges it to the
+            // tenant's daily budget with the rest.
+            logger.LogWarning(
+                "{Provider} content filter blocked the {Stage}; returning the filtered answer",
+                filtered.ProviderName, stage);
+
+            usage += filtered.Usage;
+
+            // By name only for test fakes that report no identity, as CostOf does.
+            cost += filtered.Pricing is { } filteredPricing
+                ? ModelPricing.CostUsd(filteredPricing, filtered.Usage, pricedOn)
+                : ModelPricing.CostUsd(modelName, filtered.Usage, pricedOn);
+
+            activity?.SetTag("filtered", true);
+            activity?.SetTag("filter_stage", stage);
+            activity?.SetTag("tokens_in", usage.InputTokens);
+            activity?.SetTag("tokens_out", usage.OutputTokens);
+            activity?.SetTag("cost_usd", (double)cost);
+            activity?.SetTag("iterations", iterations);
+
+            return new AgentAnswer(
+                FilteredAnswer,
+                // Nothing is cited. The fixed answer rests on no evidence, and returning the
+                // seed artefacts would present them as support for an answer never written.
+                [],
+                new AgentMetadata(
+                    iterations, toolsCalled, usage, cost,
+                    // The blocked call was the query's last, so its provider is the one
+                    // reported. It returned no response to read a model string from, so the
+                    // model recorded is the one it is priced as, when it has a pricing identity.
+                    filtered.ProviderName,
+                    filtered.Pricing?.Model ?? modelName,
+                    Degraded: false, DegradedReason: null,
+                    seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, [],
+                    // Only the providers that answered. The one whose filter blocked the call is
+                    // named in Filtered, and is listed here only if it answered earlier.
+                    Providers: providers,
+                    Filtered: new FilteredOutcome(stage, filtered.ProviderName)));
         }
         catch (AllProvidersUnavailableException unavailable)
         {

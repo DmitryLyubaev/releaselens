@@ -288,7 +288,10 @@ app.MapPost("/query", async (
             answer.Metadata.AccumulatedCitationCount,
             answer.Metadata.UnresolvedCitationMarkers,
             (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-            answer.Metadata.Providers ?? [])));
+            answer.Metadata.Providers ?? [],
+            answer.Metadata.Filtered is { } filtered
+                ? new FilteredOutcomeDto(filtered.Stage, filtered.Provider)
+                : null)));
 });
 
 app.Run();

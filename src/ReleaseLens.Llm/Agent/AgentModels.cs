@@ -42,7 +42,16 @@ public sealed record AgentMetadata(
     // Every provider that answered a call in this query, each once, in the order it first
     // answered. `Provider` is only the one that answered last, so without this an answer
     // written partly by one provider and partly by another reads as a single-provider answer.
-    IReadOnlyList<string>? Providers = null);
+    IReadOnlyList<string>? Providers = null,
+    // Set only when a provider's content filter blocked the prompt or the completion. The
+    // answer is then the fixed filtered answer rather than anything the model wrote.
+    FilteredOutcome? Filtered = null);
+
+/// <summary>
+/// A provider's content filter blocked the request. <paramref name="Stage"/> is <c>prompt</c>
+/// or <c>completion</c>; <paramref name="Provider"/> is the provider whose filter it was.
+/// </summary>
+public sealed record FilteredOutcome(string Stage, string Provider);
 
 /// <summary>
 /// An artefact the answer actually cites, paired with the marker the answer used for it.
