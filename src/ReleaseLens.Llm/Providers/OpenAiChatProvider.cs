@@ -19,19 +19,29 @@ public sealed class OpenAiOptions
     public string BaseUrl { get; set; } = "https://api.openai.com/v1/";
 
     public int MaxTokens { get; set; } = 2048;
+
+    /// <summary>
+    /// True for a local runtime that does not bill per token (Ollama, vLLM, LM Studio). It is
+    /// the only way this provider's calls may cost $0; a hosted model with no rate fails the
+    /// startup pricing check instead.
+    /// </summary>
+    public bool Unpriced { get; set; }
 }
 
-public sealed class OpenAiChatProvider : IChatProvider
+public sealed class OpenAiChatProvider : IPricedChatProvider
 {
     private readonly HttpClient _client;
     private readonly OpenAiOptions _options;
 
     public string Name => "openai";
 
+    public PricingIdentity Pricing { get; }
+
     public OpenAiChatProvider(HttpClient client, OpenAiOptions options)
     {
         _client = client;
         _options = options;
+        Pricing = new PricingIdentity("openai", options.Model, Unpriced: options.Unpriced);
 
         _client.BaseAddress ??= new Uri(options.BaseUrl);
 
@@ -58,7 +68,7 @@ public sealed class OpenAiChatProvider : IChatProvider
             using var document = await JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
 
-            return OpenAiWireFormat.Parse(document.RootElement, Name, _options.Model);
+            return OpenAiWireFormat.Parse(document.RootElement, Name, _options.Model, Pricing);
         }
     }
 }

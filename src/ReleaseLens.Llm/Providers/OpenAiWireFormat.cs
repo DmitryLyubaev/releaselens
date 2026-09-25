@@ -95,26 +95,35 @@ internal static class OpenAiWireFormat
         return payload;
     }
 
+    /// <summary>
+    /// Normalises OpenAI-wire usage to the shape every provider reports: <c>prompt_tokens</c>
+    /// includes the cached tokens, so they are taken out of <see cref="TokenUsage.InputTokens"/>
+    /// and reported only as <see cref="TokenUsage.CacheReadInputTokens"/>, and each token is
+    /// priced once. That <c>prompt_tokens</c> includes them is unverified against current
+    /// documentation (spec section 11); if it proves wrong, only this method changes.
+    /// </summary>
     public static TokenUsage ParseUsage(JsonElement root)
     {
         var usage = root.TryGetProperty("usage", out var usageElement) ? usageElement : default;
 
-        var cachedTokens = 0;
-        if (usage.ValueKind == JsonValueKind.Object &&
-            usage.TryGetProperty("prompt_tokens_details", out var details) &&
-            details.TryGetProperty("cached_tokens", out var cached))
-        {
-            cachedTokens = cached.GetInt32();
-        }
+        var details = usage.ValueKind == JsonValueKind.Object
+                      && usage.TryGetProperty("prompt_tokens_details", out var detailsElement)
+            ? detailsElement
+            : default;
+
+        var promptTokens = ProviderHttp.ReadInt(usage, "prompt_tokens");
+        var cachedTokens = ProviderHttp.ReadInt(details, "cached_tokens");
 
         return new TokenUsage(
-            ProviderHttp.ReadInt(usage, "prompt_tokens"),
+            // A response reporting more cached than prompt tokens would otherwise give negative
+            // input, which prices as a credit.
+            Math.Max(0, promptTokens - cachedTokens),
             ProviderHttp.ReadInt(usage, "completion_tokens"),
             cachedTokens,
             0);
     }
 
-    public static ChatResponse Parse(JsonElement root, string providerName, string fallbackModel)
+    public static ChatResponse Parse(JsonElement root, string providerName, string fallbackModel, PricingIdentity? pricing)
     {
         // A 200 with nothing to read is a malformed reply, not an empty answer. Indexing into
         // it would throw KeyNotFoundException or IndexOutOfRangeException, naming no provider.
@@ -139,7 +148,7 @@ internal static class OpenAiWireFormat
         // text, and none of it may become an answer.
         if (IsContentFiltered(choice))
         {
-            throw new ContentFilteredException(providerName, ContentFilterStage.Completion, usage);
+            throw new ContentFilteredException(providerName, ContentFilterStage.Completion, usage, pricing);
         }
 
         var message = choice.GetProperty("message");
@@ -173,7 +182,8 @@ internal static class OpenAiWireFormat
             usage,
             choice.GetProperty("finish_reason").GetString() ?? "unknown",
             root.TryGetProperty("model", out var model) ? model.GetString() ?? fallbackModel : fallbackModel,
-            providerName);
+            providerName,
+            pricing);
     }
 
     /// <summary>

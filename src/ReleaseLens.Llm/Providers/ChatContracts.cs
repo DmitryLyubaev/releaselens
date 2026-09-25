@@ -57,13 +57,17 @@ public sealed record TokenUsage(
     public int Total => InputTokens + OutputTokens + CacheReadInputTokens + CacheCreationInputTokens;
 }
 
+/// <param name="Model">The model string the endpoint echoed. It is recorded, and priced only when
+/// <paramref name="Pricing"/> is null, which no real provider leaves it.</param>
+/// <param name="Pricing">The identity this call is billed under; null only for test fakes.</param>
 public sealed record ChatResponse(
     string? Text,
     IReadOnlyList<ToolCall> ToolCalls,
     TokenUsage Usage,
     string StopReason,
     string Model,
-    string Provider);
+    string Provider,
+    PricingIdentity? Pricing = null);
 
 /// <summary>
 /// Thrown when a provider cannot serve the request — network failure, 5xx, or 429.
@@ -88,10 +92,14 @@ public enum ContentFilterStage { Prompt, Completion }
 /// no text: a filtered completion can arrive with partial content, and none of it may reach
 /// the caller.
 /// </remarks>
-public sealed class ContentFilteredException(string providerName, ContentFilterStage stage, TokenUsage usage)
+public sealed class ContentFilteredException(
+    string providerName, ContentFilterStage stage, TokenUsage usage, PricingIdentity? pricing = null)
     : Exception($"{providerName} content filter blocked the {stage.ToString().ToLowerInvariant()}.")
 {
     public string ProviderName { get; } = providerName;
     public ContentFilterStage Stage { get; } = stage;
     public TokenUsage Usage { get; } = usage;
+
+    /// <summary>The identity the filtered call's usage is billed under; null only for test fakes.</summary>
+    public PricingIdentity? Pricing { get; } = pricing;
 }

@@ -275,6 +275,84 @@ public class QueryAgentTests(PostgresFixture fixture)
         Assert.True(answer.Metadata.CostUsd > 0);
     }
 
+    private static readonly PricingIdentity Haiku = new("anthropic", "claude-haiku-4-5-20251001");
+
+    private static readonly PricingIdentity AzureRegional =
+        new("azure-openai", "gpt-4.1-mini", "2025-04-14", "Standard");
+
+    /// <summary>800 in, 30 out: 0.00095 at Haiku 4.5's 1.00/5.00, 0.0004048 at Azure's 0.44/1.76.</summary>
+    private static ChatResponse PricedCallTool(string provider, string model, PricingIdentity pricing) =>
+        CallTool("search_commits", """{"query":"planner"}""") with
+        {
+            Provider = provider, Model = model, Pricing = pricing
+        };
+
+    /// <summary>1,000 in, 50 out: 0.00125 at Haiku 4.5, 0.000528 at Azure.</summary>
+    private static ChatResponse PricedText(string text, string provider, string model, PricingIdentity pricing) =>
+        Text(text) with { Provider = provider, Model = model, Pricing = pricing };
+
+    // T-C5
+    [Fact]
+    public async Task Answer_ProviderChangesMidQuery_IsPricedPerIteration()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-priced-per-iteration");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => PricedCallTool("anthropic", "claude-haiku-4-5-20251001", Haiku),
+            () => PricedText("Found it in [E1].", "azure-openai", "gpt-4.1-mini-2025-04-14", AzureRegional)
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        // 0.00095 for the Anthropic iteration plus 0.000528 for the Azure one. Pricing the whole
+        // query at the last provider's rate, as before, would give 0.0009328.
+        Assert.Equal(0.001478m, answer.Metadata.CostUsd);
+        Assert.Equal("azure-openai", answer.Metadata.Provider);
+    }
+
+    [Fact]
+    public async Task Answer_CeilingFinalCall_IsPricedAtItsOwnProvidersRate()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-priced-ceiling");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var script = new Queue<Func<ChatResponse>>();
+        for (var i = 0; i < 6; i++)
+        {
+            script.Enqueue(() => PricedCallTool("anthropic", "claude-haiku-4-5-20251001", Haiku));
+        }
+
+        script.Enqueue(() => PricedText("From the evidence so far: [E1].", "azure-openai", "gpt-4.1-mini", AzureRegional));
+
+        var answer = await Build(new ScriptedProvider(script)).AnswerAsync(
+            scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        // Six Anthropic iterations at 0.00095 each, plus the no-tools final call at Azure's 0.000528.
+        Assert.Equal(0.006228m, answer.Metadata.CostUsd);
+    }
+
+    [Fact]
+    public async Task Answer_ProvidersFailAfterAPricedIteration_TheDegradedAnswerKeepsThatCost()
+    {
+        var (factory, tenantId) = await SeedAsync("agent-priced-degraded");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        var provider = new ScriptedProvider(new Queue<Func<ChatResponse>>(
+        [
+            () => PricedCallTool("azure-openai", "gpt-4.1-mini-2025-04-14", AzureRegional),
+            () => throw new AllProvidersUnavailableException(["azure-openai"])
+        ]));
+
+        var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
+
+        Assert.True(answer.Metadata.Degraded);
+
+        // The versioned name has no name-based rate, so pricing it by name gave $0 here.
+        Assert.Equal(0.0004048m, answer.Metadata.CostUsd);
+    }
+
     [Fact]
     public async Task Answer_StopsAtMaxIterations_AndStillProducesAnAnswer()
     {

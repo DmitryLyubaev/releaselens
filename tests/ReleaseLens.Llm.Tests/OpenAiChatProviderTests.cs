@@ -94,7 +94,9 @@ public class OpenAiChatProviderTests
         var response = await Create(handler).CompleteAsync(Request(), TestContext.Current.CancellationToken);
 
         Assert.Equal("Release 1.30 fixed the planner.", response.Text);
-        Assert.Equal(1200, response.Usage.InputTokens);
+
+        // prompt_tokens (1,200) includes the 1,024 cached; InputTokens is the uncached remainder.
+        Assert.Equal(176, response.Usage.InputTokens);
         Assert.Equal(45, response.Usage.OutputTokens);
         Assert.Equal(1024, response.Usage.CacheReadInputTokens);
         Assert.Equal("stop", response.StopReason);

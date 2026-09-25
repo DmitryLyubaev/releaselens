@@ -14,17 +14,20 @@ public sealed class AnthropicOptions
     public int MaxTokens { get; set; } = 2048;
 }
 
-public sealed class AnthropicChatProvider : IChatProvider
+public sealed class AnthropicChatProvider : IPricedChatProvider
 {
     private readonly HttpClient _client;
     private readonly AnthropicOptions _options;
 
     public string Name => "anthropic";
 
+    public PricingIdentity Pricing { get; }
+
     public AnthropicChatProvider(HttpClient client, AnthropicOptions options)
     {
         _client = client;
         _options = options;
+        Pricing = new PricingIdentity("anthropic", options.Model);
 
         _client.BaseAddress ??= new Uri(options.BaseUrl);
         _client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKey);
@@ -179,6 +182,7 @@ public sealed class AnthropicChatProvider : IChatProvider
                 ProviderHttp.ReadInt(usage, "cache_creation_input_tokens")),
             root.GetProperty("stop_reason").GetString() ?? "unknown",
             root.GetProperty("model").GetString() ?? _options.Model,
-            Name);
+            Name,
+            Pricing);
     }
 }

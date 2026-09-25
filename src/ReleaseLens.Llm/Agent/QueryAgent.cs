@@ -56,6 +56,11 @@ public sealed partial class QueryAgent(
         var systemPrompt = SystemPrompt.Build(await DescribeRepositoryAsync(scope, cancellationToken));
 
         var usage = TokenUsage.Zero;
+        var cost = 0m;
+
+        // One date for the whole query, so a query spanning midnight on a price change is not
+        // priced half at each rate.
+        var pricedOn = DateOnly.FromDateTime(DateTime.UtcNow);
         var toolsCalled = new List<string>();
         var iterations = 0;
         string? answerText = null;
@@ -80,6 +85,7 @@ public sealed partial class QueryAgent(
                     options.MaxTokens), cancellationToken);
 
                 usage += response.Usage;
+                cost += CostOf(response, pricedOn);
                 providerName = response.Provider;
                 modelName = response.Model;
 
@@ -150,6 +156,7 @@ public sealed partial class QueryAgent(
                     }
 
                     usage += final.Usage;
+                    cost += CostOf(final, pricedOn);
                     answerText = final.Text ?? string.Empty;
                 }
             }
@@ -183,7 +190,7 @@ public sealed partial class QueryAgent(
                     // real, billable tokens. Hardcoding zero here discards that spend and its
                     // attribution — and the only test for this path fails on the first call, so
                     // usage is zero there and the loss is invisible.
-                    ModelPricing.CostUsd(modelName, usage, DateOnly.FromDateTime(DateTime.UtcNow)),
+                    cost,
                     usage.Total > 0 ? providerName : "none",
                     modelName,
                     Degraded: true,
@@ -201,7 +208,6 @@ public sealed partial class QueryAgent(
         // ordering, brand every unused marker a hallucination.
         var unresolved = FindUnresolvedMarkers(answerText, citations.Count);
         var cited = SelectCitedEvidence(answerText, citations, ledger);
-        var cost = ModelPricing.CostUsd(modelName, usage, DateOnly.FromDateTime(DateTime.UtcNow));
 
         activity?.SetTag("tokens_in", usage.InputTokens);
         activity?.SetTag("tokens_out", usage.OutputTokens);
@@ -213,6 +219,17 @@ public sealed partial class QueryAgent(
             Degraded: false, DegradedReason: null,
             seed.Chunks.Count, k, seed.FewerThanRequested, seed.Note, citations.Count, unresolved));
     }
+
+    /// <summary>
+    /// One call's cost, under the identity it was billed as. Each call is priced on its own
+    /// because a query can change provider part-way, and pricing the total at the last
+    /// provider's rate misprices every earlier call. The response's model string is priced
+    /// only for test fakes that report no identity.
+    /// </summary>
+    private static decimal CostOf(ChatResponse response, DateOnly asOf)
+        => response.Pricing is { } pricing
+            ? ModelPricing.CostUsd(pricing, response.Usage, asOf)
+            : ModelPricing.CostUsd(response.Model, response.Usage, asOf);
 
     /// <summary>
     /// Resolves "owner/repo" for the system prompt. The prompt names the repository the model

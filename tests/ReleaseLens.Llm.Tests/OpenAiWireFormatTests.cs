@@ -81,7 +81,7 @@ public class OpenAiWireFormatTests
         }
         """);
 
-        var response = OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "fallback-model");
+        var response = OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "fallback-model", pricing: null);
 
         Assert.Equal("Release 1.30 fixed the planner.", response.Text);
         Assert.Empty(response.ToolCalls);
@@ -102,7 +102,7 @@ public class OpenAiWireFormatTests
         """);
 
         Assert.Equal("fallback-model",
-            OpenAiWireFormat.Parse(document.RootElement, "openai", "fallback-model").Model);
+            OpenAiWireFormat.Parse(document.RootElement, "openai", "fallback-model", pricing: null).Model);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class OpenAiWireFormatTests
         }
         """);
 
-        var response = OpenAiWireFormat.Parse(document.RootElement, "openai", "gpt-4.1-mini");
+        var response = OpenAiWireFormat.Parse(document.RootElement, "openai", "gpt-4.1-mini", pricing: null);
 
         Assert.Null(response.Text);
         var call = Assert.Single(response.ToolCalls);
@@ -129,7 +129,7 @@ public class OpenAiWireFormatTests
     }
 
     [Fact]
-    public void ParseUsage_ReadsPromptCompletionAndCachedTokens()
+    public void ParseUsage_ReportsUncachedInputAndCachedTokensSeparately()
     {
         using var document = JsonDocument.Parse("""
         { "usage": { "prompt_tokens": 1200, "completion_tokens": 45,
@@ -138,7 +138,8 @@ public class OpenAiWireFormatTests
 
         var usage = OpenAiWireFormat.ParseUsage(document.RootElement);
 
-        Assert.Equal(1200, usage.InputTokens);
+        // prompt_tokens includes the cached tokens; InputTokens is the uncached remainder.
+        Assert.Equal(176, usage.InputTokens);
         Assert.Equal(45, usage.OutputTokens);
         Assert.Equal(1024, usage.CacheReadInputTokens);
         Assert.Equal(0, usage.CacheCreationInputTokens);
@@ -153,7 +154,7 @@ public class OpenAiWireFormatTests
         using var document = JsonDocument.Parse(body);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "gpt-4.1-mini"));
+            OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "gpt-4.1-mini", pricing: null));
 
         Assert.Contains("azure-openai", exception.Message, StringComparison.Ordinal);
         Assert.Contains("no choices", exception.Message, StringComparison.Ordinal);
@@ -169,7 +170,7 @@ public class OpenAiWireFormatTests
         using var document = JsonDocument.Parse(body);
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "gpt-4.1-mini"));
+            OpenAiWireFormat.Parse(document.RootElement, "azure-openai", "gpt-4.1-mini", pricing: null));
 
         Assert.Contains("azure-openai", exception.Message, StringComparison.Ordinal);
         Assert.Contains("no usage", exception.Message, StringComparison.Ordinal);
