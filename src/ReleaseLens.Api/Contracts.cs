@@ -64,7 +64,8 @@ public sealed record QueryMetadataDto(
     IReadOnlyList<string> UnresolvedCitationMarkers,
     long ElapsedMs,
     // Every provider that answered, once each, in first-answer order; `Provider` is the one
-    // that answered last. Empty when none did.
+    // that answered last. Empty when none did. On a filtered answer, `Provider` is instead the
+    // provider whose filter blocked the call, which need not have answered (see `Filtered`).
     IReadOnlyList<string>? Providers = null,
     // Present only when a provider's content filter blocked the request. Absent otherwise, not
     // null, so every response that was not filtered keeps exactly the shape it had before.

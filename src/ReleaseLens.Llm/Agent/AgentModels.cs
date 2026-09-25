@@ -42,6 +42,8 @@ public sealed record AgentMetadata(
     // Every provider that answered a call in this query, each once, in the order it first
     // answered. `Provider` is only the one that answered last, so without this an answer
     // written partly by one provider and partly by another reads as a single-provider answer.
+    // On a filtered answer, `Provider` is instead the provider whose filter blocked the call,
+    // which need not have answered (see `Filtered`).
     IReadOnlyList<string>? Providers = null,
     // Set only when a provider's content filter blocked the prompt or the completion. The
     // answer is then the fixed filtered answer rather than anything the model wrote.
