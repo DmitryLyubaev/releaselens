@@ -7,7 +7,6 @@ public sealed class AgentOptions
 {
     public const string SectionName = "Agent";
 
-    public string Model { get; set; } = "claude-sonnet-5";
     public int MaxIterations { get; set; } = 6;
     public int MaxTokens { get; set; } = 2048;
     public int SeedRetrievalK { get; set; } = 8;

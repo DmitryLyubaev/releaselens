@@ -60,7 +60,9 @@ public sealed partial class QueryAgent(
         var iterations = 0;
         string? answerText = null;
         var providerName = provider.Name;
-        var modelName = options.Model;
+
+        // The agent has no model of its own; until a provider answers there is none to report.
+        var modelName = "none";
 
         try
         {
@@ -75,7 +77,6 @@ public sealed partial class QueryAgent(
                     systemPrompt,
                     messages,
                     tools.Definitions,
-                    options.Model,
                     options.MaxTokens), cancellationToken);
 
                 usage += response.Usage;
@@ -136,7 +137,7 @@ public sealed partial class QueryAgent(
 
                     var final = await provider.CompleteAsync(new ChatRequest(
                         systemPrompt,
-                        messages, [], options.Model, options.MaxTokens), cancellationToken);
+                        messages, [], options.MaxTokens), cancellationToken);
 
                     if (final.ToolCalls.Count > 0)
                     {

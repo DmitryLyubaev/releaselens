@@ -200,7 +200,7 @@ public class QueryAgentTests(PostgresFixture fixture)
         NullLogger<ToolRegistry>.Instance),
         new HybridRetriever(),
         _embedder,
-        new AgentOptions { Model = "claude-sonnet-5", MaxIterations = 6 },
+        new AgentOptions { MaxIterations = 6 },
         NullLogger<QueryAgent>.Instance);
 
     [Fact]
@@ -325,6 +325,10 @@ public class QueryAgentTests(PostgresFixture fixture)
         Assert.NotNull(answer.Metadata.DegradedReason);
         Assert.NotEmpty(answer.Citations);
         Assert.Contains("sha_agent", answer.Answer, StringComparison.Ordinal);
+
+        // No provider answered, so no model did either; the agent has no model of its own.
+        Assert.Equal("none", answer.Metadata.Provider);
+        Assert.Equal("none", answer.Metadata.Model);
     }
 
     [Fact]

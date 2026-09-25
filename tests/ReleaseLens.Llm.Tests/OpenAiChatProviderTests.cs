@@ -19,7 +19,7 @@ public class OpenAiChatProviderTests
     private static ChatRequest Request(params ToolDefinition[] tools) => new(
         "You answer questions about a repository.",
         [ChatMessage.User("What changed in release 1.30?")],
-        tools, "gpt-4o", 1024);
+        tools, 1024);
 
     private static ToolDefinition SearchTool() => new(
         "search_commits", "Search commits.",
@@ -138,7 +138,7 @@ public class OpenAiChatProviderTests
                     JsonDocument.Parse("""{"query":"x"}""").RootElement)]),
                 ChatMessage.UserToolResults([new ToolResult("call_01", "3 commits found", false)])
             ],
-            [SearchTool()], "gpt-4o", 1024);
+            [SearchTool()], 1024);
 
         await Create(handler).CompleteAsync(request, TestContext.Current.CancellationToken);
 

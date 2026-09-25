@@ -29,11 +29,15 @@ public sealed record ChatMessage(
     public static ChatMessage UserToolResults(IReadOnlyList<ToolResult> results) => new(ChatRole.User, null, null, results);
 }
 
+/// <summary>
+/// What to ask, never which model to ask it of: every provider sends the model its own options
+/// name. A model carried here reached whichever provider answered, so an Anthropic outage sent
+/// an Anthropic model name to OpenAI.
+/// </summary>
 public sealed record ChatRequest(
     string SystemPrompt,
     IReadOnlyList<ChatMessage> Messages,
     IReadOnlyList<ToolDefinition> Tools,
-    string Model,
     int MaxTokens);
 
 public sealed record TokenUsage(

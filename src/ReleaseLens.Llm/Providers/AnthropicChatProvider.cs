@@ -54,7 +54,7 @@ public sealed class AnthropicChatProvider : IChatProvider
     {
         var payload = new JsonObject
         {
-            ["model"] = request.Model,
+            ["model"] = _options.Model,
             ["max_tokens"] = request.MaxTokens,
 
             // System prompt as a block array so cache_control can be attached. Whether it

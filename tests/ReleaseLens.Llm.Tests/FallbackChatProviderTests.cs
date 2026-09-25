@@ -1,7 +1,11 @@
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
+using ReleaseLens.Ingestion.Tests;
 using ReleaseLens.Llm.Providers;
 using Xunit;
 
@@ -25,7 +29,7 @@ public class FallbackChatProviderTests
         new("answer", [], new TokenUsage(10, 5, 0, 0), "end_turn", "model", provider);
 
     private static ChatRequest Request() =>
-        new("system", [ChatMessage.User("q")], [], "model", 512);
+        new("system", [ChatMessage.User("q")], [], 512);
 
     [Fact]
     public async Task Complete_PrimaryHealthy_NeverCallsTheSecondary()
@@ -53,6 +57,46 @@ public class FallbackChatProviderTests
 
         Assert.Equal("openai", response.Provider);
         Assert.Equal(1, secondary.Calls);
+    }
+
+    /// <summary>
+    /// T-F1. The chain hands every provider the same request, so a model named on the request
+    /// reached whichever provider answered: an Anthropic outage sent "claude-sonnet-5" to
+    /// OpenAI. Real providers over stubbed HTTP, because the bug was in the body on the wire.
+    /// </summary>
+    [Fact]
+    public async Task Complete_AnthropicUnavailable_OpenAiIsSentItsOwnConfiguredModel()
+    {
+        var anthropicHttp = new StubHttpMessageHandler().Enqueue(
+            HttpStatusCode.ServiceUnavailable, """{"type":"error","error":{"type":"overloaded_error"}}""");
+        var openAiHttp = new StubHttpMessageHandler().EnqueueJson("""
+            {
+              "id": "chatcmpl-1",
+              "model": "gpt-4o",
+              "choices": [{ "index": 0, "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "answered by openai" } }],
+              "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            }
+            """);
+
+        var anthropic = new AnthropicChatProvider(
+            new HttpClient(anthropicHttp) { BaseAddress = new Uri("https://api.anthropic.com/") },
+            new AnthropicOptions { ApiKey = "sk-ant-test", Model = "claude-sonnet-5" });
+        var openAiOptions = new OpenAiOptions { ApiKey = "sk-test", Model = "gpt-4o" };
+        var openAi = new OpenAiChatProvider(
+            new HttpClient(openAiHttp) { BaseAddress = new Uri(openAiOptions.BaseUrl) }, openAiOptions);
+
+        var response = await new FallbackChatProvider([anthropic, openAi], NullLogger<FallbackChatProvider>.Instance)
+            .CompleteAsync(Request(), TestContext.Current.CancellationToken);
+
+        Assert.Equal("openai", response.Provider);
+        Assert.Single(anthropicHttp.Requests);
+
+        var body = await Assert.Single(openAiHttp.Requests).Content!
+            .ReadAsStringAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(body);
+
+        Assert.Equal(openAiOptions.Model, document.RootElement.GetProperty("model").GetString());
     }
 
     [Fact]

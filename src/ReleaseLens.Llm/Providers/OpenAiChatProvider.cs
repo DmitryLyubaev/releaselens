@@ -119,7 +119,7 @@ public sealed class OpenAiChatProvider : IChatProvider
 
         var payload = new JsonObject
         {
-            ["model"] = request.Model,
+            ["model"] = _options.Model,
             ["max_tokens"] = request.MaxTokens,
             ["messages"] = messages
         };

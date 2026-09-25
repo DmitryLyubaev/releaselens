@@ -12,15 +12,14 @@ namespace ReleaseLens.Llm.Tests;
 
 public class AnthropicChatProviderTests
 {
-    private static AnthropicChatProvider Create(StubHttpMessageHandler handler) =>
+    private static AnthropicChatProvider Create(StubHttpMessageHandler handler, string model = "claude-sonnet-5") =>
         new(new HttpClient(handler) { BaseAddress = new Uri("https://api.anthropic.com/") },
-            new AnthropicOptions { ApiKey = "sk-ant-test", Model = "claude-sonnet-5" });
+            new AnthropicOptions { ApiKey = "sk-ant-test", Model = model });
 
     private static ChatRequest Request(params ToolDefinition[] tools) => new(
         SystemPrompt: "You answer questions about a repository.",
         Messages: [ChatMessage.User("What changed in release 1.30?")],
         Tools: tools,
-        Model: "claude-sonnet-5",
         MaxTokens: 1024);
 
     private static ToolDefinition SearchTool() => new(
@@ -69,6 +68,19 @@ public class AnthropicChatProviderTests
         Assert.Equal("sk-ant-test", request.Headers.GetValues("x-api-key").Single());
         Assert.Equal("2023-06-01", request.Headers.GetValues("anthropic-version").Single());
         Assert.Equal("/v1/messages", request.RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task Complete_SendsTheModelItIsConfiguredWith()
+    {
+        var handler = new StubHttpMessageHandler().EnqueueJson(TextResponse);
+        await Create(handler, model: "claude-haiku-4-5-20251001")
+            .CompleteAsync(Request(), TestContext.Current.CancellationToken);
+
+        var body = await handler.Requests[0].Content!.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(body);
+
+        Assert.Equal("claude-haiku-4-5-20251001", document.RootElement.GetProperty("model").GetString());
     }
 
     [Fact]
@@ -138,7 +150,7 @@ public class AnthropicChatProviderTests
                     JsonDocument.Parse("""{"query":"x"}""").RootElement)]),
                 ChatMessage.UserToolResults([new ToolResult("toolu_01", "3 commits found", IsError: false)])
             ],
-            [SearchTool()], "claude-sonnet-5", 1024);
+            [SearchTool()], 1024);
 
         await Create(handler).CompleteAsync(request, TestContext.Current.CancellationToken);
 
