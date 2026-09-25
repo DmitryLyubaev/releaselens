@@ -15,7 +15,9 @@ public sealed class AllProvidersUnavailableException(IReadOnlyList<string> attem
 /// <summary>
 /// Tries each provider in order. Only <see cref="ProviderUnavailableException"/> falls
 /// through — a malformed request is our bug and must surface on the first provider
-/// rather than being retried at cost against the second.
+/// rather than being retried at cost against the second, and a
+/// <see cref="ContentFilteredException"/> must not be answered elsewhere, because that
+/// would route around the filter.
 /// </summary>
 public sealed class FallbackChatProvider : IChatProvider
 {

@@ -130,6 +130,23 @@ public class FallbackChatProviderTests
     }
 
     [Fact]
+    public async Task Complete_ContentFiltered_DoesNotFallThrough()
+    {
+        // Answering a filtered request on another provider would route around the filter.
+        var primary = new ScriptedProvider("openai",
+            () => throw new ContentFilteredException("openai", ContentFilterStage.Completion, new TokenUsage(900, 12, 0, 0)));
+        var secondary = new ScriptedProvider("anthropic", () => Ok("anthropic"));
+
+        var exception = await Assert.ThrowsAsync<ContentFilteredException>(async () =>
+            await new FallbackChatProvider([primary, secondary], NullLogger<FallbackChatProvider>.Instance)
+                .CompleteAsync(Request(), TestContext.Current.CancellationToken));
+
+        Assert.Equal("openai", exception.ProviderName);
+        Assert.Equal(1, primary.Calls);
+        Assert.Equal(0, secondary.Calls);
+    }
+
+    [Fact]
     public void Construct_WithNoProviders_Throws()
     {
         Assert.Throws<ArgumentException>(() =>

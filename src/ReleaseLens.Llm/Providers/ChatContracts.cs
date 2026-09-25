@@ -74,3 +74,24 @@ public sealed class ProviderUnavailableException(string providerName, string mes
 {
     public string ProviderName { get; } = providerName;
 }
+
+public enum ContentFilterStage { Prompt, Completion }
+
+/// <summary>
+/// The provider's content filter blocked the prompt or the completion. This is neither our
+/// bug nor the provider being unavailable, so the fallback chain lets it through untouched:
+/// answering the same request on another provider would route around the filter.
+/// </summary>
+/// <remarks>
+/// It carries the usage the provider reported so the caller can count and price the call like
+/// any other; whether a provider bills a filtered call is unverified. It deliberately carries
+/// no text: a filtered completion can arrive with partial content, and none of it may reach
+/// the caller.
+/// </remarks>
+public sealed class ContentFilteredException(string providerName, ContentFilterStage stage, TokenUsage usage)
+    : Exception($"{providerName} content filter blocked the {stage.ToString().ToLowerInvariant()}.")
+{
+    public string ProviderName { get; } = providerName;
+    public ContentFilterStage Stage { get; } = stage;
+    public TokenUsage Usage { get; } = usage;
+}

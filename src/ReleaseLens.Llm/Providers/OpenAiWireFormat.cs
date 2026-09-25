@@ -134,6 +134,14 @@ internal static class OpenAiWireFormat
 
         var usage = ParseUsage(root);
         var choice = choices[0];
+
+        // Checked before the message is read: a filtered completion can still carry partial
+        // text, and none of it may become an answer.
+        if (IsContentFiltered(choice))
+        {
+            throw new ContentFilteredException(providerName, ContentFilterStage.Completion, usage);
+        }
+
         var message = choice.GetProperty("message");
 
         var text = message.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String
@@ -175,4 +183,9 @@ internal static class OpenAiWireFormat
     /// </summary>
     private static string ToolContent(ToolResult result)
         => result.IsError ? "Error: " + result.Content : result.Content;
+
+    private static bool IsContentFiltered(JsonElement choice)
+        => choice.TryGetProperty("finish_reason", out var finishReason)
+           && finishReason.ValueKind == JsonValueKind.String
+           && finishReason.ValueEquals("content_filter");
 }
