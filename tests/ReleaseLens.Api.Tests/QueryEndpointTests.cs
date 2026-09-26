@@ -6,6 +6,8 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Azure.Core;
+using Azure.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -560,6 +562,48 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
         Assert.True(degraded.GetProperty("metadata").GetProperty("degraded").GetBoolean());
         Assert.False(degraded.GetProperty("metadata").TryGetProperty("filtered", out _));
+    }
+
+    private sealed class UnavailableCredential : TokenCredential
+    {
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => throw new CredentialUnavailableException("No credential in tests.");
+
+        public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => throw new CredentialUnavailableException("No credential in tests.");
+    }
+
+    /// <summary>
+    /// T-A1 through real configuration and T-P3 end to end. Chat:Providers:0 alone gives a
+    /// one-provider chain, with nothing inherited from a default or a file entry, and a
+    /// credential that cannot produce a token degrades the answer instead of failing it.
+    /// </summary>
+    [Fact]
+    public async Task Query_OnlyAzureConfigured_CredentialFails_DegradesNamingOnlyAzure()
+    {
+        await using var hosted = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Chat:Providers:0", "azure-openai");
+            builder.UseSetting("AzureOpenAi:BaseUrl", "http://127.0.0.1:9/openai/v1/");
+            builder.UseSetting("AzureOpenAi:Deployment", "gpt-4.1-mini-test");
+            builder.UseSetting("AzureOpenAi:TenantId", "00000000-0000-0000-0000-000000000002");
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TokenCredential>();
+                services.AddSingleton<TokenCredential>(new UnavailableCredential());
+            });
+        });
+
+        using var client = hosted.CreateClient();
+        var response = await client.SendAsync(Query("planner", _apiKey), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var metadata = (await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
+            .GetProperty("metadata");
+        Assert.True(metadata.GetProperty("degraded").GetBoolean());
+        Assert.StartsWith("All providers unavailable: azure-openai. ",
+            metadata.GetProperty("degradedReason").GetString(), StringComparison.Ordinal);
+        Assert.Empty(metadata.GetProperty("providers").EnumerateArray());
     }
 
     [Fact]

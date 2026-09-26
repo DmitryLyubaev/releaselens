@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Azure.Core;
 using Microsoft.AspNetCore.Diagnostics;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -11,6 +12,7 @@ using ReleaseLens.Core.Telemetry;
 using ReleaseLens.Embedding;
 using ReleaseLens.Llm.Agent;
 using ReleaseLens.Llm.Providers;
+using ReleaseLens.Llm.Providers.Azure;
 using ReleaseLens.Llm.Tools;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
@@ -29,12 +31,27 @@ var openAiOptions = builder.Configuration.GetSection(OpenAiOptions.SectionName).
     ?? new OpenAiOptions();
 openAiOptions.ApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
 
+var azureOpenAiOptions = builder.Configuration.GetSection(AzureOpenAiOptions.SectionName).Get<AzureOpenAiOptions>()
+    ?? new AzureOpenAiOptions();
+azureOpenAiOptions.ClientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID");
+
+// Binding into ChatOptions would add the configured names to its default list rather than
+// replace it, so ["anthropic", "openai"] would come out with both names twice. The list is
+// read on its own, and the default applies only when nothing configures it.
+var chatOptions = new ChatOptions();
+chatOptions.Providers = builder.Configuration
+    .GetSection($"{ChatOptions.SectionName}:{nameof(ChatOptions.Providers)}")
+    .Get<List<string>>() ?? chatOptions.Providers;
+
 var agentOptions = builder.Configuration.GetSection(AgentOptions.SectionName).Get<AgentOptions>() ?? new AgentOptions();
 var embedderOptions = builder.Configuration.GetSection(EmbedderOptions.SectionName).Get<EmbedderOptions>()
     ?? new EmbedderOptions();
 
 builder.Services.AddSingleton(anthropicOptions);
 builder.Services.AddSingleton(openAiOptions);
+builder.Services.AddSingleton(azureOpenAiOptions);
+builder.Services.AddSingleton(chatOptions);
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(agentOptions);
 builder.Services.AddSingleton(embedderOptions);
 
@@ -53,8 +70,48 @@ builder.Services.AddHttpClient<AnthropicChatProvider>()
 builder.Services.AddHttpClient<OpenAiChatProvider>()
     .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromMinutes(2));
 
+// Nothing resolves the credential or the token cache except the Azure client's handler, and
+// nothing resolves that client unless Chat:Providers lists azure-openai, so a chain without
+// Azure never builds a credential.
+builder.Services.AddSingleton<TokenCredential>(_ => AzureCredentialFactory.Create(azureOpenAiOptions));
+builder.Services.AddSingleton(sp => new EntraTokenCache(
+    sp.GetRequiredService<TokenCredential>(), azureOpenAiOptions.TokenScope, sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddHttpClient<AzureOpenAiChatProvider>()
+    .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromMinutes(2))
+    .AddHttpMessageHandler(sp => new EntraTokenHandler(sp.GetRequiredService<EntraTokenCache>()));
+
+builder.Services.AddSingleton(sp => new SelectedChatProviders(ChatProviderSelection.Select(
+    chatOptions.Providers,
+    new Dictionary<string, Func<IChatProvider>>
+    {
+        ["anthropic"] = () => sp.GetRequiredService<AnthropicChatProvider>(),
+        ["openai"] = () => sp.GetRequiredService<OpenAiChatProvider>(),
+        ["azure-openai"] = () =>
+        {
+            // Checked here rather than left to the provider: an empty BaseUrl would surface as
+            // a UriFormatException that names no setting, and an empty Deployment only when
+            // the first query reached Azure.
+            var empty = new[]
+                {
+                    (Name: nameof(AzureOpenAiOptions.BaseUrl), Value: azureOpenAiOptions.BaseUrl),
+                    (Name: nameof(AzureOpenAiOptions.Deployment), Value: azureOpenAiOptions.Deployment)
+                }
+                .Where(setting => string.IsNullOrWhiteSpace(setting.Value))
+                .Select(setting => $"{AzureOpenAiOptions.SectionName}:{setting.Name}")
+                .ToList();
+
+            if (empty.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Chat:Providers lists azure-openai, but these settings are empty: {string.Join(", ", empty)}.");
+            }
+
+            return sp.GetRequiredService<AzureOpenAiChatProvider>();
+        }
+    })));
+
 builder.Services.AddSingleton<IChatProvider>(sp => new FallbackChatProvider(
-    [sp.GetRequiredService<AnthropicChatProvider>(), sp.GetRequiredService<OpenAiChatProvider>()],
+    sp.GetRequiredService<SelectedChatProviders>().Providers,
     sp.GetRequiredService<ILogger<FallbackChatProvider>>()));
 
 builder.Services.AddSingleton(sp => new ToolRegistry(
@@ -107,6 +164,14 @@ builder.Services.AddOpenTelemetry()
     });
 
 var app = builder.Build();
+
+// Building the chain here rather than on the first query is what turns a misnamed provider, an
+// incomplete AzureOpenAi section or a model with no rate into a failed startup.
+ModelPricing.EnsurePriced(
+    app.Services.GetRequiredService<SelectedChatProviders>().Providers
+        .OfType<IPricedChatProvider>()
+        .Select(provider => provider.Pricing),
+    DateOnly.FromDateTime(app.Services.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime));
 
 app.MapOpenApi();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/openapi/v1.json", "ReleaseLens"));
@@ -298,3 +363,9 @@ app.Run();
 
 /// <summary>Exposed so WebApplicationFactory&lt;Program&gt; can host the app in tests.</summary>
 public partial class Program;
+
+/// <summary>
+/// The providers Chat:Providers names, in order: the fallback chain, and the set startup
+/// checks for a rate. One instance, so the chain that answers is the one that was checked.
+/// </summary>
+internal sealed record SelectedChatProviders(IReadOnlyList<IChatProvider> Providers);
