@@ -131,7 +131,8 @@ public sealed class AzureOpenAiChatProvider : IPricedChatProvider
     /// A usable value is one header value that is a plain non-negative integer that fits an
     /// <see cref="int"/>. Anything else (a decimal, a sign, whitespace, a unit, a list, or a
     /// number past <see cref="int.MaxValue"/>) is treated as absent rather than rounded, trimmed
-    /// or clamped, so the call falls through at once. A well-formed value too long for the
+    /// or clamped: a malformed <c>retry-after-ms</c> falls back to <c>retry-after</c>, and with
+    /// neither usable the call falls through at once. A well-formed value too long for the
     /// budget falls through as well, because it does not fit.
     /// </remarks>
     private static TimeSpan? ReadAdvisedWait(HttpResponseMessage response)

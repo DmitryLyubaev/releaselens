@@ -307,7 +307,8 @@ public class QueryAgentTests(PostgresFixture fixture)
         var answer = await Build(provider).AnswerAsync(scope, "planner?", 5, TestContext.Current.CancellationToken);
 
         // 0.00095 for the Anthropic iteration plus 0.000528 for the Azure one. Pricing the whole
-        // query at the last provider's rate, as before, would give 0.0009328.
+        // query at the last provider's rate would give 0.0009328; the code before this fix priced
+        // it by the last model name and gave $0.
         Assert.Equal(0.001478m, answer.Metadata.CostUsd);
         Assert.Equal("azure-openai", answer.Metadata.Provider);
     }

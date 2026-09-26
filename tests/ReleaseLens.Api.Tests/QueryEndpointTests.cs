@@ -546,8 +546,7 @@ public class QueryEndpointTests(PostgresFixture fixture) : IAsyncLifetime
 
     /// <summary>
     /// The field is additive: a response that was not filtered carries no "filtered" key at
-    /// all, so every existing consumer sees exactly the shape it saw before. Checked on a
-    /// synthesised answer and on the degraded one.
+    /// all. Checked on a synthesised answer and on the degraded one.
     /// </summary>
     [Fact]
     public async Task Query_WhenNothingIsFiltered_OmitsTheFilteredField()

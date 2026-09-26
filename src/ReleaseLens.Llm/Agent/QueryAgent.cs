@@ -250,8 +250,8 @@ public sealed partial class QueryAgent(
                     iterations, toolsCalled, usage,
                     // Providers can fail on iteration 2+, after earlier iterations already spent
                     // real, billable tokens. Hardcoding zero here discards that spend and its
-                    // attribution — and the only test for this path fails on the first call, so
-                    // usage is zero there and the loss is invisible.
+                    // attribution; Answer_ProvidersFailAfterAPricedIteration_TheDegradedAnswerKeepsThatCost
+                    // pins it.
                     cost,
                     usage.Total > 0 ? providerName : "none",
                     modelName,

@@ -43,8 +43,9 @@ public class WireEquivalenceTests
     }
     """;
 
-    // Every part of the wire format at once: a system prompt, a user turn, an assistant turn
-    // with two tool calls, one successful and one failed tool result, and a tool definition.
+    // Most of the wire format at once: a system prompt, a user turn, an assistant turn with two
+    // tool calls, one successful and one failed tool result, and two tool definitions (no
+    // assistant text turn).
     private static ChatRequest Conversation() => new(
         "You answer questions about a repository.",
         [

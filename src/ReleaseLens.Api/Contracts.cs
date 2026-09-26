@@ -68,7 +68,7 @@ public sealed record QueryMetadataDto(
     // provider whose filter blocked the call, which need not have answered (see `Filtered`).
     IReadOnlyList<string>? Providers = null,
     // Present only when a provider's content filter blocked the request. Absent otherwise, not
-    // null, so every response that was not filtered keeps exactly the shape it had before.
+    // null, so a response that was not filtered carries no "filtered" key at all.
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     FilteredOutcomeDto? Filtered = null);
 

@@ -286,7 +286,7 @@ ollama pull llama3.1
 ```
 
 ```json
-{ "OpenAi": { "BaseUrl": "http://localhost:11434/v1/", "Model": "llama3.1", "Unpriced": true } }
+{ "Chat": { "Providers": ["openai"] }, "OpenAi": { "BaseUrl": "http://localhost:11434/v1/", "Model": "llama3.1", "Unpriced": true } }
 ```
 
 Embeddings were already local. With this, nothing leaves the machine.
