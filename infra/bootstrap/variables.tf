@@ -46,3 +46,15 @@ variable "github_oidc_subject" {
     error_message = "github_oidc_subject must be exactly the sub the OIDC probe printed (R7). It must start with repo:DmitryLyubaev@57339946/releaselens@1331560542:, carry the claim environment:azure followed by a colon or the end of the value (so no other environment, such as azure-staging, passes), and contain no ref: anywhere, because a branch-type credential must never exist."
   }
 }
+
+variable "azure_openai_deployment_name" {
+  type        = string
+  description = "Name of the Azure OpenAI deployment of gpt-4.1-mini."
+  default     = "releaselens-chat"
+}
+
+variable "azure_openai_capacity" {
+  type        = number
+  description = "Capacity of the Global Standard deployment, in thousands of tokens per minute: 100 is 100,000 TPM. It caps how fast spend can grow, not how much. The default is an estimate (spec §4.8)."
+  default     = 100
+}
