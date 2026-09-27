@@ -28,7 +28,7 @@ Pure logic goes in small, tested tools, so the workflows stay thin:
 - azurerm: `version = "~> 5.6"`. random: `version = "~> 3.6"`.
 
 **Where Terraform runs on the owner's machine:** in WSL, never on Windows. TLS inspection software on that Windows machine intercepts Terraform's local connection to its provider plugins, and every provider fails with `x509: certificate signed by unknown authority`.
-- Every Terraform command in this plan runs as `wsl.exe -d Ubuntu -- bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/<stack> && export TF_DATA_DIR=$HOME/tfdata/<stack> TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform <args>'`, written below as **`TF <stack> <args>`**.
+- Every Terraform command in this plan runs as `wsl.exe -d Ubuntu --exec bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/<stack> && export TF_DATA_DIR=$HOME/tfdata/<stack> TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform <args>'`, written below as **`TF <stack> <args>`**. Use `--exec`: without it, WSL's default shell re-parses the line and expands `$VAR` and `$?` before the inner bash runs.
 - WSL has Terraform 1.15.8 and az 2.89.0. Its HTTPS is not intercepted.
 
 **Terraform tests:**
@@ -626,8 +626,8 @@ Commands marked **WSL** run inside Ubuntu in WSL. Before any Azure command there
 - **R2.** **WSL:** `az account get-access-token --query expiresOn -o tsv` succeeds. Print only the expiry.
 - **R3.** **Ask first (deletes files).** In `infra/terraform/`, delete `terraform.tfstate`, `terraform.tfstate.backup`, `tfplan`, `terraform.tfvars` and `.terraform/`. Spec §6 step 3 says they hold an Anthropic key and a Log Analytics key. Show the file list before deleting. The owner rotates the Anthropic key and keeps the new one only in `.env`.
 - **R4.** Task 1's `.gitignore` is committed on the Part A branch before R5.
-- **R5.** **Ask first (bills nothing, but it is an apply).** **WSL:**
-  1. Create `infra/bootstrap/terraform.tfvars` from the example. It is git-ignored; it holds the subscription, the budget email and a start date on the first of a month, and no subject yet.
+- **R5.** **Ask first (bills nothing, but it changes the subscription).** Even the `plan` registers the seven resource providers, because the provider does that when it is configured; registration is free. **WSL:**
+  1. Create `infra/bootstrap/terraform.tfvars` from the example. It is git-ignored; it holds the subscription, the budget email and a start date on the first of the current month (Azure rejects a new monthly budget that starts in a past month), and no subject yet.
   2. Create the git-ignored `backend_override.tf` with `terraform { backend "local" {} }`.
   3. Run `terraform init`.
   4. Run `terraform plan -target=azurerm_consumption_budget_subscription.this -target=azurerm_monitor_action_group.budget -out=tfplan`, and show the plan.
@@ -654,6 +654,7 @@ Commands marked **WSL** run inside Ubuntu in WSL. Before any Azure command there
   - `environment-subject` prints `exchange: ok`
   - `no-environment` prints `exchange: denied (AADSTS…)` and passes
 - **R12.** **Ask first (a GitHub settings change).** Create a ruleset on `main` that blocks force pushes and deletion.
+- **Standing rule for bootstrap after R8.** The `CanNotDelete` lock blocks every delete in `rg-releaselens-bootstrap`, including forced replacements, the federated credential, and role assignments scoped to the containers. Any later bootstrap plan that deletes or replaces something needs the owner to lift the lock first, and to put it back afterwards (spec §4.9).
 - **R13.** **Ask first (a push).** Push Part B, open the pull request, wait for CI to go green, and fast-forward `main` after the owner's yes. Then confirm that `Destroy` shows as active and scheduled.
 - **R14.** **Ask first (billing: Postgres by the hour, and tokens).**
   1. Dispatch `Deploy`. It must pass preflight, apply and smoke. Record the `costUsd` it prints.
