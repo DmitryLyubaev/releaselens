@@ -1,0 +1,107 @@
+variables {
+  subscription_id    = "00000000-0000-0000-0000-000000000000"
+  budget_alert_email = "owner@example.com"
+  budget_start_date  = "2026-10-01T00:00:00Z"
+}
+
+mock_provider "azurerm" {
+  override_during = plan
+
+  mock_resource "azurerm_user_assigned_identity" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-deploy"
+    }
+  }
+}
+
+mock_provider "random" {}
+
+# The mock default above gives both identities the same id. The app identity gets its own,
+# so a credential parented to the wrong identity fails the parent assertion instead of
+# passing.
+override_resource {
+  target          = azurerm_user_assigned_identity.app
+  override_during = plan
+  values = {
+    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-app"
+  }
+}
+
+# The budget-only apply (R5) runs before the subject is known, so an unset subject must pass
+# validation and create no credential.
+run "no_subject_no_credential" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_federated_identity_credential.github_environment) == 0
+    error_message = "With no subject set, no federated credential may exist."
+  }
+
+  assert {
+    condition     = azurerm_user_assigned_identity.deploy.name == "id-releaselens-deploy" && azurerm_user_assigned_identity.deploy.resource_group_name == "rg-releaselens-bootstrap" && azurerm_user_assigned_identity.deploy.location == "australiaeast"
+    error_message = "The deploy identity must be id-releaselens-deploy, in the bootstrap group, in australiaeast."
+  }
+
+  assert {
+    condition     = azurerm_user_assigned_identity.app.name == "id-releaselens-app" && azurerm_user_assigned_identity.app.resource_group_name == "rg-releaselens-bootstrap" && azurerm_user_assigned_identity.app.location == "australiaeast"
+    error_message = "The app identity must be id-releaselens-app, in the bootstrap group, in australiaeast."
+  }
+}
+
+run "subject_creates_one_credential" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:DmitryLyubaev@57339946/releaselens@1331560542:environment:azure"
+  }
+
+  assert {
+    condition     = length(azurerm_federated_identity_credential.github_environment) == 1
+    error_message = "With a subject set, exactly one federated credential must exist."
+  }
+
+  assert {
+    condition     = azurerm_federated_identity_credential.github_environment[0].name == "github-environment-azure"
+    error_message = "The federated credential must be named github-environment-azure."
+  }
+
+  assert {
+    condition     = azurerm_federated_identity_credential.github_environment[0].issuer == "https://token.actions.githubusercontent.com"
+    error_message = "The federated credential's issuer must be GitHub Actions' token issuer."
+  }
+
+  assert {
+    condition     = azurerm_federated_identity_credential.github_environment[0].audience == tolist(["api://AzureADTokenExchange"])
+    error_message = "The federated credential's audience must be exactly api://AzureADTokenExchange."
+  }
+
+  assert {
+    condition     = azurerm_federated_identity_credential.github_environment[0].subject == "repo:DmitryLyubaev@57339946/releaselens@1331560542:environment:azure"
+    error_message = "The federated credential's subject must be exactly the value given."
+  }
+
+  assert {
+    condition     = azurerm_federated_identity_credential.github_environment[0].user_assigned_identity_id == azurerm_user_assigned_identity.deploy.id
+    error_message = "The federated credential must be on the deploy identity."
+  }
+}
+
+run "branch_subject_rejected" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:DmitryLyubaev@57339946/releaselens@1331560542:ref:refs/heads/main"
+  }
+
+  expect_failures = [var.github_oidc_subject]
+}
+
+run "other_repository_rejected" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:someone/else:environment:azure"
+  }
+
+  expect_failures = [var.github_oidc_subject]
+}

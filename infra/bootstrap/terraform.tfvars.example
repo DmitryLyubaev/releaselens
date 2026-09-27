@@ -3,3 +3,7 @@ budget_alert_email = "you@example.com"
 budget_start_date  = "2026-10-01T00:00:00Z"
 budget_amount_usd  = 50
 location           = "australiaeast"
+
+# Leave unset until R8: while it is unset, no federated credential exists. In R8, set it to
+# exactly the sub the OIDC probe printed in R7. This placeholder fails validation on purpose.
+# github_oidc_subject = "<the sub printed by the OIDC probe>"

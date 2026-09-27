@@ -24,3 +24,22 @@ variable "budget_start_date" {
   type        = string
   description = "First day of the budget period, in YYYY-MM-01T00:00:00Z form. Must be the first of a month."
 }
+
+variable "github_oidc_subject" {
+  type        = string
+  description = "Subject of the deploy identity's federated credential: exactly the sub the OIDC probe printed for the GitHub environment azure. While it is null, no credential exists."
+  default     = null
+  nullable    = true
+
+  validation {
+    # The string functions error on null. try() makes them false instead, so a null subject
+    # passes on the left of || whether or not Terraform short-circuits it.
+    condition = var.github_oidc_subject == null || try(
+      startswith(var.github_oidc_subject, "repo:DmitryLyubaev@57339946/releaselens@1331560542:")
+      && strcontains(var.github_oidc_subject, "environment:azure")
+      && !strcontains(var.github_oidc_subject, "ref:"),
+      false
+    )
+    error_message = "github_oidc_subject must be exactly the sub the OIDC probe printed (R7). It starts with repo:DmitryLyubaev@57339946/releaselens@1331560542:, names environment:azure, and has no ref: claim, because a branch-type credential must never exist."
+  }
+}
