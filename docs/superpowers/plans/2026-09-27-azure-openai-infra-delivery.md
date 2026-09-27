@@ -439,7 +439,7 @@ The GitHub environment `azure` must exist before Part A is pushed (R6), because 
 - `exchange(client_id, tenant_id, assertion, scope="https://management.azure.com/.default", fetch) -> tuple[bool, str | None]`: returns `(ok, AADSTS code or None)`. It never returns or prints the access token.
 - **CLI subcommands:**
   - `smoke`: `--url --model --model-version --deployment-type --price-cmd`, with the key in env `SMOKE_API_KEY`
-  - `check-empty`: `--subscription --resource-group --client-id --tenant-id`, obtaining the ARM token through `github_oidc_token` and `exchange`
+  - `check-empty`: `--subscription --resource-group --client-id --tenant-id`, obtaining the ARM token through `github_oidc_token` and the same private token request `exchange` uses. `exchange` itself never returns the token (Task 9's resolution of this brief's contradiction).
   - `oidc-subject`
   - `oidc-exchange`: `--client-id --tenant-id --expect ok|denied`
   - Exit codes: 0 pass, 1 check failed, 2 usage.
@@ -620,7 +620,7 @@ Then comes the whole-branch review. The runbook starts once the checks and revie
 
 ## Runbook — owner steps, run by the controller only after an explicit yes for each "Ask first"
 
-Commands marked **WSL** run inside Ubuntu in WSL. Before any Azure command there, `az account show` must show the owner's personal account and tenant, which are recorded privately and not in this repository; stop otherwise.
+Commands marked **WSL** run inside Ubuntu in WSL. Before any Azure command there, `az account show` must show the owner's personal account and tenant, which are recorded privately and not in this repository; stop otherwise. The exact commands for R1–R12 are in `infra/bootstrap/README.md` (Task 12), which corrects this list where running it showed a problem: WSL has no `jq`, `gh` runs in Windows PowerShell, and R9's order.
 
 - **R1.** **WSL:** the owner signs in with `az login` inside WSL, a separate token cache from Windows. Then `az account show` must match the account and tenant above.
 - **R2.** **WSL:** `az account get-access-token --query expiresOn -o tsv` succeeds. Print only the expiry.
@@ -642,11 +642,11 @@ Commands marked **WSL** run inside Ubuntu in WSL. Before any Azure command there
   2. Run `terraform plan -out=tfplan`. The plan must show `local_auth_enabled = false`, kind `AIServices`, model version `2025-04-14`, `NoAutoUpgrade`, SKU `GlobalStandard` and capacity `100`.
   3. Show the plan.
   4. Run `terraform apply tfplan`.
-  5. Then check that no key is in state, as spec §10 claims, without printing any value: `terraform show -json | jq '[.values.root_module.resources[] | select(.address=="azurerm_cognitive_account.openai") | .values | (.primary_access_key // ""), (.secondary_access_key // "") | length]'`. Expected: `[0,0]`. `terraform state show` is no use here, because it masks sensitive values either way.
+  5. Then check that no key is in state, as spec §10 claims, without printing any value. Read `terraform show -json` with `python3`, because WSL has no `jq`, and print only the lengths of `primary_access_key` and `secondary_access_key` (the command is in `infra/bootstrap/README.md`). Expected: both 0. `terraform state show` is no use here, because it masks sensitive values either way.
 - **R9.** **WSL:**
   1. Wait up to about ten minutes for the owner's blob role to propagate.
-  2. Delete `backend_override.tf`.
-  3. Run `terraform init -migrate-state -backend-config=storage_account_name=$(terraform output -raw tfstate_storage_account)`.
+  2. Read the account name with `terraform output -raw tfstate_storage_account` while the local backend is still in place (once the override is gone, `terraform output` refuses to run), and stop if it is empty.
+  3. Delete `backend_override.tf`, then run `terraform init -migrate-state -backend-config=storage_account_name=<that name>`.
   4. Run `terraform plan`. Expected: no changes.
   5. Delete the local `terraform.tfstate*` and `tfplan`.
 - **R10.** **Ask first (GitHub settings).** Set every entry of `terraform output -json github_environment_variables` as an environment variable of `azure` with `gh api`. Read them back.
