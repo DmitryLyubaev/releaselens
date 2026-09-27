@@ -1,0 +1,5 @@
+subscription_id    = "00000000-0000-0000-0000-000000000000"
+budget_alert_email = "you@example.com"
+budget_start_date  = "2026-10-01T00:00:00Z"
+budget_amount_usd  = 50
+location           = "australiaeast"
