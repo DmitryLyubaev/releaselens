@@ -18,16 +18,20 @@ appsettings.Local.json
 # ONNX model weights (~130 MB) — fetched by scripts/fetch-model.*
 models/
 
-# Terraform
-infra/terraform/.terraform/
-infra/terraform/*.tfstate
-# A saved plan carries resolved values, including the generated Postgres password and
-# whatever is bound for the Key Vault secrets. It is as sensitive as state.
-infra/terraform/tfplan
-infra/terraform/*.tfplan
-infra/terraform/*.tfstate.*
-infra/terraform/*.tfvars
-!infra/terraform/*.tfvars.example
+# Terraform — both stacks (infra/bootstrap, infra/terraform)
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+# A saved plan carries resolved values — for bootstrap, the storage account key;
+# for the app stack, the generated Postgres password and Key Vault secrets. Either
+# is as sensitive as state.
+infra/**/tfplan
+infra/**/*.tfplan
+infra/**/*.tfvars
+!infra/**/*.tfvars.example
+# A backend override is local-only: it points init at a stand-in backend (or none)
+# instead of the committed one, and has no business being versioned.
+infra/**/*_override.tf
 # .terraform.lock.hcl is deliberately NOT ignored. HashiCorp's guidance is to commit it:
 # it pins exact provider versions and their checksums, so a clone gets byte-identical
 # providers rather than whatever the ~> constraint resolves to that week, and the
@@ -38,6 +42,10 @@ eval/.venv/
 eval/__pycache__/
 eval/**/__pycache__/
 eval/.pytest_cache/
+
+# Infra test harness
+tests/infra/__pycache__/
+tests/infra/.pytest_cache/
 
 # Test output
 TestResults/
