@@ -93,7 +93,7 @@ jobs:
       - name: Format check
         run: terraform fmt -check -recursive infra
 
-      # CI checks the stacks without Azure credentials; deploys run from deploy.yml through OIDC.
+      # CI checks the stacks without Azure credentials and never deploys.
       - name: Check infra/bootstrap
         working-directory: infra/bootstrap
         run: |
