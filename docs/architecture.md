@@ -36,7 +36,7 @@ IEvidenceSource ───────────────┤  ingest  · iss
      └───────────────────────────┬───────────────────────────────┘
                                  │ OTLP
                                  ▼
-                   Aspire Dashboard (local) / Azure Monitor
+                   Aspire Dashboard (local only; see Azure deployment)
 ```
 
 The evaluation harness (Python, FastAPI) sits outside this, calling the API's `/query` like
@@ -214,3 +214,244 @@ pipeline skips the source, so the backfill would ingest nothing and still report
 Chunking never slices between the halves of a surrogate pair. A lone surrogate is invalid
 UTF-16 and Npgsql's encoder rejects it, which killed the first real ingest on an emoji in a
 commit message.
+
+## Azure deployment
+
+Both Terraform stacks are built and tested with mocked plans. **Nothing is deployed yet**, and
+nothing below describes a deployment. The owner's runbook is
+[infra/bootstrap/README.md](../infra/bootstrap/README.md). The decisions and the reasons for them
+are in the [spec](superpowers/specs/2026-09-24-azure-openai-keyless-design.md), §4.8–§4.14. Every
+Azure fact here carries its source and the date it was read. A fact with no source given comes
+from that spec, which is dated 2026-09-24 and was amended on 2026-09-27.
+
+```
+GitHub Actions: environment "azure", whose only branch rule is main
+  │  OIDC, through the federated credential: no app registration, no client secret
+  ▼
+┌─ rg-releaselens-bootstrap · long-lived · applied by the owner · lock CanNotDelete ──────────┐
+│  strlstate<suffix>           shared keys off · tfstate-bootstrap (owner) · tfstate-app      │
+│  id-releaselens-deploy       federated credential github-environment-azure (env azure)      │
+│  id-releaselens-app          the identity the Container App runs as                         │
+│  aoai-releaselens-<suffix>   kind AIServices · key authentication disabled                  │
+│    └ releaselens-chat        gpt-4.1-mini 2025-04-14 · GlobalStandard · capacity 100        │
+│  ag-releaselens-budget       emails for budget-releaselens-monthly (subscription scope)     │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ rg-releaselens · created empty by bootstrap · contents deployed and destroyed by CI ───────┐
+│  cae-releaselens             Container Apps environment, no Log Analytics workspace         │
+│  ca-releaselens-api          runs as id-releaselens-app ──► Azure OpenAI, no key            │
+│  psql-releaselens-<suffix>   password authentication · firewall rule allow-azure-services   │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+Local runs: the API on the owner's machine, Postgres in Docker, Azure OpenAI through the
+owner's own az login; the Anthropic and OpenAI keys only in the git-ignored .env.
+```
+
+The bootstrap stack is applied once by the owner, locally, and never destroyed. The app stack
+holds only the Container App and Postgres. The app stack reads nothing from bootstrap. The owner
+copies four bootstrap outputs into the GitHub environment's variables once, and the workflows
+are to pass them to Terraform as `TF_VAR_*`:
+- `APP_IDENTITY_ID`
+- `APP_IDENTITY_CLIENT_ID`
+- `AZURE_OPENAI_BASE_URL`
+- `AZURE_OPENAI_DEPLOYMENT`
+
+The container's `AZURE_CLIENT_ID` is always the app identity's client ID. The deploy and destroy
+workflows are the next change, and are not in the repository yet.
+
+### Identities and roles
+
+Two user-assigned managed identities, and no Entra app registration:
+- the **deploy identity**, `id-releaselens-deploy`, which the workflows sign in as
+- the **app identity**, `id-releaselens-app`, which the Container App runs as
+
+Both live in the bootstrap group. Contributor on `rg-releaselens` includes writing federated
+credentials, so an identity in that group would let CI add a trust for itself outside the
+environment gate.
+
+The bootstrap stack makes every role assignment, and looks each role up by name:
+
+| Identity | Role | Scope | Why |
+|---|---|---|---|
+| App identity | Cognitive Services OpenAI User | the Azure OpenAI account | inference. The role also grants the account's assistants, responses and file-read data plane |
+| Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
+| Owner | Storage Blob Data Contributor | `tfstate-bootstrap` and `tfstate-app` (two assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app stack locally |
+| Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
+| Deploy identity | Managed Identity Operator | the app identity only | attach an identity from another resource group to the Container App |
+| Deploy identity | Storage Blob Data Contributor | `tfstate-app` only | read and write the app stack's state, including its lock |
+
+The owner is whoever applies bootstrap. The owner's assignments use the object ID of the
+principal that is signed in.
+
+The app identity, not a system-assigned one, holds the role on the account. A system-assigned
+identity would not exist until CI created the app, so CI would need the right to write role
+assignments. Every deploy would then also wait for a new assignment to propagate. The
+user-assigned identity is created and granted once.
+
+The federated credential has one subject, for the environment `azure`, and no branch-type
+credential exists. A job without `environment: azure` therefore cannot get an Azure token from
+any branch. The environment's branch rule is the only thing that binds the token to `main`, so
+two rules always hold:
+- **No workflow triggered by `pull_request_target`, `workflow_run` or `issue_comment` names the
+  environment.** `scripts/check_workflows.py` enforces this in CI. It allows the environment only
+  in `deploy.yml`, `destroy.yml` and the temporary `oidc-probe.yml`, and checks their triggers,
+  permissions, concurrency and SHA-pinned actions.
+- **The repository stays public.** On GitHub Free, a private repository's environment protection
+  rules are ignored.
+
+### What CI can do
+
+CI signs in as the deploy identity. It holds no subscription-scope right and cannot write role
+assignments. It cannot read the bootstrap state, and it has no role on the Azure OpenAI account,
+so it cannot turn key authentication back on. It *can* do four things:
+- **Run code as the app identity**, through Contributor on `rg-releaselens` and Managed Identity
+  Operator on the app identity.
+  - That identity can call the model and the account's data plane directly, outside `/query`, so
+    no tenant token budget limits it.
+  - Capacity caps the rate of that spend, not its total.
+  - The budget alerts and stops nothing.
+- **Read the Postgres password,** which is in the app stack's state.
+- **Create any billable resource in `rg-releaselens`.** Deploy authority, the right to push to
+  `main`, is therefore spending authority. Resources created outside Terraform survive
+  `terraform destroy`, which is why the destroy workflow is designed to check that the group is
+  empty.
+- **Rewrite the app stack's state.** The owner therefore runs that stack locally only through a
+  reviewed, interactive plan, never `-auto-approve`. A planned deletion of anything other than the
+  Container Apps resources or Postgres is treated as tampering, and recovered from an earlier blob
+  version.
+
+### Deployment type: Global Standard, and why it changed
+
+The spec first chose a regional Standard deployment, which keeps inference in the account's
+geography. A read-only check on 2026-09-27 (`az cognitiveservices usage list`) found this
+subscription's quota:
+- `OpenAI.Standard.gpt4.1-mini`: 0 in `australiaeast`, and 0 in eastus2, swedencentral,
+  japaneast and westus3
+- `OpenAI.GlobalStandard.gpt4.1-mini`: 5000
+
+The owner chose Global Standard over asking Microsoft for regional quota, and the spec was
+amended the same day.
+
+**What that means for the data.** Microsoft's
+[deployment types page](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/deployment-types)
+(dated 2026-08-06, read 2026-09-27) says two things:
+- data stored at rest remains in the designated Azure geography, here Australia, because the
+  account is in `australiaeast`
+- for Global types, inferencing data "may be processed in any Azure region"
+
+The prompts carry public GitHub data: the commits, issues, pull requests and releases of a public
+repository.
+
+**Rates**, from the Azure Retail Prices API for `australiaeast`, in USD per million tokens:
+
+| Deployment type | Input | Cached input | Output | Read |
+|---|---:|---:|---:|---|
+| Global Standard (used) | 0.40 | 0.10 | 1.60 | 2026-09-24, and again 2026-09-27, unchanged |
+| Standard (regional) | 0.44 | 0.11 | 1.76 | 2026-09-24 |
+
+`ModelPricing` keeps the regional row, so switching back would be a configuration change.
+
+**The model and the pin.** The deployment is `gpt-4.1-mini` version `2025-04-14`, pinned with
+`NoAutoUpgrade`, because azurerm's default would upgrade it automatically.
+- Keeping this model means no payload change, and it is the model OpenAI sells directly, which
+  the planned evaluation compares against.
+- `az cognitiveservices model list` (2026-09-27) lists it for `australiaeast` with a
+  `GlobalStandard` SKU.
+- Microsoft's retirement schedule (read 2026-09-24) lists it as Legacy, retiring 2027-04-14. The
+  deployment then stops working, on purpose.
+- Its Global Standard successors, such as the GPT-5 family, need payload changes. Review this in
+  February 2027.
+
+**Capacity 100, which is 100,000 tokens per minute, is an estimate, not a measurement.**
+- It is inferred from the most expensive query of the 12 August run.
+- Azure also counts each request's `max_tokens` (2048 here) against the per-minute quota.
+- The first dry run's measured token counts will revise it.
+
+Capacity caps how fast spend can grow, not how much. Sustained around the clock, 100,000 tokens a
+minute is about 144 million tokens a day. At the Global Standard input rate that is about $58 a
+day. That figure is arithmetic, not a measurement.
+
+**Kind `AIServices`, not `OpenAI`.** Microsoft automatically upgrades eligible long-lived
+`OpenAI`-kind accounts to `AIServices`. azurerm cannot set the opt-out, so a later bootstrap plan
+would try to roll the kind back. The `AIServices` kind keeps the
+`https://<subdomain>.openai.azure.com/openai/v1/` endpoint.
+
+**Rejected:**
+- **Data Zone Standard.** The APAC data zone spans several countries, so it does not keep data in
+  Australia.
+- **Provisioned.** It bills by the hour.
+
+### What bills
+
+| Resource | Stack | Bills |
+|---|---|---|
+| Postgres Flexible Server `B_Standard_B1ms` | app | by the hour while it exists |
+| Container Apps (consumption, scales to zero) | app | per use |
+| Azure OpenAI Global Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24 and 2026-09-27). The first invoice will confirm whether it charges anything while idle |
+| State storage account | bootstrap | a few cents a month (an estimate) |
+| Managed identities, resource groups, budget | bootstrap | nothing |
+
+The budget, `budget-releaselens-monthly`, is in the long-lived stack, so it survives every
+app-stack destroy. It defaults to 50 a month, in the billing account's currency. It alerts at 50,
+80 and 100 percent of actual spend and 100 percent of forecast spend, and enforces nothing.
+Microsoft's
+[budget tutorial](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets)
+(dated 2025-06-26, read 2026-09-27) says a budget stops no consumption. It also says budgets are
+evaluated every 24 hours, against cost data that is typically 8 to 24 hours old.
+
+The nightly destroy is best effort: GitHub disables scheduled workflows in a public repository
+after 60 days without activity, and scheduled runs can be delayed or dropped.
+
+### Terraform state
+
+Both stacks keep their state in one storage account, one container each:
+- the account has shared keys off, local users off, OAuth by default, public access to nested
+  items off, and TLS 1.2
+- the backend authenticates through Entra ID
+- blob versioning is on, with 7 days of blob and container soft delete
+- a lifecycle rule deletes a version 90 days after its content was written
+
+That rule means the recovery windows differ between the stacks:
+- The app state is rewritten on every deploy and destroy, so recent versions are there to restore
+  after tampering.
+- The bootstrap state changes rarely. If it is overwritten or deleted after it has sat unchanged
+  for 90 days, the previous version can be deleted at once, and the practical recovery window is
+  then only the 7 days of soft delete.
+
+The account's keys exist, with shared-key access disabled. They sit in the bootstrap state, which
+only the owner can read. That is why bootstrap's local state, before it is migrated, is
+git-ignored.
+
+### Logs
+
+There is no Log Analytics workspace. A Container Apps environment authenticates to a workspace
+with the workspace's shared key, which would put an Azure key into the design. Creating a
+workspace also lists deleted workspaces at subscription scope, which CI has no right to do.
+
+Logs stream instead:
+
+```bash
+az containerapp logs show --name ca-releaselens-api --resource-group rg-releaselens --follow
+```
+
+The app stack sets no OpenTelemetry endpoint, so in Azure, traces and metrics go nowhere. Azure
+Monitor with keyless authentication is later work.
+
+### Not yet verified
+
+Each of these waits for a real run:
+- **Whether `Cognitive Services OpenAI User` grants inference on an `AIServices` account.** The
+  first real call will show.
+- **Which token scope the account accepts.** The app defaults to `https://ai.azure.com/.default`,
+  and the scope is configurable. The first real token will show.
+- **Whether GitHub-hosted runners pass the `allow-azure-services` firewall rule.** The first smoke
+  test will show. If they do not, `smoke_runner_ip` opens the server to the runner alone.
+- **Whether MSAL's own managed-identity retry is capped.** `AzureCredentialFactory` caps
+  Azure.Core's retry at one fixed 200 ms retry. Whether MSAL adds retries of its own beneath that
+  is unverified.
+- **Whether CI's rights are enough.** These are to be established by the first CI apply:
+  - that Contributor on one resource group is enough to create Postgres and the Container Apps
+    resources
+  - that azurerm makes no subscription-scope call at `init` for CI's identity
+  - that Managed Identity Operator is enough to attach the app identity
+- **That no Azure OpenAI key lands in Terraform state.** Runbook step R8 checks it.
+- **That the quota of 5000 covers capacity 100.** The first bootstrap apply will show.
+- **Whether the deployment charges anything while idle.** The first invoice will show.

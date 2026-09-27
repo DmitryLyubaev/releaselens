@@ -234,8 +234,8 @@ See [docs/architecture.md](docs/architecture.md).
 | Retrieval | Full-text + vector, blended `α·vector + (1−α)·text` with α = 0.6 |
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
-| Telemetry | OpenTelemetry → Aspire Dashboard locally, Azure Monitor in cloud |
-| Infrastructure | Terraform: Container Apps scale-to-zero, Postgres Flexible Server, Key Vault, budget alerts |
+| Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
+| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). OIDC deploy; GitHub holds no secrets. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it
@@ -314,29 +314,84 @@ money.
 
 ## Deployment
 
-**Prerequisite on a fresh subscription:** register the Container Apps resource provider.
-Azure subscriptions that have never deployed Container Apps do not have it, and the apply
-fails partway through with `MissingSubscriptionRegistration ... namespace 'Microsoft.App'` --
-after the database has already been created. It is idempotent and free.
+**Nothing is deployed in this form yet.** The Azure design below is built, and tested with
+mocked Terraform plans. What this section says is about what the code configures, and each
+Azure fact carries its source and date. The detail is in
+[docs/architecture.md](docs/architecture.md#azure-deployment).
 
-```bash
-az provider register --namespace Microsoft.App
-```
+There are two Terraform stacks:
 
-```bash
-cd infra/terraform
-terraform apply -target=azurerm_consumption_budget_subscription.this
-terraform apply
-```
+| Stack | Applied by | Holds |
+|---|---|---|
+| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its deployment; the budget; the empty app resource group; every role assignment |
+| [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
 
-The budget goes first, deliberately.
+**Bootstrap once.** The owner follows the runbook in
+[infra/bootstrap/README.md](infra/bootstrap/README.md). The budget comes first: the first apply
+creates only the budget, its action group and the resource group that holds the action group.
+So the budget exists before anything that can bill. Bootstrap also registers the resource
+providers both stacks use. One of them is `Microsoft.App`, which the 12 August apply below found
+missing on a fresh subscription.
 
-**Azure has no hard spending cap on pay-as-you-go subscriptions.** What Terraform deploys here
-is a budget with alerts at 50/80/100 percent plus a forecast alert. The control that actually
-works is `terraform destroy` when you stop working, and the Container App scales to zero so an
-idle deployment costs nothing but the database.
+**Then deploy and destroy through the workflows.** They come in the next change and are not in
+this repository yet. The design:
+- **`deploy.yml`** runs only when dispatched by hand, from `main`, under the GitHub environment
+  `azure`. It refuses to run while the destroy workflow is disabled. It pins the image to the
+  digest of `sha-<commit>` and applies the app stack. Then it runs a smoke test, which passes
+  only if all of these hold:
+  - the deployed app answers through Azure OpenAI, as its managed identity
+  - the answer is not degraded
+  - the cost is above $0, and matches the cost recomputed from the answer's own token counts
+- **`destroy.yml`** runs when dispatched, and nightly at 14:00 UTC (midnight AEST). After
+  `terraform destroy`, it lists what is left in `rg-releaselens` and fails if anything is. A
+  resource created outside Terraform survives a destroy, so this check is needed.
+- **The nightly destroy is best effort, not a guarantee.** GitHub disables scheduled workflows in
+  a public repository after 60 days without activity, and scheduled runs can be delayed or
+  dropped. The budget alert is the backstop, and it stops nothing.
 
-### Verified against a live subscription
+**What this design claims:**
+- **Key authentication is disabled** on the Azure OpenAI account (`local_auth_enabled = false`),
+  and no key is used. The app authenticates as its managed identity, and local runs authenticate
+  as the owner through `az login`.
+  - The account's keys still exist. The design intends that none of them is in Terraform state,
+    and the first full bootstrap apply checks that (runbook R8). Until then it is the design's
+    intent, not a verified fact.
+  - CI has no role on the account, so it cannot turn key authentication back on. Only the owner
+    can.
+- **GitHub holds no secrets, only identifiers.** The environment `azure` holds variables only:
+  the client, tenant and subscription IDs, the state storage account's name, the four values
+  bootstrap hands to the app stack, and `SMOKE_OPEN_RUNNER_IP`, which is set only if the smoke
+  test needs it. They appear unmasked in public run logs, on purpose.
+- **CI holds no role-assignment rights and no subscription-scope rights.** What it *can* do is
+  listed under [What this is not](#what-this-is-not).
+- **Data at rest stays in the Australia geography.** The account is in `australiaeast`.
+  Inference runs on Global Standard. Microsoft's
+  [deployment types page](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/deployment-types)
+  (dated 2026-08-06, read 2026-09-27) says that for Global types, inference "may be processed in
+  any Azure region". The prompts carry public GitHub data.
+
+**What bills.** Postgres bills by the hour while it exists, which is why the app stack is
+destroyed after every session. The Container App scales to zero. The Azure OpenAI deployment
+bills per token; the rates, and what else bills, are in
+[docs/architecture.md](docs/architecture.md#what-bills).
+
+**The budget alerts; it does not cap spend.** It defaults to 50 a month, in the billing
+account's currency. It alerts at 50, 80 and 100 percent of actual spend and at 100 percent of
+forecast spend. Microsoft's
+[budget tutorial](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets)
+(dated 2025-06-26, read 2026-09-27) says two things about budgets:
+- a budget stops no consumption
+- it is evaluated every 24 hours, against cost data that is typically 8 to 24 hours old
+
+**The model retires.** Microsoft's retirement schedule (read 2026-09-24) lists `gpt-4.1-mini`
+2025-04-14 as Legacy, retiring 2027-04-14. The deployment is pinned (`NoAutoUpgrade`), so it
+stops working on that date instead of moving to a model the app was not tested with. Its
+successors need payload changes. Review this in February 2027.
+
+### Single-stack deployment, 12 August 2026
+
+This is a record of the earlier, single-stack design, kept as history. That stack had a Key
+Vault and a Log Analytics workspace; the current design uses neither.
 
 Applied to a real Azure subscription on 12 August 2026: **16 resources, roughly 12 minutes**,
 and then destroyed. The deployed API answered `/health` with HTTP 200 in **7.6 seconds cold**
@@ -360,9 +415,49 @@ deployment is proven; an end-to-end demo over real evidence is a separate exerci
 **It has not been run at scale.** Tenant isolation is designed and tested; it has not been
 exercised under concurrent load or with a large number of tenants.
 
-**The evaluation is a starting point.** Five queries, no groundedness score. The harness, the
-golden set and the method are the durable parts; the numbers are the first data point they
-produced.
+**Postgres has a password.** The deployed database uses a generated server-administrator
+password, not Microsoft Entra authentication.
+- The password is in two places: the app stack's Terraform state, which only the owner and the
+  deploy identity can read, and the Container App's secret.
+- It is regenerated on every deploy and gone after every destroy, so it lives for one session.
+- Two of the project's own rules are not met, and this says so rather than hiding it:
+  - A secret that cannot be avoided is not kept in Key Vault with an expiry date. The password is
+    generated by Terraform, so a Key Vault would only hold a copy of a value that is already in
+    state.
+  - Postgres is not keyless, although Azure allows Entra authentication for it.
+- Entra authentication for Postgres is later work.
+
+**Postgres is open to Azure services.** Its firewall rule `allow-azure-services` (`0.0.0.0`)
+admits any Azure-hosted client in any tenant, not only this subscription. The password is the
+only control.
+- Whether GitHub-hosted runners pass that rule is *unverified*. The first smoke test will show.
+  If they do not, a rule for the runner's IP alone is added for the smoke step.
+- Private networking is later work.
+
+**CI can do four things, because deploying needs them:**
+- **Run code as the app identity.** It holds Contributor on `rg-releaselens` and Managed Identity
+  Operator on the app identity.
+  - That identity can call the model and the account's data plane directly, outside `/query`,
+    where no tenant token budget applies.
+  - The deployment's capacity (100,000 tokens per minute, an estimate) caps how fast that spend
+    can grow, not how much it can total.
+  - The budget alerts, and stops nothing.
+- **Read the Postgres password,** which is in the app stack's state.
+- **Create any billable resource in `rg-releaselens`.** So the right to push to `main` is also
+  spending authority. Anything created outside Terraform survives a destroy, which is why the
+  destroy workflow is designed to fail if the group is not empty afterwards.
+- **Rewrite the app stack's state.** So the owner runs that stack locally only through a
+  reviewed, interactive plan, never `-auto-approve`. Any planned deletion of something other than
+  the Container Apps resources or Postgres is treated as tampering, and recovered from an earlier
+  version of the state.
+
+CI cannot assign roles, act at subscription scope, or read the bootstrap state. It holds no role
+on the Azure OpenAI account, so it cannot change the account's settings, including key
+authentication.
+
+**The evaluation is a starting point.** Five queries, one per category, measured on 12 August
+2026, with groundedness scored on all five. No rate should be derived from five. The harness, the
+golden set and the method are the durable parts; the numbers are early data points.
 
 ## Licence
 
