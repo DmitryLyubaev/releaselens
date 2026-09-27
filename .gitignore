@@ -46,6 +46,7 @@ eval/.pytest_cache/
 # Infra test harness
 tests/infra/__pycache__/
 tests/infra/.pytest_cache/
+scripts/__pycache__/
 
 # Test output
 TestResults/
