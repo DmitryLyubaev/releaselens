@@ -1,7 +1,9 @@
 # Azure OpenAI without keys — design
 
-**Status: specification, approved by the owner on 2026-09-24. Nothing in this document has been
-built, deployed or measured.**
+**Status: specification, approved by the owner on 2026-09-24. Amended 2026-09-27, with the
+owner's approval: the deployment type is Global Standard, not regional Standard, because the
+subscription has no regional Standard quota for the model (§4.8). The runtime (plan 1) is
+built and merged; nothing is deployed or measured.**
 Every figure below is either read from a named source on a stated date, or labelled as an
 estimate. Claims that could not be checked are labelled *unverified* and listed in §11.
 
@@ -257,7 +259,8 @@ around the filter.
 **Decision.**
 
 - **Pricing identity.** Each provider has one: provider, model, version and deployment type.
-  For Azure: `azure-openai`, `gpt-4.1-mini`, `2025-04-14`, `Standard` (regional).
+  For Azure: `azure-openai`, `gpt-4.1-mini`, `2025-04-14`, `GlobalStandard` (amended
+  2026-09-27; see §4.8).
 - **Per iteration.** Cost is computed per iteration from the answering provider's pricing
   identity. The response's `model` string is recorded, never priced.
 - **No silent $0.** A provider whose pricing identity has no rate fails at startup.
@@ -268,12 +271,14 @@ around the filter.
   *unverified* (§11). If it proves wrong, only this line changes.
 
 **Rates**, from the Azure Retail Prices API for `australiaeast`, read 2026-09-24, USD per 1M
-tokens:
+tokens. The Global Standard row was read again on 2026-09-27 and had not changed; it is the
+rate the app uses. `ModelPricing` keeps the regional row too, so regional quota would need no
+code change.
 
 | Model | Deployment type | Input | Cached input | Output |
 |---|---|---:|---:|---:|
+| gpt-4.1-mini 2025-04-14 | Global Standard (used) | 0.40 | 0.10 | 1.60 |
 | gpt-4.1-mini 2025-04-14 | Standard (regional) | 0.44 | 0.11 | 1.76 |
-| gpt-4.1-mini 2025-04-14 | Global Standard | 0.40 | 0.10 | 1.60 |
 
 OpenAI's pricing page could not be read in this session, so OpenAI's own rate for
 `gpt-4.1-mini` is *unverified*. It is read and dated before it goes into `ModelPricing`.
@@ -320,8 +325,16 @@ iteration would start an `az` process, and the Azure arm's latency in §8 would 
 
 ### 4.8 Model, deployment type and capacity
 
-**Decision.** `gpt-4.1-mini`, version `2025-04-14`, deployment type **Standard (regional)**,
-region `australiaeast`, `version_upgrade_option = "NoAutoUpgrade"`.
+**Decision (amended 2026-09-27).** `gpt-4.1-mini`, version `2025-04-14`, deployment type
+**Global Standard** (`GlobalStandard`), account in `australiaeast`,
+`version_upgrade_option = "NoAutoUpgrade"`.
+
+**Why it changed.** The original decision was regional Standard. A read-only check on
+2026-09-27 (`az cognitiveservices usage list`) found the subscription's quota for
+`OpenAI.Standard.gpt4.1-mini` is 0 in `australiaeast`, and also in eastus2, swedencentral,
+japaneast and westus3. Every regional Standard chat model is at 0 there; only embedding models
+have regional quota. `OpenAI.GlobalStandard.gpt4.1-mini` has 5000. The owner chose Global
+Standard over asking Microsoft for regional quota.
 
 **Capacity: 100, which is 100,000 tokens per minute. This is an estimate, not a
 measurement.** Its basis:
@@ -337,20 +350,26 @@ measurement.** Its basis:
 
 **What capacity does and does not bound.** It caps how fast spend can grow, not how much. The
 worst case at 100,000 TPM sustained around the clock is about 144 million tokens a day,
-roughly $63 a day at the input rate (arithmetic, not a measurement).
+roughly $58 a day at the Global Standard input rate of $0.40 per 1M tokens (arithmetic, not a
+measurement; $63 at the regional rate).
 
 - Every `/query` caller is limited by its tenant's daily token budget.
 - Code running as the app identity is not: it can call the endpoint directly (§4.10).
 
 **Reasoning.**
 
-- **Where processing happens.** Standard keeps inference processing in the customer's chosen
-  Azure geography, here Australia. Microsoft's deployment-types page says processing "might be
-  processed between regions within that geography", so the README says **"stays in the
-  Australia geography"**, not "stays in australiaeast".
-- **Which models qualify.** Regional Standard in `australiaeast` offers exactly two chat
-  models, `gpt-4.1-mini` 2025-04-14 and `gpt-4o` 2024-11-20 (Microsoft's model availability
-  page, read 2026-09-24). `gpt-4.1-mini` is the cheaper of the two.
+- **Where processing happens.** Microsoft's deployment-types page (dated 2026-08-06, read
+  2026-09-27) says data stored at rest remains in the designated Azure geography, here
+  Australia, but for Global types inference "may be processed in any Azure region". The README
+  says exactly that and no more (§10). For this project the prompts carry public GitHub data
+  (commits, issues, pull requests and releases of a public repository), so where inference runs
+  matters less than it would for private data.
+- **Quota.** Global Standard is where the subscription has quota (see above), and Microsoft
+  recommends it as the default: it gets new models first and has the lowest price.
+- **Why this model, still.** Global Standard offers newer models, but keeping
+  `gpt-4.1-mini` 2025-04-14 means no payload change and the same model OpenAI sells directly,
+  which the comparison in §8 needs. `az cognitiveservices model list` (2026-09-27) lists it for
+  `australiaeast` with a `GlobalStandard` SKU, on both `OpenAI` and `AIServices` account kinds.
 - **No payload changes.** It is not a reasoning model, so the existing payload (`max_tokens`,
   tools) works unchanged.
 - **The comparison.** The same model is available directly from OpenAI, which is what the
@@ -362,15 +381,17 @@ roughly $63 a day at the input rate (arithmetic, not a measurement).
 `gpt-4.1-mini` 2025-04-14 as **Legacy, retiring 2027-04-14**, with no named replacement.
 
 - With `NoAutoUpgrade`, the deployment stops working on that date.
-- Nothing guarantees a successor reaches regional Standard in `australiaeast`.
+- Global Standard already offers successors (for example `gpt-5.4-mini`, retiring
+  2027-09-21), but the GPT-5 family needs payload changes (`max_completion_tokens`, no
+  `temperature`).
 - Review in February 2027.
 - The deployment lives in the long-lived stack (§4.9), so it is created once, not every
   session.
 
-**Rejected — Global Standard.** It offers newer GA models (for example `gpt-5.4-mini`, retiring
-2027-09-21), pooled quota, and a price about 10% lower for the same model. But prompts "may be
-processed in any Azure region", and the GPT-5 family needs payload changes
-(`max_completion_tokens`, no `temperature`).
+**Rejected — regional Standard (the original decision).** It keeps inference in the Australia
+geography, but the subscription's quota for it is 0 (2026-09-27). Asking Microsoft for quota
+was possible but slow and uncertain for a personal subscription. The regional rate stays in
+`ModelPricing`, so switching back is a configuration change.
 
 **Rejected — Data Zone Standard.** An APAC data zone now exists, but it spans several
 countries, so it does not keep data in Australia.
@@ -439,7 +460,7 @@ down. The check that matters now is that `rg-releaselens` is empty after a destr
 
 **Reasoning.**
 
-- **The account is persistent.** A Standard deployment is billed per token (§5); only Postgres
+- **The account is persistent.** A Global Standard deployment is billed per token (§5); only Postgres
   bills by the hour. Destroying the account every session would have required:
   - a subscription-scope purge right for CI
   - a sweep for soft-deleted accounts
@@ -719,7 +740,7 @@ GitHub Actions (main only, environment "azure")
 │  state storage (shared keys off)    tfstate-bootstrap · tfstate-app                     │
 │  deploy identity ── federated credential (environment: azure)                           │
 │  app identity                                                                           │
-│  Azure OpenAI account (key auth off) ── deployment gpt-4.1-mini 2025-04-14, Standard    │
+│  Azure OpenAI account (key auth off) ── deployment gpt-4.1-mini 2025-04-14, GlobalStd   │
 │  budget + action group            all role assignments                                  │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ┌──────────── rg-releaselens (persistent group; contents deployed and destroyed by CI) ────┐
@@ -736,7 +757,7 @@ Azure OpenAI through the owner's own `az login`; Anthropic and OpenAI keys in `.
 |---|---|---|
 | Postgres Flexible Server B1ms | app | by the hour while it exists |
 | Container Apps (consumption, scales to zero) | app | per use |
-| Azure OpenAI Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24); that nothing is charged while idle is to be confirmed on the first invoice |
+| Azure OpenAI Global Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24 and 2026-09-27); that nothing is charged while idle is to be confirmed on the first invoice |
 | State storage account | bootstrap | a few cents a month (estimate) |
 | Managed identities, resource groups, budget | bootstrap | nothing |
 
@@ -849,7 +870,7 @@ All unit tests use the existing house style: `StubHttpMessageHandler`, xUnit v3,
 
 | ID | Test |
 |---|---|
-| T-C1 | An Azure call is priced at the configured regional rate: known tokens give an exact USD figure |
+| T-C1 | An Azure call is priced at the configured deployment type's rate (Global Standard by default): known tokens give an exact USD figure |
 | T-C2 | A versioned `model` string in the response does not change the price |
 | T-C3 | Startup fails if a priced provider has no rate |
 | T-C4 | On the OpenAI wire, cached tokens are billed once, at the model's own cached rate |
@@ -910,7 +931,7 @@ Pre-registered: the design and the decision rule are fixed here, before any data
   | Arm | Provider | Model | Auth |
   |---|---|---|---|
   | A | Anthropic | Claude Sonnet 5 | key |
-  | Z | Azure OpenAI | gpt-4.1-mini 2025-04-14 (regional Standard) | the owner's Entra identity (`AzureCliCredential`) |
+  | Z | Azure OpenAI | gpt-4.1-mini 2025-04-14 (Global Standard) | the owner's Entra identity (`AzureCliCredential`) |
   | O | OpenAI | gpt-4.1-mini | key |
 
 - **Queries.** `per_category=2` gives gq-001, 002, 014, 015, 022, 023, 029, 030, 036 and 037.
@@ -996,7 +1017,8 @@ Pre-registered: the design and the decision rule are fixed here, before any data
 
 ### Not done at all
 
-Provisioned deployments, Global Standard, and a fallback to other providers in the cloud.
+Provisioned deployments, regional Standard (no quota; the rate stays in `ModelPricing`), and a
+fallback to other providers in the cloud.
 
 ---
 
@@ -1009,7 +1031,8 @@ Provisioned deployments, Global Standard, and a fallback to other providers in t
 - CI holds no role-assignment rights and no subscription-scope rights. It can run code as the
   app identity, read the Postgres password, and create billable resources in the app's
   resource group (§4.10).
-- Inference stays in the Australia geography.
+- Data at rest stays in the Australia geography; inference runs on Global Standard and may be
+  processed in any Azure region (Microsoft's wording).
 - Measured figures, only with their date and sample size, and "inconclusive" where the rule in
   §8 says so.
 
@@ -1019,7 +1042,7 @@ Provisioned deployments, Global Standard, and a fallback to other providers in t
 - that the Azure OpenAI account has no keys: they exist, with key authentication disabled
 - that the state storage account has no keys: they exist, with shared-key access disabled, and
   sit in the owner-only bootstrap state
-- "stays in australiaeast"
+- "stays in australiaeast", or that inference or prompts stay in Australia
 - that the budget caps spend: it alerts
 - that the nightly destroy guarantees nothing is left running
 
@@ -1029,7 +1052,7 @@ Provisioned deployments, Global Standard, and a fallback to other providers in t
 
 | Item | How |
 |---|---|
-| `gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity | `az cognitiveservices model list` and `usage list`, or the portal's Quota page |
+| ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply | `az cognitiveservices model list` and `usage list` |
 | Which token scope the account accepts, and that `Cognitive Services OpenAI User` grants inference on an `AIServices` account | One real token for each scope, and one real call |
 | The wire shape of a filtered-prompt 400 on `/openai/v1/chat/completions` (envelope or not; `innererror` or `inner_error`) | One deliberately filtered prompt against the deployed account, with the owner's approval; until then the classifier accepts both shapes |
 | What OpenAI-direct returns for a filtered prompt | OpenAI's documentation, or one real response |
@@ -1040,8 +1063,8 @@ Provisioned deployments, Global Standard, and a fallback to other providers in t
 | That Managed Identity Operator is enough to attach the identity from the other resource group | The same first run; a failure would be a linked-authorisation error |
 | Whether GitHub-hosted runners reach Postgres through the "allow Azure services" rule | The first smoke test |
 | OpenAI's own price for `gpt-4.1-mini` | OpenAI's pricing page, read and dated |
-| Whether the Standard deployment charges anything while idle | The first invoice |
-| Whether a budget exists on the subscription today, and whether any Defender for Cloud plan is on | `az consumption budget list`, `az security pricing list` |
+| Whether the Global Standard deployment charges anything while idle | The first invoice |
+| ~~Whether a budget exists on the subscription today, and whether any Defender for Cloud plan is on~~ Checked 2026-09-27: no budget; only `Discovery` and `FoundationalCspm` are on Standard, and that they cost nothing is *unverified* | `az consumption budget list`, `az security pricing list` |
 | The full environment subject of the federated credential | The probe (§6, step 7) |
 | That current `Azure.Identity` and `Azure.Core` have no advisory | NuGet audit on restore |
 
@@ -1059,7 +1082,7 @@ Provisioned deployments, Global Standard, and a fallback to other providers in t
 - **CI can rewrite the app stack's state.** Mitigated by the owner never auto-approving a local
   app-stack plan, and by restorable blob versions.
 - **Model retirement on 2027-04-14.** The deployment stops working, deliberately
-  (`NoAutoUpgrade`), and no regional successor is guaranteed.
+  (`NoAutoUpgrade`); its Global Standard successors need payload changes (§4.8).
 - **The nightly destroy fails silently** after 60 idle days or under GitHub load. The
   long-lived budget alert is the backstop; it notifies and stops nothing. Deploy refuses to
   run while the destroy workflow is disabled.
