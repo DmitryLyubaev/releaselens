@@ -1,0 +1,57 @@
+name: Deploy
+
+on: workflow_dispatch
+
+permissions: {}
+
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Refuse to deploy while the nightly destroy is disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/destroy.yml" --jq .state)" = active
+      - name: Resolve the image digest
+        id: image
+        run: echo "image=ghcr.io/dmitrylyubaev/releaselens-api@sha256:0000000000000000000000000000000000000000000000000000000000000000" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_image: ${{ needs.preflight.outputs.image }}
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - uses: hashicorp/setup-terraform@0123456789abcdef0123456789abcdef01234567 # v3
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - uses: actions/setup-dotnet@0123456789abcdef0123456789abcdef01234567 # v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@0123456789abcdef0123456789abcdef01234567 # v5
+        with:
+          python-version: "3.13"
+      - name: Apply the app stack
+        working-directory: infra/terraform
+        run: |
+          terraform init -input=false -backend-config=storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          terraform apply -auto-approve -input=false -lock-timeout=10m

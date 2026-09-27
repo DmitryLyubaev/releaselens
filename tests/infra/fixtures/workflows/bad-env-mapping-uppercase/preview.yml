@@ -1,0 +1,10 @@
+name: Preview
+
+on: pull_request_target
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    environment: {name: Azure}
+    steps:
+      - run: echo "preview"

@@ -1,0 +1,33 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * *"
+
+permissions: {}
+
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - run: terraform -chdir=infra/terraform destroy -auto-approve -input=false -lock-timeout=10m
+
+  report:
+    needs: destroy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - run: echo "destroyed"

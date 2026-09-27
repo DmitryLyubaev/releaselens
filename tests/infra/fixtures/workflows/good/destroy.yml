@@ -1,0 +1,44 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * *"
+
+permissions: {}
+
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - uses: hashicorp/setup-terraform@0123456789abcdef0123456789abcdef01234567 # v3
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Destroy the app stack
+        working-directory: infra/terraform
+        run: |
+          terraform init -input=false -backend-config=storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          terraform destroy -auto-approve -input=false -lock-timeout=10m
+      - name: Fail if anything is left in the resource group
+        run: >-
+          python3 scripts/deploy_tools.py check-empty
+          --subscription ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          --resource-group rg-releaselens
+          --client-id ${{ vars.AZURE_CLIENT_ID }}
+          --tenant-id ${{ vars.AZURE_TENANT_ID }}

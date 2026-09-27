@@ -1,0 +1,44 @@
+name: OIDC probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: Deploy identity client ID; leave empty to print the subject only
+        required: false
+        default: ""
+      tenant_id:
+        description: Tenant ID, needed with client_id
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  environment-subject:
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - run: python3 scripts/deploy_tools.py oidc-subject
+      - if: inputs.client_id != ''
+        env:
+          CLIENT_ID: ${{ inputs.client_id }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+        run: python3 scripts/deploy_tools.py oidc-exchange --client-id "$CLIENT_ID" --tenant-id "$TENANT_ID" --expect ok
+
+  no-environment:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - if: inputs.client_id != ''
+        env:
+          CLIENT_ID: ${{ inputs.client_id }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+        run: python3 scripts/deploy_tools.py oidc-exchange --client-id "$CLIENT_ID" --tenant-id "$TENANT_ID" --expect denied

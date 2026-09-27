@@ -1,0 +1,13 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: ${{ vars.RELEASE_ENVIRONMENT }}
+    steps:
+      - run: echo "release"

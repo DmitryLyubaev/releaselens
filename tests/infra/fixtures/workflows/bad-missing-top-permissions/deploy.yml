@@ -1,0 +1,28 @@
+name: Deploy
+
+on: workflow_dispatch
+
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - run: echo "preflight"
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+      - uses: hashicorp/setup-terraform@0123456789abcdef0123456789abcdef01234567 # v3
+      - run: terraform -chdir=infra/terraform apply -auto-approve -input=false -lock-timeout=10m
