@@ -1,0 +1,9 @@
+name: Preview
+
+on: pull_request_target
+
+jobs:
+  plan:
+    uses: someone/shared/.github/workflows/terraform.yml@0123456789abcdef0123456789abcdef01234567 # v1
+    with:
+      environment: azure

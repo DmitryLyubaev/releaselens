@@ -28,6 +28,10 @@ BAD = {
     "bad-env-yaml-extension":
         "deploy.yaml: job 'deploy': environment 'azure' is reserved for the workflows in "
         "ALLOWED_AZURE",
+    "bad-external-reusable-workflow":
+        "preview.yml: job 'plan': reusable workflow "
+        "'someone/shared/.github/workflows/terraform.yml@0123456789abcdef0123456789abcdef01234567' "
+        "is external and could run with environment azure",
     "bad-deploy-on-push":
         "deploy.yml: triggers must be exactly workflow_dispatch (found: push, workflow_dispatch)",
     "bad-destroy-wrong-cron":

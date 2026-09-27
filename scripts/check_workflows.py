@@ -4,8 +4,11 @@ The environment's `main` branch rule is the only thing that binds the Azure fede
 to `main`. A run that carries the default branch's ref, such as one started by
 `pull_request_target`, `workflow_run` or `issue_comment`, passes that rule whatever code it runs.
 So only the workflows in ALLOWED_AZURE may name the environment, and they must keep their
-triggers, permissions, concurrency and SHA-pinned actions. `ci.yml`'s `publish-image` job must
-pin its actions too, because it builds the image that runs as the app identity.
+triggers, permissions, concurrency and SHA-pinned actions. Outside ALLOWED_AZURE, a job may call
+only a local `./` reusable workflow. The checker scans those files itself, but it cannot see an
+external one, which runs in this repository's context and could name the environment itself.
+`ci.yml`'s `publish-image` job must pin its actions too, because it builds the image that runs
+as the app identity.
 
 Usage: python scripts/check_workflows.py <workflows-dir>
 Prints one line per violation. Exit codes: 0 no violations, 1 violations, 2 usage.
@@ -67,6 +70,12 @@ def _check_workflow(name, workflow):
         elif _is_azure(environment) and name not in ALLOWED_AZURE:
             found.append(f"{name}: job '{job_id}': environment '{environment}' is reserved for the "
                          "workflows in ALLOWED_AZURE")
+    if name not in ALLOWED_AZURE:
+        for job_id, job in jobs.items():
+            reusable = job.get("uses")
+            if reusable is not None and not str(reusable).startswith("./"):
+                found.append(f"{name}: job '{job_id}': reusable workflow '{reusable}' is external and "
+                             "could run with environment azure")
     if name in ALLOWED_AZURE:
         found += _check_allowed(name, workflow, jobs)
     if name == "ci.yml" and "publish-image" in jobs:
