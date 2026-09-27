@@ -11,8 +11,16 @@ using ReleaseLens.Core.Telemetry;
 using ReleaseLens.Embedding;
 using ReleaseLens.Ingestion;
 using ReleaseLens.Ingestion.GitHub;
+using ReleaseLens.Llm.Providers;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
+
+// Dispatched before RELEASELENS_DB is read, so the deploy smoke test can price a call on a
+// runner with no database: pricing needs nothing beyond ModelPricing's own rates.
+if (args.FirstOrDefault() == "price")
+{
+    return PriceCommand.Execute(args.Skip(1).ToList(), Console.Out, Console.Error);
+}
 
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 {
@@ -265,7 +273,7 @@ switch (command)
 
     default:
         logger.LogError(
-            "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints",
+            "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints | price",
             command);
         return 1;
 }
