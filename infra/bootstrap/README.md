@@ -198,8 +198,9 @@ because the provider registers them when it is configured. Registration is free.
    EOF
    ```
 
-   An Azure budget's amount is in the billing account's currency. That holds whatever the
-   variable is called, so `budget_amount_usd = 50` is 50 in that currency.
+   Despite the variable's name, the amount of this subscription-scope budget is expected to be
+   in the billing currency, not necessarily US dollars. This is not confirmed by a Microsoft
+   source; step 5 reads it.
 
 2. Keep the state local until R9, with a git-ignored backend override:
 
@@ -226,6 +227,11 @@ because the provider registers them when it is configured. Registration is free.
    ```bash
    terraform apply tfplan
    ```
+
+5. Read the budget's currency. In the Azure portal, open **Subscriptions**, select the
+   subscription, select **Budgets**, and open `budget-releaselens-monthly`. Note the currency its
+   amount is shown in, and record it. If it is not the billing currency, correct the currency
+   notes in these docs.
 
 ### R6. Create the GitHub environment `azure`
 
