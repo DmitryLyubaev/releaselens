@@ -251,7 +251,11 @@ def list_group_resources(subscription_id, resource_group, arm_token, fetch=_urlo
         page = _json_or_none(raw)
         if status != 200 or not isinstance(page, dict):
             raise ToolError(f"listing {resource_group} returned HTTP {status}{_arm_error_code(page)}")
-        resources.extend(page.get("value") or [])
+        # A page that does not list resources says nothing about whether the group is empty.
+        value = page.get("value")
+        if not isinstance(value, list) or not all(isinstance(resource, dict) for resource in value):
+            raise ToolError(f"listing {resource_group} returned HTTP 200 without a list of resources")
+        resources.extend(value)
         url = page.get("nextLink")
     return resources
 
@@ -302,7 +306,8 @@ def decode_subject(jwt):
 
 
 def _request_token(client_id, tenant_id, assertion, scope, fetch):
-    """(access token or None, AADSTS code or None). The caller must not print the token."""
+    """(access token, None) if Entra issued one, or (None, AADSTS code) if it refused. The caller
+    must not print the token."""
     request = urllib.request.Request(
         f"https://login.microsoftonline.com/{urllib.parse.quote(tenant_id, safe='')}/oauth2/v2.0/token",
         data=urllib.parse.urlencode({
@@ -327,14 +332,18 @@ def _request_token(client_id, tenant_id, assertion, scope, fetch):
     if 400 <= status < 500:
         codes = body.get("error_codes")
         first = codes[0] if isinstance(codes, list) and codes else None
-        valid = isinstance(first, int) and not isinstance(first, bool)
-        return None, (f"AADSTS{first}" if valid else None)
-    # A 5xx says nothing about whether the credential is trusted, so it is not a denial.
+        if isinstance(first, int) and not isinstance(first, bool):
+            return None, f"AADSTS{first}"
+        # Only Entra's own refusal carries an AADSTS code. A 429, or a 400 without one, says
+        # nothing about whether the credential is trusted, so it is not a denial.
+        raise ToolError(f"token request failed: HTTP {status} without an AADSTS code")
+    # A 5xx, or a redirect that was not followed, is not a denial either.
     raise ToolError(f"the token endpoint returned HTTP {status}")
 
 
 def exchange(client_id, tenant_id, assertion, scope=ARM_SCOPE, fetch=_urlopen_fetch):
-    """(ok, AADSTS code or None) for exchanging the assertion. The token itself is dropped here."""
+    """(True, None) if the exchange succeeded, or (False, AADSTS code) if Entra refused it. The
+    token itself is dropped here."""
     token, code = _request_token(client_id, tenant_id, assertion, scope, fetch)
     return token is not None, code
 
@@ -356,7 +365,7 @@ def _check_empty(args, env, fetch, **_):
     # Not exchange(): that drops the token, and this check needs it for ARM.
     arm_token, code = _request_token(args.client_id, args.tenant_id, assertion, ARM_SCOPE, fetch)
     if arm_token is None:
-        raise ToolError(f"the Entra token exchange was denied ({code or 'no AADSTS code'})")
+        raise ToolError(f"the Entra token exchange was denied ({code})")
     leftovers = check_empty(list_group_resources(args.subscription, args.resource_group, arm_token, fetch))
     if leftovers:
         print(f"FAIL: {len(leftovers)} resource(s) left in {args.resource_group}:")
@@ -375,7 +384,7 @@ def _oidc_subject(args, env, fetch, **_):
 def _oidc_exchange(args, env, fetch, **_):
     assertion = github_oidc_token(fetch=fetch, env=env)
     ok, code = exchange(args.client_id, args.tenant_id, assertion, fetch=fetch)
-    print("exchange: ok" if ok else f"exchange: denied ({code or 'no AADSTS code'})")
+    print("exchange: ok" if ok else f"exchange: denied ({code})")
     if ok != (args.expect == "ok"):
         print(f"FAIL: expected {args.expect}")
         return 1

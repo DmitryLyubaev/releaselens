@@ -16,8 +16,10 @@ terraform {
 provider "azurerm" {
   subscription_id = var.subscription_id
 
-  # Nothing is registered from here: CI may not register resource providers, azurerm 5.x
-  # defaults resource_provider_registrations to none, and bootstrap registers the namespaces
-  # this stack uses.
+  # Nothing is registered from here: CI may not register resource providers, and bootstrap
+  # registers the namespaces this stack uses. "none" is written out, as in bootstrap, rather
+  # than left to the provider's default.
+  resource_provider_registrations = "none"
+
   features {}
 }

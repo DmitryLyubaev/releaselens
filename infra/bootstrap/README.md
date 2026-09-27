@@ -13,7 +13,7 @@ runbook for applying it. The design and its reasons are in the
 
 | Resource | Name | Notes |
 |---|---|---|
-| Resource group | `rg-releaselens-bootstrap` | holds everything below except the budget and `rg-releaselens` |
+| Resource group | `rg-releaselens-bootstrap` | holds everything below except the budget, `rg-releaselens`, and the deploy identity's Contributor assignment, which is scoped to `rg-releaselens` |
 | Management lock | `lock-releaselens-bootstrap` | `CanNotDelete` on that group; see [the standing rules](#standing-rules-after-r8) |
 | State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only) and `tfstate-app`; shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
 | Deploy identity | `id-releaselens-deploy` | user-assigned; the identity the workflows sign in as |
@@ -461,4 +461,4 @@ terraform test
 ```
 
 The tests in `tests/` plan against a mocked provider, and never apply or destroy anything. CI
-runs them with `fmt` and `validate`, using Terraform 1.15.8, on every pull request.
+runs them with `fmt` and `validate`, using Terraform 1.15.8, on every pull request to `main`.

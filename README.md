@@ -235,7 +235,7 @@ See [docs/architecture.md](docs/architecture.md).
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
 | Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
-| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). OIDC deploy; GitHub holds no secrets. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
+| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). OIDC deploy (workflows in the next change); GitHub holds no secrets. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it
@@ -314,9 +314,10 @@ money.
 
 ## Deployment
 
-**Nothing is deployed in this form yet.** The Azure design below is built, and tested with
-mocked Terraform plans. What this section says is about what the code configures, and each
-Azure fact carries its source and date. The detail is in
+**Nothing is deployed in this form yet.** Both Terraform stacks are built and tested with mocked
+plans, and the delivery tools the workflows will call are tested against faked HTTP responses.
+The deploy and destroy workflows are the next change. What this section says is about what the
+code configures, and each Azure fact carries its source and date. The detail is in
 [docs/architecture.md](docs/architecture.md#azure-deployment).
 
 There are two Terraform stacks:

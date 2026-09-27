@@ -354,23 +354,82 @@ def test_next_link_off_arm_is_refused():
     assert len(fetch.requests) == 1
 
 
-def test_check_empty_cli_fails_on_leftovers_and_passes_when_empty(capsys):
-    argv = [
-        "check-empty", "--subscription", ZERO_GUID, "--resource-group", "rg-releaselens",
-        "--client-id", ZERO_GUID, "--tenant-id", ZERO_GUID,
-    ]
-    entra = response(200, {"token_type": "Bearer", "access_token": "SENTINEL-ARM-TOKEN"})
+CHECK_EMPTY_ARGV = [
+    "check-empty", "--subscription", ZERO_GUID, "--resource-group", "rg-releaselens",
+    "--client-id", ZERO_GUID, "--tenant-id", ZERO_GUID,
+]
+ARM_TOKEN = "SENTINEL-ARM-TOKEN"
+REQUEST_TOKEN = OIDC_ENV["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+TOKENS = (ARM_TOKEN, REQUEST_TOKEN)
+ECHO = f"{ARM_TOKEN} {REQUEST_TOKEN}"
+NEXT_LINK = ARM_LIST_URL + "&%24skiptoken=page2"
+
+
+def arm_answer(status, body):
+    # Every ARM answer quotes both tokens back in a header, so their absence from the output is
+    # tested rather than assumed.
+    return status, {"Content-Type": "application/json", "X-Echo": ECHO}, json.dumps(body).encode()
+
+
+ARM_DENIED = {"error": {"code": "AuthorizationFailed", "message": ECHO}}
+
+
+def run_check_empty(capsys, arm_pages):
+    """Run check-empty against the given ARM pages; assert neither token reached the output."""
+    router = oidc_router(response(200, {"token_type": "Bearer", "access_token": ARM_TOKEN}), arm=arm_pages)
+
+    code = dt.main(CHECK_EMPTY_ARGV, env=OIDC_ENV, fetch=router)
+
+    # Both tokens were sent, so their absence from the output is not vacuous.
+    github = [r for r in router.requests if urllib.parse.urlsplit(r.full_url).hostname == "token.actions.example.com"]
+    arm = [r for r in router.requests if urllib.parse.urlsplit(r.full_url).hostname == "management.azure.com"]
+    assert github[0].get_header("Authorization") == f"Bearer {REQUEST_TOKEN}"
+    assert arm and all(r.get_header("Authorization") == f"Bearer {ARM_TOKEN}" for r in arm)
+    captured = capsys.readouterr()
+    for token in TOKENS:
+        assert token not in captured.out
+        assert token not in captured.err
+    return code, captured, arm
+
+
+def test_check_empty_cli_fails_on_leftovers(capsys):
     leftover = {"value": [{"type": "Microsoft.Storage/storageAccounts", "name": "stcreatedbyhand"}]}
 
-    router = oidc_router(entra, arm=[response(200, leftover)])
-    assert dt.main(argv, env=OIDC_ENV, fetch=router) == 1
-    arm_requests = [r for r in router.requests if "management.azure.com" in r.full_url]
-    assert arm_requests[0].get_header("Authorization") == "Bearer SENTINEL-ARM-TOKEN"
-    out = capsys.readouterr().out
-    assert "Microsoft.Storage/storageAccounts stcreatedbyhand" in out
-    assert "SENTINEL-ARM-TOKEN" not in out
+    code, captured, _ = run_check_empty(capsys, [arm_answer(200, leftover)])
 
-    assert dt.main(argv, env=OIDC_ENV, fetch=oidc_router(entra, arm=[response(200, {"value": []})])) == 0
+    assert code == 1
+    assert "Microsoft.Storage/storageAccounts stcreatedbyhand" in captured.out
+
+
+def test_check_empty_cli_passes_when_empty(capsys):
+    code, captured, _ = run_check_empty(capsys, [arm_answer(200, {"value": []})])
+
+    assert code == 0
+    assert captured.out == "check-empty: rg-releaselens is empty\n"
+
+
+CHECK_EMPTY_UNREADABLE = {
+    "value-missing": [arm_answer(200, {"echo": ECHO})],
+    "value-null": [arm_answer(200, {"value": None})],
+    "value-an-object": [arm_answer(200, {"value": {}})],
+    "value-not-a-list-of-objects": [arm_answer(200, {"value": [ECHO]})],
+    "non-200-on-page-1": [arm_answer(403, ARM_DENIED)],
+    "non-200-on-a-next-link-page": [
+        arm_answer(200, {"value": [], "nextLink": NEXT_LINK}),
+        arm_answer(500, ARM_DENIED),
+    ],
+}
+
+
+@pytest.mark.parametrize("arm_pages", CHECK_EMPTY_UNREADABLE.values(), ids=list(CHECK_EMPTY_UNREADABLE))
+def test_check_empty_cli_fails_when_a_page_is_unreadable(capsys, arm_pages):
+    # An answer that does not list the group's resources says nothing about whether it is empty.
+    code, captured, arm = run_check_empty(capsys, arm_pages)
+
+    assert code == 1
+    assert len(arm) == len(arm_pages)
+    assert "is empty" not in captured.out + captured.err
+    assert captured.err.startswith("FAIL: listing rg-releaselens returned HTTP ")
 
 
 # --- OIDC --------------------------------------------------------------------------------------
@@ -420,6 +479,22 @@ def test_oidc_exchange_cli_compares_with_expect(capsys, status, expect, code, li
 
     assert dt.main(argv, env=OIDC_ENV, fetch=oidc_router(response(status, body))) == code
     assert capsys.readouterr().out.splitlines()[0] == line
+
+
+@pytest.mark.parametrize("status, body", [
+    (429, {"error": "temporarily_unavailable"}),
+    (400, {"error": "invalid_request"}),
+], ids=["429", "400-without-error-codes"])
+def test_4xx_without_aadsts_code_is_not_a_denial(capsys, status, body):
+    # Throttling or a malformed request says nothing about whether the credential is trusted.
+    with pytest.raises(dt.ToolError, match=f"token request failed: HTTP {status} without an AADSTS code"):
+        dt.exchange(ZERO_GUID, ZERO_GUID, "the-assertion", fetch=FakeFetch(response(status, body)))
+
+    argv = ["oidc-exchange", "--client-id", ZERO_GUID, "--tenant-id", ZERO_GUID, "--expect", "denied"]
+    assert dt.main(argv, env=OIDC_ENV, fetch=oidc_router(response(status, body))) == 1
+    captured = capsys.readouterr()
+    assert "denied" not in captured.out
+    assert captured.err == f"FAIL: token request failed: HTTP {status} without an AADSTS code\n"
 
 
 def test_decode_subject():

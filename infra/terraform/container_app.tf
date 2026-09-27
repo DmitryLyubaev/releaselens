@@ -78,8 +78,8 @@ resource "azurerm_container_app" "api" {
         value = var.azure_openai_deployment_type
       }
 
-      # The app's managed-identity credential needs the client ID: without one it would ask for
-      # a system-assigned identity, which the container does not have.
+      # The app's managed-identity credential needs the client ID. Without it the app refuses to
+      # build that credential; the container has no system-assigned identity to fall back to.
       env {
         name  = "AZURE_CLIENT_ID"
         value = var.app_identity_client_id

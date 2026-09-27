@@ -23,15 +23,21 @@ infra/**/.terraform/
 infra/**/*.tfstate
 infra/**/*.tfstate.*
 # A saved plan carries resolved values — for bootstrap, the storage account key;
-# for the app stack, the generated Postgres password and Key Vault secrets. Either
-# is as sensitive as state.
+# for the app stack, the generated Postgres password and the connection string built
+# from it. Either is as sensitive as state.
 infra/**/tfplan
 infra/**/*.tfplan
 infra/**/*.tfvars
+infra/**/*.tfvars.json
 !infra/**/*.tfvars.example
-# A backend override is local-only: it points init at a stand-in backend (or none)
-# instead of the committed one, and has no business being versioned.
+# Override files are local-only: a backend override points init at a stand-in backend
+# (or none) instead of the committed one. No override has any business being versioned.
+infra/**/override.tf
+infra/**/override.tf.json
 infra/**/*_override.tf
+infra/**/*_override.tf.json
+# Crash logs, from Terraform's standard ignore list.
+infra/**/crash*.log
 # .terraform.lock.hcl is deliberately NOT ignored. HashiCorp's guidance is to commit it:
 # it pins exact provider versions and their checksums, so a clone gets byte-identical
 # providers rather than whatever the ~> constraint resolves to that week, and the
