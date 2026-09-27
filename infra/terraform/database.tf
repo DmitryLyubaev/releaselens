@@ -1,3 +1,10 @@
+# Suffix for the server name, which must be globally unique.
+resource "random_string" "suffix" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
 resource "random_password" "postgres" {
   length           = 32
   special          = true
@@ -5,9 +12,9 @@ resource "random_password" "postgres" {
 }
 
 resource "azurerm_postgresql_flexible_server" "this" {
-  name                = "${var.prefix}-pg-${random_string.suffix.result}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  name                = "psql-releaselens-${random_string.suffix.result}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
 
   version    = "16"
   sku_name   = "B_Standard_B1ms" # Burstable, per the spec. Anything larger is money for nothing here.
@@ -51,15 +58,23 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
   end_ip_address   = "0.0.0.0"
 }
 
-resource "azurerm_key_vault_secret" "database_connection" {
-  name = "database-connection-string"
-  value = format(
+# Whether a GitHub-hosted runner passes the rule above is unverified (spec §6.1). If it does
+# not, setting smoke_runner_ip opens the server to that runner alone, for the smoke test.
+resource "azurerm_postgresql_flexible_server_firewall_rule" "smoke_runner" {
+  count = var.smoke_runner_ip == "" ? 0 : 1
+
+  name             = "allow-smoke-runner"
+  server_id        = azurerm_postgresql_flexible_server.this.id
+  start_ip_address = var.smoke_runner_ip
+  end_ip_address   = var.smoke_runner_ip
+}
+
+locals {
+  database_connection_string = format(
     "Host=%s;Port=5432;Database=%s;Username=%s;Password=%s;SSL Mode=Require;Trust Server Certificate=true",
     azurerm_postgresql_flexible_server.this.fqdn,
     azurerm_postgresql_flexible_server_database.this.name,
     var.postgres_admin_username,
     random_password.postgres.result
   )
-  key_vault_id = azurerm_key_vault.this.id
-  depends_on   = [azurerm_role_assignment.deployer_secrets]
 }

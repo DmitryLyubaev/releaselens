@@ -1,5 +1,16 @@
-subscription_id    = "00000000-0000-0000-0000-000000000000"
-budget_alert_email = "you@example.com"
-budget_start_date  = "2026-08-01T00:00:00Z"
-budget_amount_usd  = 50
-anthropic_api_key  = "sk-ant-..."
+# This stack is meant to be deployed and destroyed by the workflows, with every value below
+# passed as TF_VAR_* from the GitHub environment azure. The file shows what they look like.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# The four handoff values, copied from bootstrap's outputs.
+app_identity_id         = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-app"
+app_identity_client_id  = "00000000-0000-0000-0000-000000000000"
+azure_openai_base_url   = "https://aoai-releaselens-xxxxxx.openai.azure.com/openai/v1/"
+azure_openai_deployment = "releaselens-chat"
+
+# The API image, pinned by digest. Leave it unset for destroy. This placeholder fails
+# validation on purpose.
+# image = "ghcr.io/dmitrylyubaev/releaselens-api@sha256:<64 lowercase hex characters>"
+
+# Leave unset unless the smoke test cannot reach Postgres from the runner.
+# smoke_runner_ip = "203.0.113.10"

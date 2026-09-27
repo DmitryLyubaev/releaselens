@@ -2,15 +2,17 @@ output "api_url" {
   value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
 }
 
-output "postgres_fqdn" {
-  value = azurerm_postgresql_flexible_server.this.fqdn
+output "database_connection_string" {
+  description = "Connection string for the Postgres database, including the admin password."
+  value       = local.database_connection_string
+  sensitive   = true
 }
 
-output "key_vault_name" {
-  value = azurerm_key_vault.this.name
-}
-
-output "teardown_command" {
-  value       = "terraform destroy -auto-approve"
-  description = "Run this at the end of every session. It is the only real cost control."
+output "pricing_identity" {
+  description = "The model, model version and deployment type the app prices each call at."
+  value = {
+    model           = var.azure_openai_model
+    model_version   = var.azure_openai_model_version
+    deployment_type = var.azure_openai_deployment_type
+  }
 }

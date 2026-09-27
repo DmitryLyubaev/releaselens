@@ -1,10 +1,10 @@
 terraform {
-  required_version = ">= 1.9.0"
+  required_version = "~> 1.15.0"
 
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.14"
+      version = "~> 5.6"
     }
     random = {
       source  = "hashicorp/random"
@@ -16,14 +16,8 @@ terraform {
 provider "azurerm" {
   subscription_id = var.subscription_id
 
-  features {
-    key_vault {
-      purge_soft_delete_on_destroy = true
-    }
-    resource_group {
-      # terraform destroy must actually destroy. Without this, a stray resource
-      # blocks teardown and the meter keeps running.
-      prevent_deletion_if_contains_resources = false
-    }
-  }
+  # Nothing is registered from here: CI may not register resource providers, azurerm 5.x
+  # defaults resource_provider_registrations to none, and bootstrap registers the namespaces
+  # this stack uses.
+  features {}
 }
