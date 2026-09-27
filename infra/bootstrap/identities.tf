@@ -14,8 +14,9 @@ resource "azurerm_user_assigned_identity" "app" {
   location            = azurerm_resource_group.bootstrap.location
 }
 
-# The only federated credential. Its subject names the GitHub environment azure, never a
-# branch, so a job without that environment cannot get an Azure token. It does not exist
+# The only federated credential. The variable's validation holds its subject to this
+# repository, to the claim environment:azure exactly (not azure-staging), and to no ref:
+# anywhere, so a job without that environment cannot get an Azure token. It does not exist
 # until the subject is set, so the budget-only apply can run before the probe.
 resource "azurerm_federated_identity_credential" "github_environment" {
   count = var.github_oidc_subject == null ? 0 : 1

@@ -105,3 +105,38 @@ run "other_repository_rejected" {
 
   expect_failures = [var.github_oidc_subject]
 }
+
+# Each run below breaks exactly one rule, so deleting or weakening that rule fails its run.
+
+# Only the environment rule rejects this one.
+run "pull_request_subject_rejected" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:DmitryLyubaev@57339946/releaselens@1331560542:pull_request"
+  }
+
+  expect_failures = [var.github_oidc_subject]
+}
+
+# Only the ref: rule rejects this one.
+run "ref_in_environment_subject_rejected" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:DmitryLyubaev@57339946/releaselens@1331560542:environment:azure:ref:refs/heads/main"
+  }
+
+  expect_failures = [var.github_oidc_subject]
+}
+
+# Only the environment rule's anchoring rejects this one: a plain substring match accepts it.
+run "other_environment_rejected" {
+  command = plan
+
+  variables {
+    github_oidc_subject = "repo:DmitryLyubaev@57339946/releaselens@1331560542:environment:azure-staging"
+  }
+
+  expect_failures = [var.github_oidc_subject]
+}

@@ -27,19 +27,22 @@ variable "budget_start_date" {
 
 variable "github_oidc_subject" {
   type        = string
-  description = "Subject of the deploy identity's federated credential: exactly the sub the OIDC probe printed for the GitHub environment azure. While it is null, no credential exists."
+  description = "Subject of the deploy identity's federated credential: exactly the sub the OIDC probe printed (R7). It must start with this repository's immutable prefix, carry the claim environment:azure followed by a colon or the end of the value, and contain no ref:. While it is null, no credential exists."
   default     = null
   nullable    = true
 
   validation {
     # The string functions error on null. try() makes them false instead, so a null subject
-    # passes on the left of || whether or not Terraform short-circuits it.
+    # passes on the left of || whether or not Terraform short-circuits it. The environment
+    # claim is matched up to its delimiter, so environment:azure-staging does not pass.
+    # Claims a customised template adds after it still pass, unless one contains ref: (as
+    # job_workflow_ref does).
     condition = var.github_oidc_subject == null || try(
       startswith(var.github_oidc_subject, "repo:DmitryLyubaev@57339946/releaselens@1331560542:")
-      && strcontains(var.github_oidc_subject, "environment:azure")
+      && can(regex(":environment:azure(:|$)", var.github_oidc_subject))
       && !strcontains(var.github_oidc_subject, "ref:"),
       false
     )
-    error_message = "github_oidc_subject must be exactly the sub the OIDC probe printed (R7). It starts with repo:DmitryLyubaev@57339946/releaselens@1331560542:, names environment:azure, and has no ref: claim, because a branch-type credential must never exist."
+    error_message = "github_oidc_subject must be exactly the sub the OIDC probe printed (R7). It must start with repo:DmitryLyubaev@57339946/releaselens@1331560542:, carry the claim environment:azure followed by a colon or the end of the value (so no other environment, such as azure-staging, passes), and contain no ref: anywhere, because a branch-type credential must never exist."
   }
 }
