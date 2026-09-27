@@ -1,0 +1,60 @@
+name: OIDC probe
+
+# Temporary, dispatched by hand. With no inputs it prints the OIDC subject of a job with
+# environment azure, for the federated credential (runbook R7). With the deploy identity's client
+# and tenant IDs it also shows that the token exchange succeeds with the environment and is
+# denied without it (R11). Part B deletes this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: "Deploy identity client ID. Leave empty to print the subject only."
+        required: false
+        default: ""
+        type: string
+      tenant_id:
+        description: "Entra tenant ID. Needed with client_id."
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+jobs:
+  environment-subject:
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Print the OIDC subject
+        run: python3 scripts/deploy_tools.py oidc-subject
+
+      - name: Exchange the token, expecting ok
+        if: ${{ inputs.client_id != '' }}
+        env:
+          CLIENT_ID: ${{ inputs.client_id }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+        run: python3 scripts/deploy_tools.py oidc-exchange --client-id "$CLIENT_ID" --tenant-id "$TENANT_ID" --expect ok
+
+  no-environment:
+    # A wrong client or tenant ID is denied too, so a denial here proves something only after the
+    # same IDs were accepted with the environment.
+    needs: environment-subject
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Exchange the token, expecting denied
+        if: ${{ inputs.client_id != '' }}
+        env:
+          CLIENT_ID: ${{ inputs.client_id }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+        run: python3 scripts/deploy_tools.py oidc-exchange --client-id "$CLIENT_ID" --tenant-id "$TENANT_ID" --expect denied

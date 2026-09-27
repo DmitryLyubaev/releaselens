@@ -138,10 +138,5 @@ def test_cli_rejects_a_missing_directory(tmp_path):
     assert _cli(tmp_path / "missing").returncode == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="ci.yml's publish-image actions are tag-pinned until Task 11 pins them to SHAs",
-)
 def test_repository_workflows_pass(repo_root):
     assert cw.check(repo_root / ".github" / "workflows") == []
