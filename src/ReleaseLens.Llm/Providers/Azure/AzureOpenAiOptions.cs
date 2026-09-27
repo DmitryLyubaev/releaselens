@@ -19,7 +19,11 @@ public sealed class AzureOpenAiOptions
 
     public string ModelVersion { get; set; } = "2025-04-14";
 
-    public string DeploymentType { get; set; } = "Standard";
+    /// <summary>
+    /// Global Standard, because the subscription has no regional Standard quota for this model;
+    /// it may process a prompt in any Azure region.
+    /// </summary>
+    public string DeploymentType { get; set; } = "GlobalStandard";
 
     /// <summary>
     /// Configurable because an API Management gateway in front of the account would change

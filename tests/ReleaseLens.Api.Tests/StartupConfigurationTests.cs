@@ -179,13 +179,13 @@ public class StartupConfigurationTests(PostgresFixture fixture) : IAsyncLifetime
     public async Task Azure_Listed_WithADeploymentTypeThatHasNoRate_FailsStartup()
     {
         var settings = AzureConfigured("azure-openai", "anthropic");
-        settings["AzureOpenAi:DeploymentType"] = "GlobalStandard";
+        settings["AzureOpenAi:DeploymentType"] = "DataZoneStandard";
 
         await using var factory = Factory(settings);
 
         var exception = Assert.Throws<InvalidOperationException>(() => Start(factory));
 
-        Assert.Contains("GlobalStandard", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("DataZoneStandard", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

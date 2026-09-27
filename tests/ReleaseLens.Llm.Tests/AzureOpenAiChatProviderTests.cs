@@ -127,6 +127,15 @@ public class AzureOpenAiChatProviderTests
     }
 
     [Fact]
+    public void DefaultOptions_ArePricedAsAGlobalStandardDeploymentThatHasARate()
+    {
+        var provider = Create(new StubHttpMessageHandler(), new AzureOpenAiOptions { BaseUrl = BaseUrl, Deployment = Deployment });
+
+        Assert.Equal(new PricingIdentity("azure-openai", "gpt-4.1-mini", "2025-04-14", "GlobalStandard"), provider.Pricing);
+        Assert.True(ModelPricing.HasRate(provider.Pricing, new DateOnly(2026, 9, 27)));
+    }
+
+    [Fact]
     public async Task Complete_ReportsAzureOpenAiAsTheAnsweringProvider()
     {
         var handler = new StubHttpMessageHandler().EnqueueJson(TextResponse);

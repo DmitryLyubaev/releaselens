@@ -99,9 +99,12 @@ public static class ModelPricing
         { Provider: "anthropic", Version: null, DeploymentType: null } => ResolveAnthropic(identity.Model, asOf),
         { Provider: "openai", Version: null, DeploymentType: null } => ResolveOpenAi(identity.Model),
 
-        // Azure Retail Prices API, australiaeast, read 2026-09-24: regional Standard, USD per
-        // 1M tokens for input, cached input and output. The OpenAI wire reports no cache
-        // writes, so none is charged.
+        // Azure Retail Prices API, australiaeast, USD per 1M tokens for input, cached input and
+        // output. The OpenAI wire reports no cache writes, so none is charged. Global Standard
+        // (read 2026-09-27) is the deployment type the app uses; regional Standard (read
+        // 2026-09-24) stays for a subscription that has regional quota.
+        { Provider: "azure-openai", Model: "gpt-4.1-mini", Version: "2025-04-14", DeploymentType: "GlobalStandard" }
+            => new Rates(0.40m, 0.10m, 0m, 1.60m),
         { Provider: "azure-openai", Model: "gpt-4.1-mini", Version: "2025-04-14", DeploymentType: "Standard" }
             => new Rates(0.44m, 0.11m, 0m, 1.76m),
 

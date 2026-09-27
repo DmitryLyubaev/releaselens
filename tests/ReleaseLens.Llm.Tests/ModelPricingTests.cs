@@ -13,6 +13,9 @@ public class ModelPricingTests
     private static readonly PricingIdentity AzureRegional =
         new("azure-openai", "gpt-4.1-mini", "2025-04-14", "Standard");
 
+    private static readonly PricingIdentity AzureGlobal =
+        new("azure-openai", "gpt-4.1-mini", "2025-04-14", "GlobalStandard");
+
     [Fact]
     public void Sonnet5_BeforeThirtyFirstAugust2026_UsesIntroductoryInputPricing()
     {
@@ -75,6 +78,24 @@ public class ModelPricingTests
         Assert.Equal(1.76m, ModelPricing.CostUsd(AzureRegional, OneMillionOut, AfterIntroductoryPricing));
     }
 
+    // T-C1, for the deployment type the app uses by default.
+    [Fact]
+    public void AzureGlobalStandardIdentity_KnownTokens_GiveAnExactUsdFigure()
+    {
+        // 12,345 x 0.40 + 1,024 x 0.10 + 678 x 1.60 = 4,938.00 + 102.40 + 1,084.80 = 6,125.20 per million.
+        var usage = new TokenUsage(InputTokens: 12_345, OutputTokens: 678, CacheReadInputTokens: 1_024, CacheCreationInputTokens: 0);
+
+        Assert.Equal(0.0061252m, ModelPricing.CostUsd(AzureGlobal, usage, AfterIntroductoryPricing));
+    }
+
+    [Fact]
+    public void AzureGlobalStandardIdentity_OneMillionOfEach_MatchesThePublishedRates()
+    {
+        Assert.Equal(0.40m, ModelPricing.CostUsd(AzureGlobal, OneMillionIn, AfterIntroductoryPricing));
+        Assert.Equal(0.10m, ModelPricing.CostUsd(AzureGlobal, new TokenUsage(0, 0, 1_000_000, 0), AfterIntroductoryPricing));
+        Assert.Equal(1.60m, ModelPricing.CostUsd(AzureGlobal, OneMillionOut, AfterIntroductoryPricing));
+    }
+
     [Fact]
     public void AnthropicIdentity_KeepsTheNameBasedRatesAndCacheMultipliers()
     {
@@ -119,7 +140,8 @@ public class ModelPricingTests
     public void HasRate_IsKeyedByTheWholeIdentity_NotJustTheModel()
     {
         Assert.True(ModelPricing.HasRate(AzureRegional, AfterIntroductoryPricing));
-        Assert.False(ModelPricing.HasRate(AzureRegional with { DeploymentType = "GlobalStandard" }, AfterIntroductoryPricing));
+        Assert.True(ModelPricing.HasRate(AzureGlobal, AfterIntroductoryPricing));
+        Assert.False(ModelPricing.HasRate(AzureRegional with { DeploymentType = "DataZoneStandard" }, AfterIntroductoryPricing));
         Assert.False(ModelPricing.HasRate(AzureRegional with { Version = "2024-07-18" }, AfterIntroductoryPricing));
         Assert.False(ModelPricing.HasRate(AzureRegional with { Provider = "openai" }, AfterIntroductoryPricing));
     }
@@ -128,19 +150,19 @@ public class ModelPricingTests
     [Fact]
     public void EnsurePriced_NamesEveryPricedIdentityThatHasNoRate()
     {
-        var globalStandard = AzureRegional with { DeploymentType = "GlobalStandard" };
+        var dataZone = AzureRegional with { DeploymentType = "DataZoneStandard" };
         var openAiNoRate = new PricingIdentity("openai", "gpt-no-rate-test");
 
         var exception = Assert.Throws<InvalidOperationException>(() => ModelPricing.EnsurePriced(
             [
                 new PricingIdentity("anthropic", "claude-sonnet-5"),
-                globalStandard,
+                dataZone,
                 openAiNoRate,
                 new PricingIdentity("openai", "llama3.1", Unpriced: true)
             ],
             AfterIntroductoryPricing));
 
-        Assert.Contains("azure-openai gpt-4.1-mini 2025-04-14 GlobalStandard", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("azure-openai gpt-4.1-mini 2025-04-14 DataZoneStandard", exception.Message, StringComparison.Ordinal);
         Assert.Contains("openai gpt-no-rate-test", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("claude-sonnet-5", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("llama3.1", exception.Message, StringComparison.Ordinal);
@@ -152,6 +174,7 @@ public class ModelPricingTests
         ModelPricing.EnsurePriced(
             [
                 AzureRegional,
+                AzureGlobal,
                 new PricingIdentity("anthropic", "claude-sonnet-5"),
                 new PricingIdentity("openai", "gpt-4o"),
                 new PricingIdentity("openai", "llama3.1", Unpriced: true)
