@@ -83,7 +83,9 @@ def test_good_fixtures_pass():
 
 @pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml"])
 def test_good_fixture_is_a_byte_copy_of_the_repository_workflow(repo_root, name):
-    # Otherwise the good set could keep passing while the real workflow drifts from it.
+    # Otherwise the good set could keep passing while the real workflow drifts from it. So every
+    # change to either workflow, a Dependabot pin bump included, must be copied into
+    # tests/infra/fixtures/workflows/good/, or CI fails here.
     fixture = (FIXTURES / "good" / name).read_bytes()
     assert fixture == (repo_root / ".github" / "workflows" / name).read_bytes()
 

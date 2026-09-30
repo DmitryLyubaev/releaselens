@@ -36,16 +36,18 @@ jobs:
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TF_VAR_app_identity_id: ${{ vars.APP_IDENTITY_ID }}
+      TF_VAR_app_identity_client_id: ${{ vars.APP_IDENTITY_CLIENT_ID }}
+      TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       # Identifiers, not credentials. They are environment secrets so that GitHub masks them
-      # everywhere in this public log, including inside resource IDs such as APP_IDENTITY_ID.
+      # everywhere in this public log, including inside resource IDs such as APP_IDENTITY_ID. The
+      # storage account's name can lead to the tenant ID, and the base URL gives that name away
+      # (spec §4.12).
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_app_identity_id: ${{ vars.APP_IDENTITY_ID }}
-      TF_VAR_app_identity_client_id: ${{ vars.APP_IDENTITY_CLIENT_ID }}
-      TF_VAR_azure_openai_base_url: ${{ vars.AZURE_OPENAI_BASE_URL }}
-      TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
-      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_azure_openai_base_url: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ secrets.TFSTATE_STORAGE_ACCOUNT }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -65,10 +67,10 @@ jobs:
           terraform destroy -auto-approve -input=false -lock-timeout=10m
 
       # A resource created outside Terraform survives a destroy. This lists the group and fails,
-      # naming each resource, if anything is left. It runs after a failed destroy too, so a partial
-      # destroy still names what survived; the job fails either way.
+      # naming each resource, if anything is left. It only reads, so it runs even after a failed or
+      # cancelled destroy, and names what is still billing.
       - name: Fail if anything is left in rg-releaselens
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         run: >-
           python3 scripts/deploy_tools.py check-empty
           --subscription "$ARM_SUBSCRIPTION_ID"

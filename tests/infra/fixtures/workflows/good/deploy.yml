@@ -79,17 +79,19 @@ jobs:
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TF_VAR_app_identity_id: ${{ vars.APP_IDENTITY_ID }}
+      TF_VAR_app_identity_client_id: ${{ vars.APP_IDENTITY_CLIENT_ID }}
+      TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       # Identifiers, not credentials. They are environment secrets so that GitHub masks them
-      # everywhere in this public log, including inside resource IDs such as APP_IDENTITY_ID.
+      # everywhere in this public log, including inside resource IDs such as APP_IDENTITY_ID. The
+      # storage account's name can lead to the tenant ID, and the base URL gives that name away
+      # (spec §4.12).
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_app_identity_id: ${{ vars.APP_IDENTITY_ID }}
-      TF_VAR_app_identity_client_id: ${{ vars.APP_IDENTITY_CLIENT_ID }}
-      TF_VAR_azure_openai_base_url: ${{ vars.AZURE_OPENAI_BASE_URL }}
-      TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+      TF_VAR_azure_openai_base_url: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ secrets.TFSTATE_STORAGE_ACCOUNT }}
       TF_VAR_image: ${{ needs.preflight.outputs.image }}
-      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
       DOTNET_NOLOGO: true
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
     steps:
@@ -103,6 +105,10 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           global-json-file: global.json
+
+      # Before the apply, so that a build failure leaves no billing Postgres server behind.
+      - name: Build the Worker
+        run: dotnet build src/ReleaseLens.Worker -c Release
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -155,8 +161,7 @@ jobs:
           export RELEASELENS_DB="$db"
 
           # The deployed database has no schema and no tenant: the API runs no migrations, and
-          # the Worker is not in the image.
-          dotnet build src/ReleaseLens.Worker -c Release
+          # the Worker is not in the image. It was built before the apply.
           worker() { dotnet run --no-build -c Release --project src/ReleaseLens.Worker -- "$@"; }
           worker migrate
           worker create-tenant

@@ -69,7 +69,7 @@ block the deletes that move requires.
 
 The app stack reads nothing from this stack. The owner copies the outputs into the GitHub
 environment `azure` once, in R10. The output `github_environment_variables` maps eight names to
-their values. Despite its name, two of them become environment secrets, and the other six
+their values. Despite its name, four of them become environment secrets, and the other four
 environment variables:
 
 | Name | In the environment | Value |
@@ -77,19 +77,27 @@ environment variables:
 | `AZURE_CLIENT_ID` | variable | the deploy identity's client ID, which the workflows sign in as |
 | `AZURE_TENANT_ID` | secret | the Entra tenant, from the owner's sign-in |
 | `AZURE_SUBSCRIPTION_ID` | secret | the subscription |
-| `TFSTATE_STORAGE_ACCOUNT` | variable | the name of the state storage account |
+| `TFSTATE_STORAGE_ACCOUNT` | secret | the name of the state storage account |
 | `APP_IDENTITY_ID` | variable | the app identity's resource ID |
 | `APP_IDENTITY_CLIENT_ID` | variable | the app identity's client ID; the container gets it as `AZURE_CLIENT_ID` |
-| `AZURE_OPENAI_BASE_URL` | variable | `https://aoai-releaselens-<suffix>.openai.azure.com/openai/v1/` |
+| `AZURE_OPENAI_BASE_URL` | secret | `https://aoai-releaselens-<suffix>.openai.azure.com/openai/v1/` |
 | `AZURE_OPENAI_DEPLOYMENT` | variable | `releaselens-chat` |
 
-All eight are identifiers, not credentials, so no output is marked sensitive. The six variables
+All eight are identifiers, not credentials, so no output is marked sensitive. The four variables
 appear unmasked in public run logs, on purpose. The exception is `APP_IDENTITY_ID`: it contains
-the subscription ID, so it shows with its subscription segment masked. The tenant and
-subscription IDs are secrets only so that GitHub masks them in those logs. GitHub prints variable
-values in each step's header before any masking step could run (spec §4.12, amended
-2026-09-30). `SMOKE_OPEN_RUNNER_IP`, a seventh variable, is set by hand, and only if the smoke
-test cannot reach Postgres.
+the subscription ID, so it shows with its subscription segment masked. The four secrets are
+secrets only so that GitHub masks them in those logs. GitHub prints variable values in each
+step's header before any masking step could run (spec §4.12).
+- **The tenant and subscription IDs** became secrets on 2026-09-30, the owner's decision.
+- **The storage account's name and the base URL** became secrets on 2026-10-01, also the owner's
+  decision. A request with an invalid token to the storage account's blob endpoint gets a 401
+  whose `WWW-Authenticate` header names the tenant ID (checked 2026-09-30). The storage account
+  shares its `<suffix>` with the Azure OpenAI account, and both name patterns are in this
+  repository, so the base URL would give the storage account's name away. The Azure OpenAI
+  endpoint's own 401 names no tenant. Other routes to the tenant ID have not been ruled out.
+
+`SMOKE_OPEN_RUNNER_IP`, a fifth variable, is set by hand, and only if the smoke test cannot reach
+Postgres.
 
 ## Terraform runs in WSL
 
@@ -401,7 +409,7 @@ From then on, the state is the blob `bootstrap.tfstate` in `tfstate-bootstrap`. 
 
 ```powershell
 $values = wsl.exe -d Ubuntu --exec bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/bootstrap && export TF_DATA_DIR=$HOME/tfdata/bootstrap TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform output -json github_environment_variables' | ConvertFrom-Json
-$secrets = 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID'
+$secrets = 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'TFSTATE_STORAGE_ACCOUNT', 'AZURE_OPENAI_BASE_URL'
 foreach ($v in $values.PSObject.Properties) {
   if ($v.Name -in $secrets) { gh secret set $v.Name --env azure --body $v.Value }
   else { gh variable set $v.Name --env azure --body $v.Value }
@@ -410,10 +418,9 @@ gh variable list --env azure
 gh secret list --env azure
 ```
 
-The variable list must show exactly the six variables in [Outputs](#outputs), and the secret
-list exactly `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`. GitHub never shows a secret's value
-again, so only the secrets' names can be read back. GitHub holds no credentials: all eight are
-identifiers.
+The variable list must show exactly the four variables in [Outputs](#outputs), and the secret
+list exactly the four secrets there. GitHub never shows a secret's value again, so only the
+secrets' names can be read back. GitHub holds no credentials: all eight are identifiers.
 
 Leave `SMOKE_OPEN_RUNNER_IP` unset. If the first deploy's smoke test cannot reach Postgres, set
 it, and deploy again:

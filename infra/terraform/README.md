@@ -66,9 +66,9 @@ created.
 | `postgres_admin_username` | | `releaselens` |
 
 The first five come from the GitHub environment `azure`, passed to Terraform as `TF_VAR_*`:
-`subscription_id` from its secret `AZURE_SUBSCRIPTION_ID`, and the four handoff values from its
-variables. The owner copied them into the environment once, from bootstrap's output
-`github_environment_variables`.
+`subscription_id` and `azure_openai_base_url` from its secrets `AZURE_SUBSCRIPTION_ID` and
+`AZURE_OPENAI_BASE_URL`, and the other three handoff values from its variables. The owner copied
+them into the environment once, from bootstrap's output `github_environment_variables`.
 
 `image` must be `ghcr.io/dmitrylyubaev/releaselens-api@sha256:` followed by 64 lowercase hex
 characters. A tag such as `:latest` fails validation. So the image that was checked is the image
@@ -85,10 +85,12 @@ that runs, and a re-apply always rolls out the image it names.
 ## State
 
 The backend is `azurerm`, with container `tfstate-app`, key `app.tfstate` and Entra ID
-authentication (`use_azuread_auth = true`). The storage account's name is passed at `init`:
+authentication (`use_azuread_auth = true`). The storage account's name is passed at `init`. It
+is bootstrap's output `tfstate_storage_account`; the workflows read it from the environment's
+secret `TFSTATE_STORAGE_ACCOUNT`, which cannot be read back from GitHub:
 
 ```bash
-terraform init -backend-config=storage_account_name=<TFSTATE_STORAGE_ACCOUNT>
+terraform init -backend-config=storage_account_name=<tfstate_storage_account>
 ```
 
 Only the owner and the deploy identity can read or write this state, and it holds the Postgres
@@ -116,8 +118,13 @@ Their design is in the [spec](../../docs/superpowers/specs/2026-09-24-azure-open
   Then `scripts/deploy_tools.py check-empty` fails, naming each resource, if anything is left in
   `rg-releaselens`.
 - **Both** authenticate with `ARM_USE_OIDC` and the `ARM_*` variables, with no stored
-  credential. They read the tenant and subscription IDs from the environment's secrets. Both use
+  credential. They read four values from the environment's secrets: the tenant and subscription
+  IDs, the state storage account's name and the Azure OpenAI base URL. Both use
   `-lock-timeout=10m` and share one concurrency group.
+
+A change to either workflow, a Dependabot pin bump included, must also be copied into
+`tests/infra/fixtures/workflows/good/`, or CI fails: a test holds each copy byte-identical to its
+workflow.
 
 Dispatch them from PowerShell:
 
@@ -148,18 +155,34 @@ example to inspect a plan or repair state, the plan is interactive and reviewed,
 ```bash
 cd /mnt/e/Projects/ReleaseLens/infra/terraform   # the clone, as WSL sees it; adjust to yours
 export TF_DATA_DIR="$HOME/tfdata/terraform" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
-export TF_VAR_subscription_id=<AZURE_SUBSCRIPTION_ID> TF_VAR_app_identity_id=<APP_IDENTITY_ID> \
-  TF_VAR_app_identity_client_id=<APP_IDENTITY_CLIENT_ID> TF_VAR_azure_openai_base_url=<AZURE_OPENAI_BASE_URL> \
-  TF_VAR_azure_openai_deployment=<AZURE_OPENAI_DEPLOYMENT>
-terraform init -backend-config=storage_account_name=<TFSTATE_STORAGE_ACCOUNT>
+# Bootstrap's outputs, from its state. Four of these are GitHub secrets, which cannot be read back.
+out() { (cd ../bootstrap && TF_DATA_DIR="$HOME/tfdata/bootstrap" terraform output -raw "$1"); }
+export TF_VAR_subscription_id="$(out subscription_id)" TF_VAR_app_identity_id="$(out app_identity_id)" \
+  TF_VAR_app_identity_client_id="$(out app_identity_client_id)" \
+  TF_VAR_azure_openai_base_url="$(out azure_openai_base_url)" \
+  TF_VAR_azure_openai_deployment="$(out azure_openai_deployment)"
+terraform init -backend-config=storage_account_name="$(out tfstate_storage_account)"
 terraform plan -lock-timeout=10m -out=app.tfplan
 ```
+
+`out` reads bootstrap's state, so its `TF_DATA_DIR` must have been initialised with the azurerm
+backend, as the bootstrap runbook's R9 does.
 
 Read the plan before you apply anything. A planned deletion of anything other than the Container
 Apps resources or Postgres is treated as tampering. Stop, and restore an earlier blob version of
 `app.tfstate` in `tfstate-app`. Only a plan that holds no such deletion is applied, with
 `terraform apply -lock-timeout=10m app.tfplan`. Leave `TF_VAR_image` unset only for a destroy:
 the placeholder digest names no image.
+
+**If a run leaves the state locked.** A run that is cancelled or times out while Terraform holds
+the lock on `app.tfstate` can leave it held. Every later apply and destroy then fails on the lock.
+To clear it, run the `init` above in WSL, then:
+
+```bash
+terraform force-unlock <lock-id>
+```
+
+The lock ID is in the failed run's log, in Terraform's lock error. Then dispatch Destroy.
 
 ## Cost
 

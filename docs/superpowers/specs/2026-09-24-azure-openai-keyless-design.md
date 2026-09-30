@@ -571,14 +571,23 @@ cloud fallback this design deliberately does not have.
 - Administrator bypass is off.
 - Its **environment** variables are:
   - `AZURE_CLIENT_ID` (the deploy identity)
-  - the state storage account name
-  - the four app handoff values (§4.9)
+  - three of the four app handoff values (§4.9): `APP_IDENTITY_ID`, `APP_IDENTITY_CLIENT_ID` and
+    `AZURE_OPENAI_DEPLOYMENT`
 - Its **environment** secrets are `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` (amended
-  2026-09-30, the owner's decision). They are identifiers, not credentials. They are secrets only
-  because GitHub masks secret values in run logs, and prints variable values in each step's
-  header before any masking step can run. The repository is public, and so are its run logs.
+  2026-09-30, the owner's decision), and `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL`
+  (amended 2026-10-01, the owner's decision). They are identifiers, not credentials. They are
+  secrets only because GitHub masks secret values in run logs, and prints variable values in each
+  step's header before any masking step can run. The repository is public, and so are its run
+  logs.
 
-  Only jobs that pass the environment's gate can read either.
+  The second pair was added because, as checked on 2026-09-30, a request with an invalid bearer
+  token to the state storage account's blob endpoint returns a 401 whose `WWW-Authenticate`
+  header names the tenant ID. The storage account shares its random suffix with the Azure OpenAI
+  account (`strlstate<suffix>`, `aoai-releaselens-<suffix>`), and both patterns are in the public
+  code, so the public base URL gave the storage name away. The Azure OpenAI endpoint's own 401
+  names no tenant, in its headers or its body. Other routes to the tenant ID were not ruled out.
+
+  Only jobs that pass the environment's gate can read any of them.
 - **GitHub holds no credentials:** no key, password or token. Everything it holds is an
   identifier.
 
@@ -634,8 +643,8 @@ cloud fallback this design deliberately does not have.
   prompt: destroy is the direction that stops billing.
 - The job uses `environment: azure` for both the dispatched and the scheduled runs, since only
   an environment-subject credential exists.
-- It supplies every required variable from the same environment variables, and the image
-  reference has a placeholder default valid only for destroy.
+- It supplies every required variable from the same environment variables and secrets, and the
+  image reference has a placeholder default valid only for destroy.
 - After `terraform destroy`, it lists the resources in `rg-releaselens` and fails if any
   remain.
 
@@ -669,11 +678,12 @@ right to push to `main`.
 pull-request code an Azure token.
 
 **Rejected — every ID as a GitHub secret, which Microsoft's examples show.** The client IDs,
-the storage account name, the base URL and the deployment name are identifiers that reveal
-nothing about the owner, so they stay variables and appear in public run logs; the README says
-so. The tenant and subscription IDs are the exception above (amended 2026-09-30). The original
-decision left them visible too, and `::add-mask::` cannot hide a variable that a step's header
-has already printed.
+the app identity's resource ID and the deployment name are identifiers that reveal nothing about
+the owner, so they stay variables and appear in public run logs; the README says so. The tenant
+and subscription IDs are the exception above (amended 2026-09-30), and so are the storage account
+name and the base URL (amended 2026-10-01: the original decision said they reveal nothing about
+the owner, which the 401 above disproves). The original decision left all four visible, and
+`::add-mask::` cannot hide a variable that a step's header has already printed.
 
 ### 4.13 Terraform state and versions
 
@@ -744,7 +754,7 @@ account and no key is used. It does not say "no secret exists".
 
 ```
 GitHub Actions (main only, environment "azure")
-  │ OIDC: federated credential on the deploy identity (no app registration, no secrets)
+  │ OIDC: federated credential on the deploy identity (no app registration, no client secret)
   ▼
 ┌──────────── rg-releaselens-bootstrap (long-lived, applied by the owner, CanNotDelete) ─┐
 │  state storage (shared keys off)    tfstate-bootstrap · tfstate-app                     │
@@ -803,8 +813,8 @@ ReleaseLens needs the owner's approval first**, after checking
    credential's subject set to exactly the recorded `sub`.
 9. Wait for the owner's blob role to propagate (up to about ten minutes), migrate the bootstrap
    state into `tfstate-bootstrap`, and delete the local state files.
-10. Copy the bootstrap outputs into the environment's variables (§4.12), and delete the probe
-    workflow.
+10. Copy the bootstrap outputs into the environment's variables and secrets (§4.12), and delete
+    the probe workflow.
 11. **Ask first (a push).** Merge `deploy.yml` and `destroy.yml` to `main`. Scheduled and
     dispatched workflows only run from files on the default branch.
 12. **Ask first.** The first deploy.
@@ -1037,8 +1047,9 @@ fallback to other providers in the cloud.
 - Key authentication is disabled on the Azure OpenAI account (`local_auth_enabled = false`),
   no key is used, and none is in Terraform state. CI has no rights on the account, so it
   cannot turn keys back on; only the owner can.
-- GitHub holds no credentials, only identifiers. Two of them, the tenant and subscription IDs,
-  are stored as environment secrets so that public run logs mask them.
+- GitHub holds no credentials, only identifiers. Four of them, the tenant and subscription IDs
+  (amended 2026-09-30), and the state storage account's name and the Azure OpenAI base URL
+  (amended 2026-10-01), are stored as environment secrets so that public run logs mask them.
 - CI holds no role-assignment rights and no subscription-scope rights. It can run code as the
   app identity, read the Postgres password, and create billable resources in the app's
   resource group (§4.10).
@@ -1063,7 +1074,7 @@ fallback to other providers in the cloud.
 
 | Item | How |
 |---|---|
-| ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply | `az cognitiveservices model list` and `usage list` |
+| ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. ~~Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply~~ Settled by the full bootstrap apply on 2026-09-30 (R8): the deployment provisioned at capacity 100 | `az cognitiveservices model list` and `usage list` |
 | Which token scope the account accepts, and that `Cognitive Services OpenAI User` grants inference on an `AIServices` account | One real token for each scope, and one real call |
 | The wire shape of a filtered-prompt 400 on `/openai/v1/chat/completions` (envelope or not; `innererror` or `inner_error`) | One deliberately filtered prompt against the deployed account, with the owner's approval; until then the classifier accepts both shapes |
 | What OpenAI-direct returns for a filtered prompt | OpenAI's documentation, or one real response |

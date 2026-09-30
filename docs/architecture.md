@@ -219,7 +219,7 @@ commit message.
 
 Both Terraform stacks are built and tested with mocked plans, and the deploy and destroy
 workflows are built. **The app stack has not been deployed yet**, and nothing below describes a
-deployment of it. The only results recorded here are the bootstrap checks under
+deployment of it. What the checks after the bootstrap apply showed is under
 [Verified by the bootstrap apply](#verified-by-the-bootstrap-apply). The owner's runbook is
 [infra/bootstrap/README.md](../infra/bootstrap/README.md). The
 decisions and the reasons for them are in the
@@ -250,12 +250,12 @@ owner's own az login; the Anthropic and OpenAI keys only in the git-ignored .env
 
 The bootstrap stack is applied once by the owner, locally, and never destroyed. The app stack
 holds only the Container App and Postgres. The app stack reads nothing from bootstrap. The owner
-copies four bootstrap outputs into the GitHub environment's variables once, and the workflows
-pass them to Terraform as `TF_VAR_*`:
-- `APP_IDENTITY_ID`
-- `APP_IDENTITY_CLIENT_ID`
-- `AZURE_OPENAI_BASE_URL`
-- `AZURE_OPENAI_DEPLOYMENT`
+copies four bootstrap outputs into the GitHub environment once, and the workflows pass them to
+Terraform as `TF_VAR_*`:
+- `APP_IDENTITY_ID`, a variable
+- `APP_IDENTITY_CLIENT_ID`, a variable
+- `AZURE_OPENAI_BASE_URL`, a secret since 2026-10-01 (see below)
+- `AZURE_OPENAI_DEPLOYMENT`, a variable
 
 The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
 
@@ -269,12 +269,30 @@ are the only workflows that name the environment `azure`. Neither has run yet.
   pinned to that digest, then runs the smoke test.
 - **`destroy.yml`** is dispatched by hand, and runs nightly at 14:00 UTC. It destroys the app
   stack, then lists `rg-releaselens`, following ARM's paging, and fails, naming each resource, if
-  anything is left.
+  anything is left. The listing only reads, so it also runs after a failed or cancelled destroy,
+  and names what is still billing.
 - **Both** have top-level `permissions: {}`, and give `id-token: write` and `contents: read`
   only to the job with the environment. They pin every action to a commit SHA, and share the
   concurrency group `releaselens-azure`, where runs queue and none is cancelled. Terraform signs
-  in through `ARM_USE_OIDC`, with no `azure/login` step. The tenant and subscription IDs come
-  from the environment's secrets, so GitHub masks them in the public run logs.
+  in through `ARM_USE_OIDC`, with no `azure/login` step.
+
+**What the environment holds.** No credential: every value is an identifier.
+- **Four secrets,** which GitHub masks in the public run logs: `AZURE_TENANT_ID`,
+  `AZURE_SUBSCRIPTION_ID`, `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL`.
+- **Four variables,** which the logs show: `AZURE_CLIENT_ID`, `APP_IDENTITY_ID`,
+  `APP_IDENTITY_CLIENT_ID` and `AZURE_OPENAI_DEPLOYMENT`. `APP_IDENTITY_ID` contains the
+  subscription ID, so it shows with that segment masked. `SMOKE_OPEN_RUNNER_IP` is added by hand,
+  only if the smoke test needs it.
+
+The tenant and subscription IDs became secrets on 2026-09-30, and the other two on 2026-10-01,
+both by the owner's decision. The reason for the second pair, checked on 2026-09-30:
+- a request with an invalid token to the state storage account's blob endpoint gets a 401 whose
+  `WWW-Authenticate` header names the tenant ID
+- the storage account shares its random suffix with the Azure OpenAI account, and both name
+  patterns are in this repository, so the base URL would give the storage account's name away
+- the Azure OpenAI endpoint's own 401 names no tenant, in its headers or its body
+
+Other routes to the tenant ID have not been ruled out.
 
 **The smoke test.** The deployed database has no schema and no tenant: the API runs no
 migrations, and the Worker is not in the image. So the deploy job provisions both with the Worker
@@ -475,7 +493,7 @@ Monitor with keyless authentication is later work.
 
 ### Verified by the bootstrap apply
 
-Runbook step R8 checked these on 2026-09-30, after the full bootstrap apply:
+The checks after the full bootstrap apply on 2026-09-30 (runbook step R8) showed these:
 - **That no Azure OpenAI key lands in Terraform state.** In the state, the account's primary and
   secondary access keys are both empty strings.
 - **That the quota of 5000 covers capacity 100.** The deployment `releaselens-chat` provisioned

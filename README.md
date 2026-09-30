@@ -349,7 +349,8 @@ missing on a fresh subscription.
   print them.
 - **`destroy.yml`** runs when dispatched, and nightly at 14:00 UTC (midnight AEST). After
   `terraform destroy`, it lists what is left in `rg-releaselens` and fails if anything is. A
-  resource created outside Terraform survives a destroy, so this check is needed.
+  resource created outside Terraform survives a destroy, so this check is needed. The check also
+  runs after a failed or cancelled destroy, and names what is still billing.
 - **The nightly destroy is best effort, not a guarantee.** GitHub disables scheduled workflows in
   a public repository after 60 days without activity, and scheduled runs can be delayed or
   dropped. The budget alert is the backstop, and it stops nothing.
@@ -363,13 +364,20 @@ missing on a fresh subscription.
     primary and secondary access keys are both empty strings.
   - CI has no role on the account, so it cannot turn key authentication back on. Only the owner
     can.
-- **GitHub holds no credentials, only identifiers.** Two of them, the tenant and subscription
-  IDs, are stored as environment secrets so that public run logs mask them. The rest are
-  variables of the environment `azure`: the deploy identity's client ID, the state storage
-  account's name, the four values bootstrap hands to the app stack, and `SMOKE_OPEN_RUNNER_IP`,
-  which is set only if the smoke test needs it. The variables appear unmasked in public run logs,
-  on purpose. The exception is `APP_IDENTITY_ID`: it contains the subscription ID, so it shows
-  with its subscription segment masked.
+- **GitHub holds no credentials, only identifiers.** Four of them are stored as environment
+  secrets so that public run logs mask them: the tenant and subscription IDs, the state storage
+  account's name and the Azure OpenAI base URL.
+  - The last two became secrets on 2026-10-01, the owner's decision. A request with an invalid
+    token to the storage account's blob endpoint gets a 401 whose `WWW-Authenticate` header names
+    the tenant ID (checked 2026-09-30). The storage account shares its random suffix with the
+    Azure OpenAI account, and both name patterns are in this repository, so the base URL would
+    give the storage account's name away. The Azure OpenAI endpoint's own 401 names no tenant.
+    Other routes to the tenant ID have not been ruled out.
+  - The rest are variables of the environment `azure`: the deploy identity's client ID, the app
+    identity's resource ID and client ID, the deployment name, and `SMOKE_OPEN_RUNNER_IP`, which
+    is set only if the smoke test needs it. The variables appear unmasked in public run logs, on
+    purpose. The exception is `APP_IDENTITY_ID`: it contains the subscription ID, so it shows
+    with its subscription segment masked.
 - **CI holds no role-assignment rights and no subscription-scope rights.** What it *can* do is
   listed under [What this is not](#what-this-is-not).
 - **Data at rest stays in the Australia geography.** The account is in `australiaeast`.

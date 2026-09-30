@@ -80,6 +80,8 @@ The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
 
 and two secrets, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`. They are identifiers, stored as secrets only so that public run logs mask them (spec §4.12, amended 2026-09-30). Workflows read them as `secrets.AZURE_TENANT_ID` and `secrets.AZURE_SUBSCRIPTION_ID`, never as `vars.*`, and never echo them.
 
+*Note, 2026-10-01 (the owner's decision, spec §4.12 and §10 amended):* `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL` are environment secrets too. The environment now holds four variables (`AZURE_CLIENT_ID`, `APP_IDENTITY_ID`, `APP_IDENTITY_CLIENT_ID`, `AZURE_OPENAI_DEPLOYMENT`, plus `SMOKE_OPEN_RUNNER_IP` if set) and four secrets (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `TFSTATE_STORAGE_ACCOUNT`, `AZURE_OPENAI_BASE_URL`). The reason is that the state storage account's 401 names the tenant ID, and the base URL shares that account's suffix. The text below that says `vars.TFSTATE_STORAGE_ACCOUNT` or `vars.AZURE_OPENAI_BASE_URL` predates this; the workflows read both as `secrets.*`.
+
 **Workflows:**
 - Top-level `permissions: {}`.
 - `id-token: write, contents: read` only on the job that needs Azure.
@@ -556,6 +558,7 @@ The GitHub environment `azure` must exist before Part A is pushed (R6), because 
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Check them:
   - `grep -niE "stays in australiaeast|inference stays in australia|no secrets|budget caps|has no keys" README.md docs/architecture.md infra/*/README.md`. Expected: the only matches are "GitHub holds no secrets", which spec §10 allows, and lines inside a quoted "may not claim" list, if one is used.
+  - *Note, 2026-09-30:* spec §4.12 was amended, and the allowed claim became "GitHub holds no credentials". So `no secrets` should now match nothing in these files, and the claim is found with `grep -n "holds no credentials"` instead.
   - `grep -n "Key Vault\|Log Analytics" README.md`. Expected: matches only where the text says they are not used.
 - [ ] **Step 3: Commit** `docs: the two-stack Azure deployment, what CI can do, and what this is not`.
 

@@ -3,6 +3,8 @@ can use them. GitHub masks a value only from the moment `::add-mask::` registers
 repository's run logs are public."""
 
 import re
+import shutil
+import subprocess
 
 import pytest
 import yaml
@@ -45,6 +47,31 @@ def test_the_connection_string_is_masked_as_soon_as_it_is_read(smoke):
     read = _index(smoke, r'db=\$\(terraform .*output -raw database_connection_string\)')
     assert smoke[read + 1] == 'mask "$db"'
     assert not any(_uses(statement, "db") for statement in smoke[:read])
+
+
+def _function(statements, name):
+    start = statements.index(f"{name}() {{")
+    return statements[start:statements.index("}", start) + 1]
+
+
+def test_mask_prints_only_an_add_mask_command(smoke):
+    body = _function(smoke, "mask")[1:-1]
+    printing = [statement for statement in body if re.match(r"(printf|echo)\b", statement)]
+    assert len(printing) == 1
+    assert printing[0].startswith("printf '::add-mask::%s\\n' ")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_mask_registers_the_value_escaped_for_the_runner(smoke):
+    value = "a%0Ab%25c\r\nd%"
+    script = "\n".join(_function(smoke, "mask")) + "\n" + r"mask $'a%0Ab%25c\r\nd%'" + "\n"
+    printed = subprocess.run(["bash"], input=script.encode(), capture_output=True, check=True).stdout
+    escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    assert printed == f"::add-mask::{escaped}\n".encode()
+    # The runner unescapes in this order (actions/runner ActionCommand.UnescapeData), and must get
+    # the value back, or it would mask a different string.
+    unescaped = escaped.replace("%0D", "\r").replace("%0A", "\n").replace("%25", "%")
+    assert unescaped == value
 
 
 def test_the_issued_key_is_masked_as_soon_as_it_is_captured(smoke):
