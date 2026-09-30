@@ -115,6 +115,12 @@ Their design is in the [spec](../../docs/superpowers/specs/2026-09-24-azure-open
      deployment type in the `pricing_identity` output.
 - **[`destroy.yml`](../../.github/workflows/destroy.yml)** is dispatched by hand, and runs nightly
   at 14:00 UTC as a best-effort safety net. It destroys this stack with the placeholder image.
+  It retries the destroy only on azurerm issue
+  [#33433](https://github.com/hashicorp/terraform-provider-azurerm/issues/33433), open when read
+  on 2026-10-01. Deleting a Container App or its environment succeeds in Azure, but Terraform
+  then fails with `polling support for the Content-Type "" was not implemented`. The next run
+  drops the deleted resource from state, so the workflow makes up to three attempts: one for
+  each of those two resources, then a clean pass. Any other error fails the step at once.
   Then `scripts/deploy_tools.py check-empty` fails, naming each resource, if anything is left in
   `rg-releaselens`. It runs even after a failed or cancelled destroy.
 - **Both** authenticate with `ARM_USE_OIDC` and the `ARM_*` variables, with no stored

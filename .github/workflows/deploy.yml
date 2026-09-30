@@ -84,9 +84,10 @@ jobs:
       TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       # Identifiers, not credentials. They are environment secrets so that GitHub masks each value
       # wherever it appears whole in this public log, including inside resource IDs such as
-      # APP_IDENTITY_ID. A fragment, such as the base URL's host alone, is not masked. The storage
-      # account's name can lead to the tenant ID, and the base URL gives that name away
-      # (spec §4.12).
+      # APP_IDENTITY_ID. A fragment, such as the base URL's host alone, is not masked, so
+      # Terraform's output passes through a filter that hides the subscription ID even when
+      # Terraform truncates it. The storage account's name can lead to the tenant ID, and the base
+      # URL gives that name away (spec §4.12).
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -118,8 +119,12 @@ jobs:
       - name: Apply the app stack
         working-directory: infra/terraform
         run: |
+          # Terraform shortens long resource IDs in its progress lines, and GitHub does not mask a
+          # subscription ID cut short. So both of Terraform's streams pass through this filter.
+          # shell: bash runs with pipefail, so the step still fails when terraform does.
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
           terraform init -input=false -backend-config=storage_account_name="$TFSTATE_STORAGE_ACCOUNT"
-          terraform apply -auto-approve -input=false -lock-timeout=10m
+          terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact
 
       # Whether a GitHub-hosted runner passes Postgres's allow-azure-services rule is unverified
       # (spec §6.1). Setting SMOKE_OPEN_RUNNER_IP to true opens the server to this runner alone,
@@ -136,7 +141,10 @@ jobs:
             exit 1
           fi
           echo "Opening Postgres to $ip"
-          TF_VAR_smoke_runner_ip="$ip" terraform apply -auto-approve -input=false -lock-timeout=10m
+          # As in the apply step: the filter hides the subscription ID, and pipefail keeps the
+          # step failing when terraform does.
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          TF_VAR_smoke_runner_ip="$ip" terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact
 
       - name: Smoke test
         env:
@@ -194,4 +202,8 @@ jobs:
         working-directory: infra/terraform
         env:
           TF_VAR_smoke_runner_ip: ""
-        run: terraform apply -auto-approve -input=false -lock-timeout=10m
+        run: |
+          # As in the apply step. Without pipefail, a failed close would pass, and leave Postgres
+          # open to this runner's address unnoticed.
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact

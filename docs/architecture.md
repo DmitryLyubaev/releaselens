@@ -271,6 +271,12 @@ are the only workflows that name the environment `azure`. Neither has run yet.
   stack, then lists `rg-releaselens`, following ARM's paging, and fails, naming each resource, if
   anything is left. The listing only reads, so it also runs after a failed or cancelled destroy,
   and names what is still billing.
+  - The destroy is retried only on azurerm issue
+    [#33433](https://github.com/hashicorp/terraform-provider-azurerm/issues/33433), open when
+    read on 2026-10-01. Deleting a Container App or its environment succeeds in Azure, but
+    Terraform stops on a polling error. The next run drops the deleted resource from state, so
+    the workflow makes up to three attempts: one for each of those two resources, then a clean
+    pass. Any other error fails the step at once.
 - **Both** have top-level `permissions: {}`, and give `id-token: write` and `contents: read`
   only to the job with the environment. They pin every action to a commit SHA, and share the
   concurrency group `releaselens-azure`, where runs queue and none is cancelled. Terraform signs
@@ -278,7 +284,9 @@ are the only workflows that name the environment `azure`. Neither has run yet.
 
 **What the environment holds.** No credential: every value is an identifier.
 - **Four secrets,** which GitHub masks in the public run logs: `AZURE_TENANT_ID`,
-  `AZURE_SUBSCRIPTION_ID`, `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL`.
+  `AZURE_SUBSCRIPTION_ID`, `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL`. GitHub masks
+  a secret only where its whole value appears, so Terraform's output passes through a filter
+  that hides the subscription ID even when Terraform truncates it.
 - **Four variables,** which the logs show: `AZURE_CLIENT_ID`, `APP_IDENTITY_ID`,
   `APP_IDENTITY_CLIENT_ID` and `AZURE_OPENAI_DEPLOYMENT`. `APP_IDENTITY_ID` contains the
   subscription ID, so it shows with that segment masked. `SMOKE_OPEN_RUNNER_IP` is added by hand,

@@ -41,9 +41,10 @@ jobs:
       TF_VAR_azure_openai_deployment: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       # Identifiers, not credentials. They are environment secrets so that GitHub masks each value
       # wherever it appears whole in this public log, including inside resource IDs such as
-      # APP_IDENTITY_ID. A fragment, such as the base URL's host alone, is not masked. The storage
-      # account's name can lead to the tenant ID, and the base URL gives that name away
-      # (spec §4.12).
+      # APP_IDENTITY_ID. A fragment, such as the base URL's host alone, is not masked, so
+      # Terraform's output passes through a filter that hides the subscription ID even when
+      # Terraform truncates it. The storage account's name can lead to the tenant ID, and the base
+      # URL gives that name away (spec §4.12).
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -64,8 +65,26 @@ jobs:
       - name: Destroy the app stack
         working-directory: infra/terraform
         run: |
+          # Terraform shortens long resource IDs in its progress lines, and GitHub does not mask a
+          # subscription ID cut short. So both of Terraform's streams pass through this filter.
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
           terraform init -input=false -backend-config=storage_account_name="$TFSTATE_STORAGE_ACCOUNT"
-          terraform destroy -auto-approve -input=false -lock-timeout=10m
+
+          # azurerm issue #33433: deleting a Container App or its environment succeeds in Azure,
+          # but Terraform then stops on a polling error. The next run drops the deleted resource
+          # from state, so that error alone is retried, in up to three attempts: one for each of
+          # the two resources, then a clean pass. Any other failure ends the step at once.
+          # shell: bash runs with pipefail, so the loop sees terraform's failure, not the filter's
+          # success. The log is unfiltered, and stays on the runner, which is discarded.
+          log="$RUNNER_TEMP/terraform-destroy.log"
+          attempt=1
+          until terraform destroy -auto-approve -input=false -lock-timeout=10m 2>&1 | tee "$log" | redact; do
+            if [ "$attempt" -ge 3 ] || ! grep -qF 'polling support for the Content-Type "" was not implemented' "$log"; then
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            echo "::warning::The destroy failed on azurerm issue #33433, whose deletes succeed in Azure. Retrying: attempt $attempt of 3."
+          done
 
       # A resource created outside Terraform survives a destroy. This lists the group and fails,
       # naming each resource, if anything is left. It only reads, so it runs even after a failed or
