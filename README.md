@@ -235,7 +235,7 @@ See [docs/architecture.md](docs/architecture.md).
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
 | Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
-| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). OIDC deploy (workflows in the next change); GitHub holds no secrets. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
+| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it
@@ -314,11 +314,11 @@ money.
 
 ## Deployment
 
-**Nothing is deployed in this form yet.** Both Terraform stacks are built and tested with mocked
-plans, and the delivery tools the workflows will call are tested against faked HTTP responses.
-The deploy and destroy workflows are the next change. What this section says is about what the
-code configures, and each Azure fact carries its source and date. The detail is in
-[docs/architecture.md](docs/architecture.md#azure-deployment).
+**The app stack has not been deployed in this form yet.** Both Terraform stacks are built and
+tested with mocked plans. The deploy and destroy workflows are built, and the delivery tools they
+call are tested against faked HTTP responses; neither workflow has run yet. What this section
+says is about what the code configures, and each Azure fact carries its source and date. The
+detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
 There are two Terraform stacks:
 
@@ -334,8 +334,8 @@ So the budget exists before anything that can bill. Bootstrap also registers the
 providers both stacks use. One of them is `Microsoft.App`, which the 12 August apply below found
 missing on a fresh subscription.
 
-**Then deploy and destroy through the workflows.** They come in the next change and are not in
-this repository yet. The design:
+**Then deploy and destroy through the workflows**,
+[`deploy.yml`](.github/workflows/deploy.yml) and [`destroy.yml`](.github/workflows/destroy.yml):
 - **`deploy.yml`** runs only when dispatched by hand, from `main`, under the GitHub environment
   `azure`. It refuses to run while the destroy workflow is disabled. It pins the image to the
   digest of `sha-<commit>` and applies the app stack. Then it runs a smoke test, which passes
@@ -343,6 +343,10 @@ this repository yet. The design:
   - the deployed app answers through Azure OpenAI, as its managed identity
   - the answer is not degraded
   - the cost is above $0, and matches the cost recomputed from the answer's own token counts
+
+  The smoke test provisions its own tenant and API key with the Worker, against the deployed
+  database. It masks the connection string and the key in the run log before anything else can
+  print them.
 - **`destroy.yml`** runs when dispatched, and nightly at 14:00 UTC (midnight AEST). After
   `terraform destroy`, it lists what is left in `rg-releaselens` and fails if anything is. A
   resource created outside Terraform survives a destroy, so this check is needed.
@@ -359,10 +363,12 @@ this repository yet. The design:
     intent, not a verified fact.
   - CI has no role on the account, so it cannot turn key authentication back on. Only the owner
     can.
-- **GitHub holds no secrets, only identifiers.** The environment `azure` holds variables only:
-  the client, tenant and subscription IDs, the state storage account's name, the four values
-  bootstrap hands to the app stack, and `SMOKE_OPEN_RUNNER_IP`, which is set only if the smoke
-  test needs it. They appear unmasked in public run logs, on purpose.
+- **GitHub holds no credentials, only identifiers.** Two of them, the tenant and subscription
+  IDs, are stored as environment secrets so that public run logs mask them. The rest are
+  variables of the environment `azure`: the deploy identity's client ID, the state storage
+  account's name, the four values bootstrap hands to the app stack, and `SMOKE_OPEN_RUNNER_IP`,
+  which is set only if the smoke test needs it. The variables appear unmasked in public run logs,
+  on purpose.
 - **CI holds no role-assignment rights and no subscription-scope rights.** What it *can* do is
   listed under [What this is not](#what-this-is-not).
 - **Data at rest stays in the Australia geography.** The account is in `australiaeast`.
@@ -439,7 +445,8 @@ password, not Microsoft Entra authentication.
 admits any Azure-hosted client in any tenant, not only this subscription. The password is the
 only control.
 - Whether GitHub-hosted runners pass that rule is *unverified*. The first smoke test will show.
-  If they do not, a rule for the runner's IP alone is added for the smoke step.
+  If they do not, setting `SMOKE_OPEN_RUNNER_IP` to `true` makes the deploy workflow add a rule
+  for the runner's IP alone before the smoke test, and remove it afterwards.
 - Private networking is later work.
 
 **CI can do four things, because deploying needs them:**
@@ -453,7 +460,7 @@ only control.
 - **Read the Postgres password,** which is in the app stack's state.
 - **Create any billable resource in `rg-releaselens`.** So the right to push to `main` is also
   spending authority. Anything created outside Terraform survives a destroy, which is why the
-  destroy workflow is designed to fail if the group is not empty afterwards.
+  destroy workflow fails if the group is not empty afterwards.
 - **Rewrite the app stack's state.** So the owner runs that stack locally only through a
   reviewed, interactive plan, never `-auto-approve`. Any planned deletion of something other than
   the Container Apps resources or Postgres is treated as tampering, and recovered from an earlier

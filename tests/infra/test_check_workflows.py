@@ -61,6 +61,10 @@ BAD = {
     "bad-publish-image-unpinned":
         "ci.yml: job 'publish-image': 'docker/build-push-action@v6' must be pinned to a 40-hex "
         "commit SHA",
+    # The probe workflow as it was when runbook R11 ran it. It left ALLOWED_AZURE in Part B.
+    "bad-probe-after-removal":
+        "oidc-probe.yml: job 'environment-subject': environment 'azure' is reserved for the "
+        "workflows in ALLOWED_AZURE",
 }
 
 
@@ -86,15 +90,27 @@ def test_every_bad_fixture_has_a_case():
     assert sorted(path.name for path in FIXTURES.glob("bad-*")) == sorted(BAD)
 
 
+def test_every_allowed_workflow_has_its_triggers_and_nothing_else_does():
+    assert set(cw.TRIGGERS) == cw.ALLOWED_AZURE
+
+
 def test_local_actions_are_exempt_from_pinning(tmp_path):
-    (tmp_path / "oidc-probe.yml").write_text(
+    (tmp_path / "deploy.yml").write_text(
         "on: workflow_dispatch\n"
         "permissions: {}\n"
+        "concurrency:\n"
+        "  group: releaselens-azure\n"
+        "  cancel-in-progress: false\n"
+        "  queue: max\n"
         "jobs:\n"
-        "  probe:\n"
+        "  deploy:\n"
         "    runs-on: ubuntu-latest\n"
+        "    environment: azure\n"
+        "    permissions:\n"
+        "      id-token: write\n"
+        "      contents: read\n"
         "    steps:\n"
-        "      - uses: ./.github/actions/probe\n",
+        "      - uses: ./.github/actions/deploy\n",
         encoding="utf-8",
     )
     assert cw.check(tmp_path) == []

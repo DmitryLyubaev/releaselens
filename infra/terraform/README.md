@@ -65,9 +65,10 @@ created.
 | `azure_openai_deployment_type` | | `GlobalStandard` |
 | `postgres_admin_username` | | `releaselens` |
 
-The first five come from the variables of the GitHub environment `azure`, passed to Terraform as
-`TF_VAR_*`. Four of them are bootstrap's handoff outputs. The owner copied them into the
-environment once, from bootstrap's output `github_environment_variables`.
+The first five come from the GitHub environment `azure`, passed to Terraform as `TF_VAR_*`:
+`subscription_id` from its secret `AZURE_SUBSCRIPTION_ID`, and the four handoff values from its
+variables. The owner copied them into the environment once, from bootstrap's output
+`github_environment_variables`.
 
 `image` must be `ghcr.io/dmitrylyubaev/releaselens-api@sha256:` followed by 64 lowercase hex
 characters. A tag such as `:latest` fails validation. So the image that was checked is the image
@@ -96,16 +97,46 @@ password.
 ## Deployed and destroyed by the workflows
 
 Deploys and destroys go through GitHub Actions, signed in through OIDC as the deploy identity.
-**The two workflows, `deploy.yml` and `destroy.yml`, are not in the repository yet.** They are
-the next change, and the
-[spec](../../docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md) (§4.12, §6.1)
-fixes their design:
-- **`deploy.yml`** is dispatched by hand, from `main`, under the environment `azure`. It applies
-  this stack with the image pinned by digest, then runs the smoke test.
-- **`destroy.yml`** is dispatched by hand, and runs nightly at 14:00 UTC as a best-effort safety
-  net. It destroys this stack, then fails if anything is left in `rg-releaselens`.
+Their design is in the [spec](../../docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md)
+(§4.12, §6.1). Neither workflow has run yet.
+- **[`deploy.yml`](../../.github/workflows/deploy.yml)** is dispatched by hand, from `main`, under
+  the environment `azure`.
+  1. Its `preflight` job refuses to continue while `destroy.yml` is disabled. It resolves the
+     image tag `sha-<commit>` to its digest in GHCR, and fails if `ci.yml`'s `publish-image` job
+     has not pushed that tag yet.
+  2. The `deploy` job applies this stack with the image pinned to that digest.
+  3. It runs the Worker's `migrate`, `create-tenant` and `issue-key` against the deployed
+     Postgres. The connection string, its password and the issued key are masked in the log
+     before anything else can print them.
+  4. It runs `scripts/deploy_tools.py smoke` against the `api_url` output. The smoke test
+     recomputes the answer's cost with the Worker's `price` command, for the model, version and
+     deployment type in the `pricing_identity` output.
+- **[`destroy.yml`](../../.github/workflows/destroy.yml)** is dispatched by hand, and runs nightly
+  at 14:00 UTC as a best-effort safety net. It destroys this stack with the placeholder image.
+  Then `scripts/deploy_tools.py check-empty` fails, naming each resource, if anything is left in
+  `rg-releaselens`.
 - **Both** authenticate with `ARM_USE_OIDC` and the `ARM_*` variables, with no stored
-  credential. Both use `-lock-timeout=10m` and share one concurrency group.
+  credential. They read the tenant and subscription IDs from the environment's secrets. Both use
+  `-lock-timeout=10m` and share one concurrency group.
+
+Dispatch them from PowerShell:
+
+```powershell
+gh workflow run deploy.yml --ref main
+gh workflow run destroy.yml --ref main
+```
+
+Whether GitHub-hosted runners pass `allow-azure-services` is unverified. If the smoke test
+cannot reach Postgres, set the environment variable `SMOKE_OPEN_RUNNER_IP` to `true` and deploy
+again:
+
+```powershell
+gh variable set SMOKE_OPEN_RUNNER_IP --env azure --body true
+```
+
+The deploy job then reads its public IPv4 address from `https://api.ipify.org`, and applies with
+`smoke_runner_ip` set to it before the smoke test. A final step applies again with it empty, and
+runs even if the smoke test fails.
 
 ## Running it locally
 

@@ -1,5 +1,7 @@
-# None of these is secret. They are identifiers, not credentials, and they appear unmasked in
-# public run logs by design (spec §4.12), so no output is marked sensitive.
+# None of these is a credential. They are identifiers, so no output is marked sensitive. The
+# tenant and subscription IDs become GitHub environment secrets only so that public run logs mask
+# them; the rest become variables, and appear unmasked in those logs by design (spec §4.12,
+# amended 2026-09-30).
 
 output "app_identity_id" {
   description = "Resource ID of the app identity. The app stack takes it as APP_IDENTITY_ID."
@@ -41,9 +43,9 @@ output "tfstate_storage_account" {
   value       = azurerm_storage_account.state.name
 }
 
-# SMOKE_OPEN_RUNNER_IP, the environment's ninth variable, is set by hand and is not here.
+# SMOKE_OPEN_RUNNER_IP, the environment's seventh variable, is set by hand and is not here.
 output "github_environment_variables" {
-  description = "Every variable of the GitHub environment azure except SMOKE_OPEN_RUNNER_IP, by name, ready to copy into the environment."
+  description = "Every value of the GitHub environment azure except SMOKE_OPEN_RUNNER_IP, by name, ready to copy into the environment: AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID as secrets, the rest as variables."
   value = tomap({
     AZURE_CLIENT_ID         = azurerm_user_assigned_identity.deploy.client_id
     AZURE_TENANT_ID         = data.azurerm_client_config.current.tenant_id

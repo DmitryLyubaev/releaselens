@@ -5,8 +5,8 @@ locally, signed in with their own Azure CLI account, and never destroys it. The 
 app stack in [`../terraform`](../terraform/README.md), is deployed and destroyed by GitHub
 Actions.
 
-**Nothing here has been applied yet.** This page describes the stack as built, and the
-runbook for applying it. The design and its reasons are in the
+**The owner applied this stack on 2026-09-30, with the runbook below.** This page describes the
+stack as built, and that runbook. The design and its reasons are in the
 [spec](../../docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md), §4.9–§4.13.
 
 ## What it holds
@@ -68,23 +68,26 @@ block the deletes that move requires.
 ### Outputs
 
 The app stack reads nothing from this stack. The owner copies the outputs into the GitHub
-environment `azure` once, in R10. The output `github_environment_variables` maps every
-environment variable except `SMOKE_OPEN_RUNNER_IP` to its value:
+environment `azure` once, in R10. The output `github_environment_variables` maps eight names to
+their values. Despite its name, two of them become environment secrets, and the other six
+environment variables:
 
-| Variable | Value |
-|---|---|
-| `AZURE_CLIENT_ID` | the deploy identity's client ID, which the workflows sign in as |
-| `AZURE_TENANT_ID` | the Entra tenant, from the owner's sign-in |
-| `AZURE_SUBSCRIPTION_ID` | the subscription |
-| `TFSTATE_STORAGE_ACCOUNT` | the name of the state storage account |
-| `APP_IDENTITY_ID` | the app identity's resource ID |
-| `APP_IDENTITY_CLIENT_ID` | the app identity's client ID; the container gets it as `AZURE_CLIENT_ID` |
-| `AZURE_OPENAI_BASE_URL` | `https://aoai-releaselens-<suffix>.openai.azure.com/openai/v1/` |
-| `AZURE_OPENAI_DEPLOYMENT` | `releaselens-chat` |
+| Name | In the environment | Value |
+|---|---|---|
+| `AZURE_CLIENT_ID` | variable | the deploy identity's client ID, which the workflows sign in as |
+| `AZURE_TENANT_ID` | secret | the Entra tenant, from the owner's sign-in |
+| `AZURE_SUBSCRIPTION_ID` | secret | the subscription |
+| `TFSTATE_STORAGE_ACCOUNT` | variable | the name of the state storage account |
+| `APP_IDENTITY_ID` | variable | the app identity's resource ID |
+| `APP_IDENTITY_CLIENT_ID` | variable | the app identity's client ID; the container gets it as `AZURE_CLIENT_ID` |
+| `AZURE_OPENAI_BASE_URL` | variable | `https://aoai-releaselens-<suffix>.openai.azure.com/openai/v1/` |
+| `AZURE_OPENAI_DEPLOYMENT` | variable | `releaselens-chat` |
 
-These are identifiers, not credentials. No output is marked sensitive, and the values appear
-unmasked in public run logs, on purpose. `SMOKE_OPEN_RUNNER_IP` is set by hand, and only if the
-smoke test cannot reach Postgres.
+All eight are identifiers, not credentials, so no output is marked sensitive. The six variables
+appear unmasked in public run logs, on purpose. The tenant and subscription IDs are secrets only
+so that GitHub masks them in those logs. GitHub prints variable values in each step's header
+before any masking step could run (spec §4.12, amended 2026-09-30). `SMOKE_OPEN_RUNNER_IP`, a
+seventh variable, is set by hand, and only if the smoke test cannot reach Postgres.
 
 ## Terraform runs in WSL
 
@@ -266,7 +269,18 @@ page, and read it back again.
 
 ### R7. Merge, then run the OIDC probe
 
-*Pushes to GitHub.* PowerShell, for every step here.
+*Pushes to GitHub.* Done on 2026-09-30. The probe workflow, `.github/workflows/oidc-probe.yml`,
+no longer exists: it was removed after R11, with the deploy and destroy workflows, and taken out
+of `ALLOWED_AZURE` in `scripts/check_workflows.py`. To repeat this step, for example to write a
+new federated credential, restore the file from git history, and put it back in `ALLOWED_AZURE`
+and `TRIGGERS`:
+
+```powershell
+$removed = git log --format=%h -1 -- .github/workflows/oidc-probe.yml   # the commit that removed it
+git checkout "$removed^" -- .github/workflows/oidc-probe.yml
+```
+
+PowerShell, for every step here.
 
 1. Check who the commits you are about to push are from:
    `git log --format='%an <%ae>' origin/main..HEAD`.
@@ -377,21 +391,45 @@ From then on, the state is the blob `bootstrap.tfstate` in `tfstate-bootstrap`. 
 *Changes GitHub settings.* PowerShell:
 
 ```powershell
-$vars = wsl.exe -d Ubuntu --exec bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/bootstrap && export TF_DATA_DIR=$HOME/tfdata/bootstrap TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform output -json github_environment_variables' | ConvertFrom-Json
-foreach ($v in $vars.PSObject.Properties) { gh variable set $v.Name --env azure --body $v.Value }
+$values = wsl.exe -d Ubuntu --exec bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/bootstrap && export TF_DATA_DIR=$HOME/tfdata/bootstrap TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform output -json github_environment_variables' | ConvertFrom-Json
+$secrets = 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID'
+foreach ($v in $values.PSObject.Properties) {
+  if ($v.Name -in $secrets) { gh secret set $v.Name --env azure --body $v.Value }
+  else { gh variable set $v.Name --env azure --body $v.Value }
+}
 gh variable list --env azure
+gh secret list --env azure
 ```
 
-The list must show exactly the eight names in [Outputs](#outputs). Leave `SMOKE_OPEN_RUNNER_IP`
-unset. All eight are variables: GitHub holds no secrets.
+The variable list must show exactly the six variables in [Outputs](#outputs), and the secret
+list exactly `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`. GitHub never shows a secret's value
+again, so only the secrets' names can be read back. GitHub holds no credentials: all eight are
+identifiers.
+
+Leave `SMOKE_OPEN_RUNNER_IP` unset. If the first deploy's smoke test cannot reach Postgres, set
+it, and deploy again:
+
+```powershell
+gh variable set SMOKE_OPEN_RUNNER_IP --env azure --body true
+```
 
 ### R11. Prove the gate
 
-*Changes nothing.* PowerShell:
+*Changes nothing.* Done on 2026-09-30, with the result expected below: `environment-subject`
+printed `exchange: ok`, and `no-environment` printed `exchange: denied (AADSTS700213)` and passed.
+
+The probe takes the client and tenant IDs as workflow inputs. GitHub printed both in the `env`
+header of each exchange step, so that run's public log shows the tenant ID, and a repeat would
+print it again. The deploy and destroy workflows read the tenant ID from an environment secret
+instead, which GitHub masks.
+
+The steps below need the probe restored (see [R7](#r7-merge-then-run-the-oidc-probe)). The
+tenant ID is a secret now, which cannot be read back, so they take it from bootstrap's output.
+PowerShell:
 
 ```powershell
 $client = gh variable get AZURE_CLIENT_ID --env azure
-$tenant = gh variable get AZURE_TENANT_ID --env azure
+$tenant = wsl.exe -d Ubuntu --exec bash -c 'cd /mnt/e/Projects/ReleaseLens/infra/bootstrap && export TF_DATA_DIR=$HOME/tfdata/bootstrap TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache && terraform output -raw tenant_id'
 gh workflow run oidc-probe.yml --ref main -f client_id=$client -f tenant_id=$tenant
 gh run list --workflow oidc-probe.yml --limit 1
 gh run watch <run-id>
@@ -420,7 +458,8 @@ ruleset that blocks force pushes and deletion. PowerShell:
 gh api 'repos/{owner}/{repo}/rulesets'
 ```
 
-After R12, the deploy and destroy workflows come next, in their own change.
+After R12 come the deploy and destroy workflows, `deploy.yml` and `destroy.yml`. How they run is
+in [`../terraform`](../terraform/README.md#deployed-and-destroyed-by-the-workflows).
 
 ## Standing rules after R8
 
@@ -452,8 +491,8 @@ After R12, the deploy and destroy workflows come next, in their own change.
 - **No workflow triggered by `pull_request_target`, `workflow_run` or `issue_comment` references
   `environment: azure`.** Those runs carry the default branch's ref, so they would pass the
   `main` rule. `scripts/check_workflows.py` runs in CI and fails the build in these cases:
-  - a workflow names the environment and is not `deploy.yml`, `destroy.yml` or `oidc-probe.yml`
-  - one of those three gains a trigger it should not have
+  - a workflow names the environment and is not `deploy.yml` or `destroy.yml`
+  - one of those two gains a trigger it should not have
   - a job outside them calls an external reusable workflow
 - **Key authentication stays off.** CI has no role on the Azure OpenAI account, so only the owner
   could turn it back on.

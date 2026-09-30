@@ -1,4 +1,5 @@
-"""Delivery checks for the deploy and destroy workflows and the OIDC probe.
+"""Delivery checks for the deploy and destroy workflows, and for the OIDC probe that the bootstrap
+runbook ran in R7 and R11 before the probe workflow was removed.
 
 Subcommands:
   smoke          POST /query with the key in SMOKE_API_KEY, then check the answer came from

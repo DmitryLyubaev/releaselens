@@ -22,13 +22,11 @@ from pathlib import Path
 
 import yaml
 
-# oidc-probe.yml leaves this set in Task 13, which deletes the probe workflow.
-ALLOWED_AZURE = {"deploy.yml", "destroy.yml", "oidc-probe.yml"}
+ALLOWED_AZURE = {"deploy.yml", "destroy.yml"}
 
 TRIGGERS = {
     "deploy.yml": {"workflow_dispatch"},
     "destroy.yml": {"workflow_dispatch", "schedule"},
-    "oidc-probe.yml": {"workflow_dispatch"},
 }
 DESTROY_CRON = "0 14 * * *"
 AZURE_JOB_PERMISSIONS = {"id-token": "write", "contents": "read"}

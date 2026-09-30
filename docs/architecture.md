@@ -217,12 +217,13 @@ commit message.
 
 ## Azure deployment
 
-Both Terraform stacks are built and tested with mocked plans. **Nothing is deployed yet**, and
-nothing below describes a deployment. The owner's runbook is
-[infra/bootstrap/README.md](../infra/bootstrap/README.md). The decisions and the reasons for them
-are in the [spec](superpowers/specs/2026-09-24-azure-openai-keyless-design.md), §4.8–§4.14. Every
-Azure fact here carries its source and the date it was read. A fact with no source given comes
-from that spec, which is dated 2026-09-24 and was amended on 2026-09-27.
+Both Terraform stacks are built and tested with mocked plans, and the deploy and destroy
+workflows are built. **The app stack has not been deployed yet**, and nothing below describes a
+deployment. The owner's runbook is [infra/bootstrap/README.md](../infra/bootstrap/README.md). The
+decisions and the reasons for them are in the
+[spec](superpowers/specs/2026-09-24-azure-openai-keyless-design.md), §4.8–§4.14. Every Azure fact
+here carries its source and the date it was read. A fact with no source given comes from that
+spec, which is dated 2026-09-24 and was amended on 2026-09-27 and 2026-09-30.
 
 ```
 GitHub Actions: environment "azure", whose only branch rule is main
@@ -248,14 +249,47 @@ owner's own az login; the Anthropic and OpenAI keys only in the git-ignored .env
 The bootstrap stack is applied once by the owner, locally, and never destroyed. The app stack
 holds only the Container App and Postgres. The app stack reads nothing from bootstrap. The owner
 copies four bootstrap outputs into the GitHub environment's variables once, and the workflows
-are to pass them to Terraform as `TF_VAR_*`:
+pass them to Terraform as `TF_VAR_*`:
 - `APP_IDENTITY_ID`
 - `APP_IDENTITY_CLIENT_ID`
 - `AZURE_OPENAI_BASE_URL`
 - `AZURE_OPENAI_DEPLOYMENT`
 
-The container's `AZURE_CLIENT_ID` is always the app identity's client ID. The deploy and destroy
-workflows are the next change, and are not in the repository yet.
+The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
+
+### The workflows
+
+[`deploy.yml`](../.github/workflows/deploy.yml) and [`destroy.yml`](../.github/workflows/destroy.yml)
+are the only workflows that name the environment `azure`. Neither has run yet.
+- **`deploy.yml`** is dispatched by hand. Its `preflight` job, with only `actions: read`, refuses
+  to continue while `destroy.yml` is disabled. It also resolves the image tag `sha-<commit>` to
+  its digest with an anonymous GHCR call. The `deploy` job applies the app stack with the image
+  pinned to that digest, then runs the smoke test.
+- **`destroy.yml`** is dispatched by hand, and runs nightly at 14:00 UTC. It destroys the app
+  stack, then lists `rg-releaselens`, following ARM's paging, and fails, naming each resource, if
+  anything is left.
+- **Both** have top-level `permissions: {}`, and give `id-token: write` and `contents: read`
+  only to the job with the environment. They pin every action to a commit SHA, and share the
+  concurrency group `releaselens-azure`, where runs queue and none is cancelled. Terraform signs
+  in through `ARM_USE_OIDC`, with no `azure/login` step. The tenant and subscription IDs come
+  from the environment's secrets, so GitHub masks them in the public run logs.
+
+**The smoke test.** The deployed database has no schema and no tenant: the API runs no
+migrations, and the Worker is not in the image. So the deploy job provisions both with the Worker
+CLI (`migrate`, `create-tenant`, `issue-key`), run on the runner against the deployed Postgres.
+- It registers the connection string, its password and the issued key with `::add-mask::`
+  before anything else can print them, and never echoes `issue-key`'s output.
+- `scripts/deploy_tools.py smoke` then calls `/query` once, retrying a cold start for up to five
+  minutes.
+- It passes only if the answer came from Azure OpenAI alone, is not degraded, and costs more
+  than $0. The cost must also equal, to six decimal places, what the Worker's `price` command
+  recomputes from the answer's own token counts at the app's configured rate.
+
+Whether GitHub-hosted runners pass Postgres's `allow-azure-services` rule is unverified. If they
+do not, setting the environment variable `SMOKE_OPEN_RUNNER_IP` to `true` makes the deploy job
+add a firewall rule for its own public IP, read from `api.ipify.org`, before the smoke test. A
+final step removes the rule again. It runs whenever the step that added the rule ran, even if
+the smoke test failed.
 
 ### Identities and roles
 
@@ -292,8 +326,9 @@ any branch. The environment's branch rule is the only thing that binds the token
 two rules always hold:
 - **No workflow triggered by `pull_request_target`, `workflow_run` or `issue_comment` names the
   environment.** `scripts/check_workflows.py` enforces this in CI. It allows the environment only
-  in `deploy.yml`, `destroy.yml` and the temporary `oidc-probe.yml`, and checks their triggers,
-  permissions, concurrency and SHA-pinned actions.
+  in `deploy.yml` and `destroy.yml`, and checks their triggers, permissions, concurrency and
+  SHA-pinned actions. The temporary `oidc-probe.yml`, which the bootstrap runbook ran in R7 and
+  R11, was then removed, and taken out of that allowlist.
 - **The repository stays public.** On GitHub Free, a private repository's environment protection
   rules are ignored.
 
@@ -311,8 +346,7 @@ so it cannot turn key authentication back on. It *can* do four things:
 - **Read the Postgres password,** which is in the app stack's state.
 - **Create any billable resource in `rg-releaselens`.** Deploy authority, the right to push to
   `main`, is therefore spending authority. Resources created outside Terraform survive
-  `terraform destroy`, which is why the destroy workflow is designed to check that the group is
-  empty.
+  `terraform destroy`, which is why the destroy workflow checks that the group is empty.
 - **Rewrite the app stack's state.** The owner therefore runs that stack locally only through a
   reviewed, interactive plan, never `-auto-approve`. A planned deletion of anything other than the
   Container Apps resources or Postgres is treated as tampering, and recovered from an earlier blob
@@ -445,7 +479,8 @@ Each of these waits for a real run:
 - **Which token scope the account accepts.** The app defaults to `https://ai.azure.com/.default`,
   and the scope is configurable. The first real token will show.
 - **Whether GitHub-hosted runners pass the `allow-azure-services` firewall rule.** The first smoke
-  test will show. If they do not, `smoke_runner_ip` opens the server to the runner alone.
+  test will show. If they do not, `SMOKE_OPEN_RUNNER_IP` makes the deploy job set
+  `smoke_runner_ip`, which opens the server to the runner alone.
 - **Whether MSAL's own managed-identity retry is capped.** `AzureCredentialFactory` caps
   Azure.Core's retry at one fixed 200 ms retry. Whether MSAL adds retries of its own beneath that
   is unverified.
