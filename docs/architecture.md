@@ -219,7 +219,9 @@ commit message.
 
 Both Terraform stacks are built and tested with mocked plans, and the deploy and destroy
 workflows are built. **The app stack has not been deployed yet**, and nothing below describes a
-deployment. The owner's runbook is [infra/bootstrap/README.md](../infra/bootstrap/README.md). The
+deployment of it. The only results recorded here are the bootstrap checks under
+[Verified by the bootstrap apply](#verified-by-the-bootstrap-apply). The owner's runbook is
+[infra/bootstrap/README.md](../infra/bootstrap/README.md). The
 decisions and the reasons for them are in the
 [spec](superpowers/specs/2026-09-24-azure-openai-keyless-design.md), §4.8–§4.14. Every Azure fact
 here carries its source and the date it was read. A fact with no source given comes from that
@@ -471,6 +473,15 @@ az containerapp logs show --name ca-releaselens-api --resource-group rg-releasel
 The app stack sets no OpenTelemetry endpoint, so in Azure, traces and metrics go nowhere. Azure
 Monitor with keyless authentication is later work.
 
+### Verified by the bootstrap apply
+
+Runbook step R8 checked these on 2026-09-30, after the full bootstrap apply:
+- **That no Azure OpenAI key lands in Terraform state.** In the state, the account's primary and
+  secondary access keys are both empty strings.
+- **That the quota of 5000 covers capacity 100.** The deployment `releaselens-chat` provisioned
+  successfully at Global Standard, capacity 100.
+- **That key authentication is off.** The account reports `disableLocalAuth: true`.
+
 ### Not yet verified
 
 Each of these waits for a real run:
@@ -489,6 +500,4 @@ Each of these waits for a real run:
     resources
   - that azurerm makes no subscription-scope call at `init` for CI's identity
   - that Managed Identity Operator is enough to attach the app identity
-- **That no Azure OpenAI key lands in Terraform state.** Runbook step R8 checks it.
-- **That the quota of 5000 covers capacity 100.** The first bootstrap apply will show.
 - **Whether the deployment charges anything while idle.** The first invoice will show.

@@ -358,9 +358,9 @@ missing on a fresh subscription.
 - **Key authentication is disabled** on the Azure OpenAI account (`local_auth_enabled = false`),
   and no key is used. The app authenticates as its managed identity, and local runs authenticate
   as the owner through `az login`.
-  - The account's keys still exist. The design intends that none of them is in Terraform state,
-    and the first full bootstrap apply checks that (runbook R8). Until then it is the design's
-    intent, not a verified fact.
+  - The account's keys still exist, but none of them is in Terraform state. Runbook step R8
+    checked that on 2026-09-30, after the full bootstrap apply: in the state, the account's
+    primary and secondary access keys are both empty strings.
   - CI has no role on the account, so it cannot turn key authentication back on. Only the owner
     can.
 - **GitHub holds no credentials, only identifiers.** Two of them, the tenant and subscription
@@ -368,7 +368,8 @@ missing on a fresh subscription.
   variables of the environment `azure`: the deploy identity's client ID, the state storage
   account's name, the four values bootstrap hands to the app stack, and `SMOKE_OPEN_RUNNER_IP`,
   which is set only if the smoke test needs it. The variables appear unmasked in public run logs,
-  on purpose.
+  on purpose. The exception is `APP_IDENTITY_ID`: it contains the subscription ID, so it shows
+  with its subscription segment masked.
 - **CI holds no role-assignment rights and no subscription-scope rights.** What it *can* do is
   listed under [What this is not](#what-this-is-not).
 - **Data at rest stays in the Australia geography.** The account is in `australiaeast`.

@@ -1,7 +1,8 @@
 # None of these is a credential. They are identifiers, so no output is marked sensitive. The
 # tenant and subscription IDs become GitHub environment secrets only so that public run logs mask
 # them; the rest become variables, and appear unmasked in those logs by design (spec §4.12,
-# amended 2026-09-30).
+# amended 2026-09-30). APP_IDENTITY_ID contains the subscription ID, so it shows with that
+# segment masked.
 
 output "app_identity_id" {
   description = "Resource ID of the app identity. The app stack takes it as APP_IDENTITY_ID."

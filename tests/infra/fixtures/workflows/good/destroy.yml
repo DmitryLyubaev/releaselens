@@ -26,6 +26,7 @@ defaults:
 jobs:
   destroy:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # The scheduled run needs the environment too: the federated credential trusts only it.
     environment: azure
     permissions:
@@ -64,8 +65,10 @@ jobs:
           terraform destroy -auto-approve -input=false -lock-timeout=10m
 
       # A resource created outside Terraform survives a destroy. This lists the group and fails,
-      # naming each resource, if anything is left.
+      # naming each resource, if anything is left. It runs after a failed destroy too, so a partial
+      # destroy still names what survived; the job fails either way.
       - name: Fail if anything is left in rg-releaselens
+        if: ${{ !cancelled() }}
         run: >-
           python3 scripts/deploy_tools.py check-empty
           --subscription "$ARM_SUBSCRIPTION_ID"

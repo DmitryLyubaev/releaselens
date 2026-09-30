@@ -84,10 +84,12 @@ environment variables:
 | `AZURE_OPENAI_DEPLOYMENT` | variable | `releaselens-chat` |
 
 All eight are identifiers, not credentials, so no output is marked sensitive. The six variables
-appear unmasked in public run logs, on purpose. The tenant and subscription IDs are secrets only
-so that GitHub masks them in those logs. GitHub prints variable values in each step's header
-before any masking step could run (spec §4.12, amended 2026-09-30). `SMOKE_OPEN_RUNNER_IP`, a
-seventh variable, is set by hand, and only if the smoke test cannot reach Postgres.
+appear unmasked in public run logs, on purpose. The exception is `APP_IDENTITY_ID`: it contains
+the subscription ID, so it shows with its subscription segment masked. The tenant and
+subscription IDs are secrets only so that GitHub masks them in those logs. GitHub prints variable
+values in each step's header before any masking step could run (spec §4.12, amended
+2026-09-30). `SMOKE_OPEN_RUNNER_IP`, a seventh variable, is set by hand, and only if the smoke
+test cannot reach Postgres.
 
 ## Terraform runs in WSL
 
@@ -272,13 +274,20 @@ page, and read it back again.
 *Pushes to GitHub.* Done on 2026-09-30. The probe workflow, `.github/workflows/oidc-probe.yml`,
 no longer exists: it was removed after R11, with the deploy and destroy workflows, and taken out
 of `ALLOWED_AZURE` in `scripts/check_workflows.py`. To repeat this step, for example to write a
-new federated credential, restore the file from git history, and put it back in `ALLOWED_AZURE`
-and `TRIGGERS`:
+new federated credential:
+1. Restore the file from git history:
 
-```powershell
-$removed = git log --format=%h -1 -- .github/workflows/oidc-probe.yml   # the commit that removed it
-git checkout "$removed^" -- .github/workflows/oidc-probe.yml
-```
+   ```powershell
+   $removed = git log --format=%h -1 -- .github/workflows/oidc-probe.yml   # the commit that removed it
+   git checkout "$removed^" -- .github/workflows/oidc-probe.yml
+   ```
+
+2. Put `oidc-probe.yml` back in `ALLOWED_AZURE` and `TRIGGERS` (`{"workflow_dispatch"}`) in
+   `scripts/check_workflows.py`.
+3. Remove the `bad-probe-after-removal` case from `BAD` in `tests/infra/test_check_workflows.py`,
+   and delete its fixture directory, `tests/infra/fixtures/workflows/bad-probe-after-removal`.
+   Otherwise CI goes red: that case expects the probe to be refused, and every `bad-*` directory
+   must have a case.
 
 PowerShell, for every step here.
 

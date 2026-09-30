@@ -81,6 +81,13 @@ def test_good_fixtures_pass():
     assert cw.check(FIXTURES / "good") == []
 
 
+@pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml"])
+def test_good_fixture_is_a_byte_copy_of_the_repository_workflow(repo_root, name):
+    # Otherwise the good set could keep passing while the real workflow drifts from it.
+    fixture = (FIXTURES / "good" / name).read_bytes()
+    assert fixture == (repo_root / ".github" / "workflows" / name).read_bytes()
+
+
 @pytest.mark.parametrize("fixture", sorted(BAD))
 def test_bad_fixture_fails_with_its_violation(fixture):
     assert cw.check(FIXTURES / fixture) == [BAD[fixture]]
