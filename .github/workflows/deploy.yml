@@ -85,9 +85,9 @@ jobs:
       # Identifiers, not credentials. They are environment secrets so that GitHub masks each value
       # wherever it appears whole in this public log, including inside resource IDs such as
       # APP_IDENTITY_ID. A fragment, such as the base URL's host alone, is not masked, so
-      # Terraform's output passes through a filter that hides the subscription ID even when
-      # Terraform truncates it. The storage account's name can lead to the tenant ID, and the base
-      # URL gives that name away (spec §4.12).
+      # Terraform's apply and destroy output passes through a filter that hides the subscription
+      # ID even when Terraform truncates it. The storage account's name can lead to the tenant ID,
+      # and the base URL gives that name away (spec §4.12).
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

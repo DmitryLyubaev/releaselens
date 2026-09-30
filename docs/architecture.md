@@ -285,8 +285,8 @@ are the only workflows that name the environment `azure`. Neither has run yet.
 **What the environment holds.** No credential: every value is an identifier.
 - **Four secrets,** which GitHub masks in the public run logs: `AZURE_TENANT_ID`,
   `AZURE_SUBSCRIPTION_ID`, `TFSTATE_STORAGE_ACCOUNT` and `AZURE_OPENAI_BASE_URL`. GitHub masks
-  a secret only where its whole value appears, so Terraform's output passes through a filter
-  that hides the subscription ID even when Terraform truncates it.
+  a secret only where its whole value appears, so Terraform's apply and destroy output passes
+  through a filter that hides the subscription ID even when Terraform truncates it.
 - **Four variables,** which the logs show: `AZURE_CLIENT_ID`, `APP_IDENTITY_ID`,
   `APP_IDENTITY_CLIENT_ID` and `AZURE_OPENAI_DEPLOYMENT`. `APP_IDENTITY_ID` contains the
   subscription ID, so it shows with that segment masked. `SMOKE_OPEN_RUNNER_IP` is added by hand,
