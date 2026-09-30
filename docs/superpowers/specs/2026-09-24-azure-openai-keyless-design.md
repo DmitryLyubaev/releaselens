@@ -444,8 +444,9 @@ sign-in, and never destroyed. It holds:
 no `terraform_remote_state`, and no data sources for bootstrap resources. CI has no rights to
 read either.
 
-- Four bootstrap outputs are copied once by the owner into GitHub environment variables, with
-  names that cannot be mistaken for the deploy identity's `AZURE_CLIENT_ID`:
+- Four bootstrap outputs are copied once by the owner into the GitHub environment, with names
+  that cannot be mistaken for the deploy identity's `AZURE_CLIENT_ID`. Three are variables;
+  `AZURE_OPENAI_BASE_URL` is a secret (amended 2026-10-01, §4.12):
   - `APP_IDENTITY_ID`, the app identity's resource ID
   - `APP_IDENTITY_CLIENT_ID`
   - `AZURE_OPENAI_BASE_URL`, the v1 base URL

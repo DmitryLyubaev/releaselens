@@ -116,7 +116,7 @@ Their design is in the [spec](../../docs/superpowers/specs/2026-09-24-azure-open
 - **[`destroy.yml`](../../.github/workflows/destroy.yml)** is dispatched by hand, and runs nightly
   at 14:00 UTC as a best-effort safety net. It destroys this stack with the placeholder image.
   Then `scripts/deploy_tools.py check-empty` fails, naming each resource, if anything is left in
-  `rg-releaselens`.
+  `rg-releaselens`. It runs even after a failed or cancelled destroy.
 - **Both** authenticate with `ARM_USE_OIDC` and the `ARM_*` variables, with no stored
   credential. They read four values from the environment's secrets: the tenant and subscription
   IDs, the state storage account's name and the Azure OpenAI base URL. Both use
@@ -155,7 +155,7 @@ example to inspect a plan or repair state, the plan is interactive and reviewed,
 ```bash
 cd /mnt/e/Projects/ReleaseLens/infra/terraform   # the clone, as WSL sees it; adjust to yours
 export TF_DATA_DIR="$HOME/tfdata/terraform" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
-# Bootstrap's outputs, from its state. Four of these are GitHub secrets, which cannot be read back.
+# Bootstrap's outputs, from its state. Three of these are GitHub secrets, which cannot be read back.
 out() { (cd ../bootstrap && TF_DATA_DIR="$HOME/tfdata/bootstrap" terraform output -raw "$1"); }
 export TF_VAR_subscription_id="$(out subscription_id)" TF_VAR_app_identity_id="$(out app_identity_id)" \
   TF_VAR_app_identity_client_id="$(out app_identity_client_id)" \
