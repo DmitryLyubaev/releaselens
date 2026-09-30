@@ -66,8 +66,9 @@ jobs:
         working-directory: infra/terraform
         run: |
           # Terraform shortens long resource IDs in its progress lines, and GitHub does not mask a
-          # subscription ID cut short. So both of Terraform's streams pass through this filter.
-          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          # subscription ID cut short. So both of Terraform's streams pass through this filter. Its
+          # second expression hides a GUID's end, which a short ID can keep after the `...`.
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g; s#\.\.\.[0-9a-fA-F-]+/#...<redacted>/#g'; }
           terraform init -input=false -backend-config=storage_account_name="$TFSTATE_STORAGE_ACCOUNT"
 
           # azurerm issue #33433: deleting a Container App or its environment succeeds in Azure,

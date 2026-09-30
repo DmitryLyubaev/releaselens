@@ -378,9 +378,9 @@ missing on a fresh subscription.
     is set only if the smoke test needs it. The variables appear unmasked in public run logs, on
     purpose. The exception is `APP_IDENTITY_ID`: it contains the subscription ID, so it shows
     with its subscription segment masked.
-  - GitHub masks a secret only where its whole value appears. So Terraform's output in the
-    workflows passes through a filter that hides the subscription ID even when Terraform
-    truncates it.
+  - GitHub masks a secret only where its whole value appears. So Terraform's apply and destroy
+    output in the workflows passes through a filter that hides the subscription ID even when
+    Terraform truncates it.
 - **CI holds no role-assignment rights and no subscription-scope rights.** What it *can* do is
   listed under [What this is not](#what-this-is-not).
 - **Data at rest stays in the Australia geography.** The account is in `australiaeast`.

@@ -91,13 +91,34 @@ def _filter(repo_root):
     return definitions.pop()
 
 
+def _truncate_id(resource_id, max_len=80):
+    """A copy of truncateId in hashicorp/terraform v1.15.8, internal/command/views/hook_ui.go,
+    which the "Still creating/modifying/destroying..." lines call with maxIdLen = 80. An ID over 80
+    characters keeps its first 39 and its last 38, around `...`."""
+    if len(resource_id) <= max_len:
+        return resource_id
+    part = max_len // 2
+    right = len(resource_id) - part - 1
+    overlap = max_len - (part * 2 + len("..."))
+    if overlap < 0:
+        right -= overlap
+    return resource_id[:part - 1] + "..." + resource_id[right:]
+
+
+# CONTAINER_APP_ID as Terraform truncates it: /subscriptions/ and 24 of the GUID's 36 characters,
+# then the ID's last 38.
+TRUNCATED_APP_ID = "/subscriptions/00000000-1111-2222-3333-...t.App/containerApps/ca-releaselens-api"
+
+
+def test_the_truncated_sample_is_what_terraform_prints():
+    assert _truncate_id(CONTAINER_APP_ID) == TRUNCATED_APP_ID
+
+
 FILTER_SAMPLES = {
-    # Terraform kept the first 39 characters: /subscriptions/ and 24 of the ID's 36.
     "truncated": (
+        f"azurerm_container_app.api: Still destroying... [id={TRUNCATED_APP_ID}, 10s elapsed]",
         "azurerm_container_app.api: Still destroying... "
-        "[id=/subscriptions/00000000-1111-2222-3333-...Microsoft.App/containerApps/ca-releaselens-api, 10s elapsed]",
-        "azurerm_container_app.api: Still destroying... "
-        "[id=/subscriptions/<redacted>...Microsoft.App/containerApps/ca-releaselens-api, 10s elapsed]",
+        "[id=/subscriptions/<redacted>...t.App/containerApps/ca-releaselens-api, 10s elapsed]",
     ),
     "whole": (
         "azurerm_container_app_environment.this: Creation complete after 2m1s "
@@ -128,6 +149,23 @@ def test_the_filter_hides_the_subscription_id(repo_root, line, expected):
     script = f"{_filter(repo_root)}\nredact <<'EOF'\n{line}\nEOF\n"
     printed = subprocess.run(["bash"], input=script.encode(), capture_output=True, check=True).stdout
     assert printed == f"{expected}\n".encode()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_filter_leaves_no_run_of_the_guid_in_any_truncated_id(repo_root):
+    # /subscriptions/<guid>/resourceGroups/rg- is 70 characters, so these IDs are 81 to 100 long.
+    # From 81 to 88, the 38-character tail Terraform keeps starts inside the GUID.
+    lengths = range(81, 101)
+    ids = [f"/subscriptions/{FAKE_SUBSCRIPTION}/resourceGroups/rg-{'x' * (n - 70)}" for n in lengths]
+    assert [len(resource_id) for resource_id in ids] == list(lengths)
+    lines = [f"azurerm_resource_group.x: Still destroying... [id={_truncate_id(i)}, 10s elapsed]" for i in ids]
+    script = f"{_filter(repo_root)}\nredact <<'EOF'\n" + "\n".join(lines) + "\nEOF\n"
+    printed = subprocess.run(["bash"], input=script.encode(), capture_output=True, check=True).stdout
+    printed = printed.decode().splitlines()
+    assert len(printed) == len(ids)
+    runs = {FAKE_SUBSCRIPTION[i:i + 4] for i in range(len(FAKE_SUBSCRIPTION) - 3)}
+    for length, line in zip(lengths, printed):
+        assert not [run for run in runs if run in line], f"{length} characters: {line}"
 
 
 ISSUE_33433 = 'polling support for the Content-Type "" was not implemented'
@@ -181,8 +219,10 @@ PATH="$RUNNER_TEMP/bin:$PATH"
         (["33433", "33433", "ok"], True, 3),
         (["33433", "33433", "33433"], False, 3),
         (["other"], False, 1),
+        # Judged on the latest attempt's output alone, so the earlier #33433 text does not count.
+        (["33433", "other"], False, 2),
     ],
-    ids=["33433-twice-then-ok", "33433-three-times", "other-error"],
+    ids=["33433-twice-then-ok", "33433-three-times", "other-error", "33433-then-other"],
 )
 def test_destroy_retries_only_on_azurerm_33433(repo_root, outcomes, succeeds, calls):
     result = _run_destroy_step(repo_root, outcomes)

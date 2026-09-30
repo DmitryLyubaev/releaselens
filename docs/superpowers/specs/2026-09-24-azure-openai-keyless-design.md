@@ -589,6 +589,11 @@ cloud fallback this design deliberately does not have.
   names no tenant, in its headers or its body. Other routes to the tenant ID were not ruled out.
 
   Only jobs that pass the environment's gate can read any of them.
+
+  Amended 2026-10-01: GitHub masks a secret only where its whole value appears. Terraform
+  truncates long resource IDs in its progress lines, and whole-value masking misses a truncated
+  ID. So the workflows pass Terraform's apply and destroy output through a filter that hides the
+  subscription ID.
 - **GitHub holds no credentials:** no key, password or token. Everything it holds is an
   identifier.
 
@@ -648,6 +653,11 @@ cloud fallback this design deliberately does not have.
   image reference has a placeholder default valid only for destroy.
 - After `terraform destroy`, it lists the resources in `rg-releaselens` and fails if any
   remain.
+- Amended 2026-10-01: `terraform destroy` is retried only on azurerm issue
+  [#33433](https://github.com/hashicorp/terraform-provider-azurerm/issues/33433). Deleting a
+  Container App or its environment succeeds in Azure, but Terraform stops on a polling error, and
+  the next run drops the deleted resource from state. So there are at most three attempts: one for
+  each of those two resources, then a clean pass. Any other failure fails the step at once.
 
 **Both workflows:**
 

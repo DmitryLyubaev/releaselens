@@ -88,8 +88,8 @@ appear unmasked in public run logs, on purpose. The exception is `APP_IDENTITY_I
 the subscription ID, so it shows with its subscription segment masked. The four secrets are
 secrets only so that GitHub masks them in those logs. GitHub prints variable values in each
 step's header before any masking step could run (spec §4.12). GitHub masks a secret only where
-its whole value appears, so Terraform's output in the workflows passes through a filter that
-hides the subscription ID even when Terraform truncates it.
+its whole value appears, so Terraform's apply and destroy output in the workflows passes through
+a filter that hides the subscription ID even when Terraform truncates it.
 - **The tenant and subscription IDs** became secrets on 2026-09-30, the owner's decision.
 - **The storage account's name and the base URL** became secrets on 2026-10-01, also the owner's
   decision. A request with an invalid token to the storage account's blob endpoint gets a 401

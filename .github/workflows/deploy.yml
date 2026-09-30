@@ -120,9 +120,10 @@ jobs:
         working-directory: infra/terraform
         run: |
           # Terraform shortens long resource IDs in its progress lines, and GitHub does not mask a
-          # subscription ID cut short. So both of Terraform's streams pass through this filter.
+          # subscription ID cut short. So both of Terraform's streams pass through this filter. Its
+          # second expression hides a GUID's end, which a short ID can keep after the `...`.
           # shell: bash runs with pipefail, so the step still fails when terraform does.
-          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g; s#\.\.\.[0-9a-fA-F-]+/#...<redacted>/#g'; }
           terraform init -input=false -backend-config=storage_account_name="$TFSTATE_STORAGE_ACCOUNT"
           terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact
 
@@ -143,7 +144,7 @@ jobs:
           echo "Opening Postgres to $ip"
           # As in the apply step: the filter hides the subscription ID, and pipefail keeps the
           # step failing when terraform does.
-          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g; s#\.\.\.[0-9a-fA-F-]+/#...<redacted>/#g'; }
           TF_VAR_smoke_runner_ip="$ip" terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact
 
       - name: Smoke test
@@ -205,5 +206,5 @@ jobs:
         run: |
           # As in the apply step. Without pipefail, a failed close would pass, and leave Postgres
           # open to this runner's address unnoticed.
-          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g'; }
+          redact() { sed -u -E 's#/subscriptions/[0-9a-fA-F-]+#/subscriptions/<redacted>#g; s#\.\.\.[0-9a-fA-F-]+/#...<redacted>/#g'; }
           terraform apply -auto-approve -input=false -lock-timeout=10m 2>&1 | redact
