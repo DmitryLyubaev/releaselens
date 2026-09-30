@@ -72,13 +72,13 @@ The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
 
 **The app stack contains none of these:** a resource group, a role assignment, a Key Vault, a budget, a Log Analytics workspace, or an Anthropic or OpenAI key.
 
-**GitHub holds no secrets.** The environment `azure` holds only these variables:
+**GitHub holds no credentials.** The environment `azure` holds these variables:
 - `AZURE_CLIENT_ID`, the deploy identity
-- `AZURE_TENANT_ID`
-- `AZURE_SUBSCRIPTION_ID`
 - `TFSTATE_STORAGE_ACCOUNT`
 - the four handoff values
 - `SMOKE_OPEN_RUNNER_IP`, which defaults to unset
+
+and two secrets, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`. They are identifiers, stored as secrets only so that public run logs mask them (spec §4.12, amended 2026-09-30). Workflows read them as `secrets.AZURE_TENANT_ID` and `secrets.AZURE_SUBSCRIPTION_ID`, never as `vars.*`, and never echo them.
 
 **Workflows:**
 - Top-level `permissions: {}`.
@@ -592,7 +592,7 @@ Then comes the whole-branch review. The runbook starts once the checks and revie
       - If the tag is missing, it fails with: `Image tag sha-<sha> is not in GHCR yet; wait for ci.yml's publish-image job on this commit, then re-run.`
       - It outputs `image=ghcr.io/dmitrylyubaev/releaselens-api@<digest>`.
     - **Job `deploy`:** `needs: preflight`, `environment: azure`, `permissions: {id-token: write, contents: read}`.
-      - Environment: `ARM_USE_OIDC: "true"`, the `ARM_*` variables and every `TF_VAR_*` from `vars.*`, and `TF_VAR_image` from `needs.preflight.outputs.image`.
+      - Environment: `ARM_USE_OIDC: "true"`; `ARM_CLIENT_ID` from `vars.AZURE_CLIENT_ID`; `ARM_TENANT_ID` and `ARM_SUBSCRIPTION_ID` (and `TF_VAR_subscription_id`) from `secrets.AZURE_TENANT_ID` and `secrets.AZURE_SUBSCRIPTION_ID`; every other `TF_VAR_*` from `vars.*`; and `TF_VAR_image` from `needs.preflight.outputs.image`.
       - Steps: checkout, setup-terraform (1.15.8, no wrapper), setup-dotnet (from `global.json`), and setup-python 3.13, all pinned to SHAs.
       - In `infra/terraform`: `terraform init -input=false -backend-config=storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}`, then `terraform apply -auto-approve -input=false -lock-timeout=10m`.
       - **Smoke:**
@@ -605,7 +605,7 @@ Then comes the whole-branch review. The runbook starts once the checks and revie
   - **`destroy.yml`:** `on: workflow_dispatch` plus `schedule: - cron: "0 14 * * *"`, `permissions: {}`, and the concurrency block.
     - **Job `destroy`:** `environment: azure` and `permissions: {id-token: write, contents: read}`, with the same `ARM_*` and `TF_VAR_*` variables. `TF_VAR_image` is left out, so the placeholder applies.
     - It runs `terraform init` as in deploy, then `terraform destroy -auto-approve -input=false -lock-timeout=10m`.
-    - Then it runs `python3 scripts/deploy_tools.py check-empty --subscription ${{ vars.AZURE_SUBSCRIPTION_ID }} --resource-group rg-releaselens --client-id ${{ vars.AZURE_CLIENT_ID }} --tenant-id ${{ vars.AZURE_TENANT_ID }}`.
+    - Then it runs `python3 scripts/deploy_tools.py check-empty --subscription "$ARM_SUBSCRIPTION_ID" --resource-group rg-releaselens --client-id "$ARM_CLIENT_ID" --tenant-id "$ARM_TENANT_ID"`, reading the secrets through the job environment rather than `${{ }}` in the script.
     - There is no confirmation step.
 - [ ] **Step 1:** Update the checker fixtures:
   - The `good` set gains a copy of the intended `deploy.yml` and `destroy.yml`.

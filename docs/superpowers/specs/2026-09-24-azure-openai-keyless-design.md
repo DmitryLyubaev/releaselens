@@ -556,7 +556,7 @@ Azure OpenAI only (§4.3).
 reference.** It is sound, and it keeps the value out of state, but it exists only to support a
 cloud fallback this design deliberately does not have.
 
-**Rejected — a GitHub secret.** GitHub holds no secrets (§4.12).
+**Rejected — a GitHub secret.** GitHub holds no credentials (§4.12).
 
 ### 4.12 CI and delivery
 
@@ -570,12 +570,17 @@ cloud fallback this design deliberately does not have.
   owner approving their own deploy.
 - Administrator bypass is off.
 - Its **environment** variables are:
-  - `AZURE_CLIENT_ID` (the deploy identity), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+  - `AZURE_CLIENT_ID` (the deploy identity)
   - the state storage account name
   - the four app handoff values (§4.9)
+- Its **environment** secrets are `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` (amended
+  2026-09-30, the owner's decision). They are identifiers, not credentials. They are secrets only
+  because GitHub masks secret values in run logs, and prints variable values in each step's
+  header before any masking step can run. The repository is public, and so are its run logs.
 
-  Only jobs that pass the environment's gate can read them.
-- **GitHub holds no secrets at all.**
+  Only jobs that pass the environment's gate can read either.
+- **GitHub holds no credentials:** no key, password or token. Everything it holds is an
+  identifier.
 
 **The environment gate is the only branch binding, so two rules always hold:**
 
@@ -663,9 +668,12 @@ right to push to `main`.
 **Rejected — `terraform plan` on pull requests with Azure credentials.** It would give
 pull-request code an Azure token.
 
-**Rejected — the IDs as GitHub secrets, which Microsoft's examples show.** They are
-identifiers, not credentials, and storing them as secrets would be a claim that they are
-sensitive. They appear unmasked in public run logs, deliberately; the README says so.
+**Rejected — every ID as a GitHub secret, which Microsoft's examples show.** The client IDs,
+the storage account name, the base URL and the deployment name are identifiers that reveal
+nothing about the owner, so they stay variables and appear in public run logs; the README says
+so. The tenant and subscription IDs are the exception above (amended 2026-09-30). The original
+decision left them visible too, and `::add-mask::` cannot hide a variable that a step's header
+has already printed.
 
 ### 4.13 Terraform state and versions
 
@@ -1029,7 +1037,8 @@ fallback to other providers in the cloud.
 - Key authentication is disabled on the Azure OpenAI account (`local_auth_enabled = false`),
   no key is used, and none is in Terraform state. CI has no rights on the account, so it
   cannot turn keys back on; only the owner can.
-- GitHub holds no secrets, only identifiers.
+- GitHub holds no credentials, only identifiers. Two of them, the tenant and subscription IDs,
+  are stored as environment secrets so that public run logs mask them.
 - CI holds no role-assignment rights and no subscription-scope rights. It can run code as the
   app identity, read the Postgres password, and create billable resources in the app's
   resource group (§4.10).
