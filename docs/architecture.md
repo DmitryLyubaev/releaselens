@@ -390,9 +390,9 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | Managed identities, resource groups, budget | bootstrap | nothing |
 
 The budget, `budget-releaselens-monthly`, is in the long-lived stack, so it survives every
-app-stack destroy. It is scoped to the subscription and defaults to 50 a month. That amount is
-expected to be in the billing currency. This is not confirmed by a Microsoft source, and runbook
-step R5 reads it from the portal. It alerts at 50, 80 and 100 percent of actual spend and 100
+app-stack destroy. It is scoped to the subscription and defaults to 50 a month. That amount is in
+the billing currency: for this project's subscription the budget reports its spend in AUD (the
+Consumption budgets API's `currentSpend.unit`, read 2026-09-30, after runbook step R5). It alerts at 50, 80 and 100 percent of actual spend and 100
 percent of forecast spend, and enforces nothing.
 Microsoft's
 [budget tutorial](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets)

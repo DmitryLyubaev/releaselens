@@ -377,9 +377,9 @@ bills per token; the rates, and what else bills, are in
 [docs/architecture.md](docs/architecture.md#what-bills).
 
 **The budget alerts; it does not cap spend.** It is a subscription-scope budget, and defaults to
-50 a month. That amount is expected to be in the billing currency, whatever the variable's name
-says. This is not confirmed by a Microsoft source; the runbook reads it from the portal after
-the first apply. It alerts at 50, 80 and 100 percent of actual spend and at 100 percent of
+50 a month. That amount is in the subscription's billing currency, whatever the variable's name
+says. For this project's subscription the budget reports its spend in AUD (the Consumption
+budgets API's `currentSpend.unit`, read 2026-09-30). It alerts at 50, 80 and 100 percent of actual spend and at 100 percent of
 forecast spend. Microsoft's
 [budget tutorial](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets)
 (dated 2025-06-26, read 2026-09-27) says two things about budgets:
