@@ -123,17 +123,38 @@ def _answered_by(metadata: dict) -> dict:
     }
 
 
+def _spend(metadata: dict | None) -> dict:
+    """What the reply says answering cost, or nothing when there was no reply."""
+    if metadata is None:
+        return {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "cache_read_input_tokens": 0}
+    return {
+        "cost_usd": float(metadata["costUsd"]),
+        "tokens_in": metadata["tokensIn"],
+        "tokens_out": metadata["tokensOut"],
+        "cache_read_input_tokens": metadata["cacheReadInputTokens"],
+    }
+
+
 def _unscored(
     query: GoldenQuery, arm: Arm, pass_index: int, latency_ms: float, error: str,
     metadata: dict | None = None,
 ) -> QueryOutcome:
     """An outcome with no score: the request failed, or its reply cannot count as the arm's.
 
-    Every metric field is zero or None whatever the reply held, so nothing downstream can
+    Every quality metric is zero or None whatever the reply held, so nothing downstream can
     count it as a quality result, and `error` says why. When there was a reply, who answered
-    is kept from it, because that is what the operator needs to see what went wrong.
+    and what it cost are kept from it. The first is what the operator needs to see what went
+    wrong. The second was billed whether or not the answer counts, so dropping it would
+    understate what the run spent.
+
+    Refuses an empty `error`. An empty message tells the operator nothing, and any check
+    written as truthiness rather than `error is not None` reads it as no error at all. An
+    httpx timeout's own message is empty, so recording it alone made a timeout look like an
+    answer.
     """
-    metadata = metadata or {}
+    if not error:
+        raise ValueError("an unscored outcome needs an error saying why it has no score")
+
     return QueryOutcome(
         id=query.id, arm=arm.name, pass_index=pass_index,
         category=query.category, question=query.question,
@@ -142,10 +163,10 @@ def _unscored(
         must_contain_satisfied=False, must_not_contain_satisfied=False,
         unanswerable_handled=None,
         latency_ms=latency_ms,
-        cost_usd=0.0, tokens_in=0, tokens_out=0, cache_read_input_tokens=0,
-        degraded=bool(metadata.get("degraded", False)), unresolved_citation_markers=[],
+        degraded=bool((metadata or {}).get("degraded", False)), unresolved_citation_markers=[],
         error=error,
-        **_answered_by(metadata),
+        **_spend(metadata),
+        **_answered_by(metadata or {}),
     )
 
 
@@ -176,7 +197,8 @@ async def _ask(
         body = response.json()
     except Exception as exc:  # noqa: BLE001 — a failed query is a data point, not a crash
         latency_ms = (time.perf_counter() - started) * 1000
-        return _unscored(query, arm, pass_index, latency_ms, str(exc)), None
+        # Named by its type as well: an httpx timeout's message is empty.
+        return _unscored(query, arm, pass_index, latency_ms, f"{type(exc).__name__}: {exc}"), None
 
     latency_ms = (time.perf_counter() - started) * 1000
     metadata = body["metadata"]
@@ -213,10 +235,7 @@ async def _ask(
             unanswerable_correct(answer) if query.category == "unanswerable" else None
         ),
         latency_ms=latency_ms,
-        cost_usd=float(metadata["costUsd"]),
-        tokens_in=metadata["tokensIn"],
-        tokens_out=metadata["tokensOut"],
-        cache_read_input_tokens=metadata["cacheReadInputTokens"],
+        **_spend(metadata),
         degraded=metadata["degraded"],
         unresolved_citation_markers=metadata["unresolvedCitationMarkers"],
         **_answered_by(metadata),
@@ -226,31 +245,39 @@ async def _ask(
 
 def _price_of_the_run(
     request: RunRequest, sample: list[QueryOutcome], selection_size: int, judge_cost_usd: float,
-) -> float:
+) -> tuple[float | None, str | None]:
     """What the run this dry run precedes will cost, scaled up from what the sample cost.
 
     That run puts every query in the selection to every arm on every pass. Each arm is priced
     from its own sample, because the arms run different models at different rates. The judge
     is priced for every answer that run gets, from every arm, at the sample's mean per answer.
 
-    Only answers are averaged. An outcome with an error has a cost of zero that the harness
-    wrote rather than measured, and averaging it in would price the run below what answering
-    costs. An arm with no answers in the sample adds nothing to the estimate. Its errors are
-    in the outcomes, for the operator to read before authorising the run.
+    Returns the estimate and None, or None and a note naming each arm whose sample had errors
+    and how many. Any error refuses the estimate. Cost varies enormously by category, so a
+    mean over the categories that did answer is not the arm's cost, and an arm that answered
+    nothing has no cost to scale up. Either would understate the run the operator is about
+    to authorise.
     """
-    answered = [o for o in sample if not o.error]
+    holes = []
+    for arm in request.arms:
+        drawn = [o for o in sample if o.arm == arm.name]
+        errors = sum(1 for o in drawn if o.error is not None)
+        if errors:
+            holes.append(f"arm {arm.name} had {errors} of {len(drawn)} errors")
+
+    if holes:
+        return None, "no estimate: " + "; ".join(holes)
+
     answers_per_arm = selection_size * request.passes
 
-    estimate = 0.0
-    for arm in request.arms:
-        costs = [o.cost_usd for o in answered if o.arm == arm.name]
-        if costs:
-            estimate += sum(costs) / len(costs) * answers_per_arm
+    estimate = sum(
+        _mean([o.cost_usd for o in sample if o.arm == arm.name]) * answers_per_arm
+        for arm in request.arms
+    )
+    if sample:
+        estimate += judge_cost_usd / len(sample) * answers_per_arm * len(request.arms)
 
-    if answered:
-        estimate += judge_cost_usd / len(answered) * answers_per_arm * len(request.arms)
-
-    return estimate
+    return estimate, None
 
 
 async def run_eval(request: RunRequest) -> RunReport:
@@ -298,7 +325,7 @@ async def run_eval(request: RunRequest) -> RunReport:
         scorable = [
             (o.question, o.answer, evidence_by_answer.get((o.id, o.arm, o.pass_index), []))
             for o in outcomes
-            if not o.error
+            if o.error is None
         ]
 
         # Free, and it prices the sweep before any money is spent on it.
@@ -307,7 +334,7 @@ async def run_eval(request: RunRequest) -> RunReport:
 
         if not request.dry_run:
             for outcome in outcomes:
-                if outcome.error:
+                if outcome.error is not None:
                     continue
                 score, reason = await judge.score(
                     outcome.question, outcome.answer,
@@ -317,10 +344,11 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     # On a dry run, the number the operator reads is the price of the run they are about to
     # authorise, not the price of the sample that just ran.
-    estimated_cost = (
-        _price_of_the_run(request, outcomes, len(selection), estimated_judge_cost)
-        if request.dry_run else estimated_judge_cost
-    )
+    estimated_cost: float | None = estimated_judge_cost
+    estimate_note: str | None = None
+    if request.dry_run:
+        estimated_cost, estimate_note = _price_of_the_run(
+            request, outcomes, len(selection), estimated_judge_cost)
 
     scored = [o for o in outcomes if o.groundedness is not None]
     unanswerable = [o for o in outcomes if o.unanswerable_handled is not None]
@@ -343,6 +371,7 @@ async def run_eval(request: RunRequest) -> RunReport:
         p95_latency_ms=latencies["p95"],
         total_cost_usd=sum(o.cost_usd for o in outcomes),
         estimated_cost_usd_before_run=estimated_cost,
+        estimate_note=estimate_note,
         outcomes=outcomes,
     )
 

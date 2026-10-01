@@ -10,7 +10,7 @@ import pytest
 from app import runner as runner_module
 from app.golden import load_golden
 from app.models import Arm, RunRequest
-from app.runner import arm_order, citation_ids, cited_evidence, provider_error, run_eval
+from app.runner import _unscored, arm_order, citation_ids, cited_evidence, provider_error, run_eval
 
 _BODY = {
     "answer": "The planner defect arrived in [E1] and was fixed by [E3].",
@@ -304,6 +304,9 @@ async def test_wrong_provider_rule(fake_api, metadata, named, filtered_stage):
     [
         (503, "503"),
         (httpx.ConnectError("connection refused"), "connection refused"),
+        # httpx's timeouts carry no message, so the exception's text alone is "", an error
+        # that reads as no error at all.
+        (httpx.ReadTimeout(""), "ReadTimeout"),
         # The provider answered once and then went down: the reply still names the arm's own
         # provider, so only its `degraded` flag says this is not a synthesised answer.
         (
@@ -315,7 +318,7 @@ async def test_wrong_provider_rule(fake_api, metadata, named, filtered_stage):
             "degraded",
         ),
     ],
-    ids=["status-503", "connection-refused", "degraded"],
+    ids=["status-503", "connection-refused", "read-timeout", "degraded"],
 )
 async def test_a_failed_arm_query_is_an_error_not_a_score(fake_api, failure, complaint):
     z = _ARMS[1]
@@ -328,7 +331,7 @@ async def test_a_failed_arm_query_is_an_error_not_a_score(fake_api, failure, com
 
     report = await run_eval(RunRequest(api_key="rl_test", limit=2, passes=2, judge=False, arms=_ARMS))
 
-    errored = [o for o in report.outcomes if o.error]
+    errored = [o for o in report.outcomes if o.error is not None]
 
     # Every pass of that query on that arm, each still tagged with its arm and pass.
     assert [(o.id, o.arm, o.pass_index) for o in errored] == [("gq-002", "Z", 0), ("gq-002", "Z", 1)]
@@ -342,6 +345,50 @@ async def test_a_failed_arm_query_is_an_error_not_a_score(fake_api, failure, com
         if outcome.error is None:
             assert outcome.citations == ["commit:1a2b3c4d", "issue:14111"]
     assert len(report.outcomes) - len(errored) == 10
+
+
+def test_an_unscored_outcome_must_say_why():
+    """An empty error is falsy, and would let an outcome with no answer pass for one."""
+    query = load_golden()[0]
+
+    with pytest.raises(ValueError, match="needs an error"):
+        _unscored(query, _ARMS[1], 0, 12.0, "")
+
+
+@pytest.mark.parametrize(
+    ("reply", "spend"),
+    [
+        (_reply("anthropic", costUsd=0.02, cacheReadInputTokens=1000), (0.02, 4000, 300, 1000)),
+        (
+            _reply(
+                "azure-openai", costUsd=0.02, cacheReadInputTokens=1000, degraded=True,
+                degradedReason="All providers unavailable: azure-openai.",
+            ),
+            (0.02, 4000, 300, 1000),
+        ),
+        # No reply, so nothing reports a cost to keep.
+        (503, (0.0, 0, 0, 0)),
+    ],
+    ids=["wrong-provider", "degraded", "no-reply"],
+)
+async def test_a_rejected_reply_keeps_what_it_cost(fake_api, reply, spend):
+    """Not scored is not free: the reply's tokens were billed whether or not they count."""
+    arm = _ARMS[1]
+    fake_api.replies = {arm.base_url: reply}
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=1, judge=False, arms=[arm]))
+    outcome = report.outcomes[0]
+
+    assert outcome.error is not None
+    assert (
+        outcome.cost_usd, outcome.tokens_in, outcome.tokens_out, outcome.cache_read_input_tokens,
+    ) == spend
+    assert report.total_cost_usd == pytest.approx(spend[0])
+
+    # Only the spend is kept. The quality metrics are still those of an outcome with no answer.
+    assert outcome.citations == []
+    assert outcome.citation_recall == 0.0
+    assert outcome.groundedness is None
 
 
 async def test_each_answer_is_judged_against_its_own_evidence(fake_api, fake_judge, monkeypatch):
@@ -389,6 +436,44 @@ async def test_dry_run_prices_the_run_it_precedes(fake_api):
 
     # 10 queries, 3 passes, 3 arms: the run the operator is about to authorise.
     assert report.estimated_cost_usd_before_run == pytest.approx(0.01 * 10 * 3 * 3)
+    assert report.estimate_note is None
+
+
+@pytest.mark.parametrize(
+    ("failing", "note"),
+    [
+        ({"Z": "all"}, "no estimate: arm Z had 5 of 5 errors"),
+        ({"O": "gq-014"}, "no estimate: arm O had 1 of 5 errors"),
+        ({"Z": "all", "O": "gq-014"}, "no estimate: arm Z had 5 of 5 errors; arm O had 1 of 5 errors"),
+    ],
+    ids=["one-arm-fails-its-whole-sample", "one-arm-fails-one-query", "two-arms-fail"],
+)
+async def test_a_dry_run_with_errors_refuses_to_estimate(fake_api, failing, note):
+    """A sample with a hole in it cannot price the run.
+
+    Cost varies enormously by category, so a mean over the categories that did answer is not
+    the arm's cost, and an arm that answered nothing has no cost to scale up at all.
+    """
+    questions = {query.id: query.question for query in load_golden()}
+
+    def failing_on(arm: Arm, which: str):
+        answer = _reply(arm.expected_provider, costUsd=0.01)
+        return lambda sent: 503 if which == "all" or sent["question"] == questions[which] else answer
+
+    fake_api.replies = {
+        arm.base_url: (
+            failing_on(arm, failing[arm.name]) if arm.name in failing
+            else _reply(arm.expected_provider, costUsd=0.01)
+        )
+        for arm in _ARMS
+    }
+
+    report = await run_eval(
+        RunRequest(api_key="rl_test", per_category=2, passes=3, judge=False, dry_run=True, arms=_ARMS)
+    )
+
+    assert report.estimated_cost_usd_before_run is None
+    assert report.estimate_note == note
 
 
 async def test_dry_run_estimate_adds_the_judge_for_every_answer_of_the_run(fake_api, fake_judge, monkeypatch):

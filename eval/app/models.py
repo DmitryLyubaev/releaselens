@@ -98,7 +98,13 @@ class RunReport(BaseModel):
     p50_latency_ms: float
     p95_latency_ms: float
     total_cost_usd: float
-    estimated_cost_usd_before_run: float
+
+    # None when a dry run's sample had errors, and estimate_note then says which arms and how
+    # many. A sample with a hole in it understates the run it is meant to price, and a missing
+    # number cannot be mistaken for a price the way a low one can.
+    estimated_cost_usd_before_run: float | None
+    estimate_note: str | None = None
+
     outcomes: list[QueryOutcome]
 
 
