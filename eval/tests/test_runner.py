@@ -6,6 +6,7 @@ nothing here can reach api.anthropic.com.
 """
 
 import re
+from datetime import datetime
 from types import SimpleNamespace
 
 import httpx
@@ -13,8 +14,9 @@ import pytest
 
 from app import judge as judge_module
 from app import runner as runner_module
+from app.analysis import QUALITY_METRICS
 from app.golden import load_golden
-from app.judge import Judgement
+from app.judge import JUDGE_OUTPUT_ALLOWANCE_TOKENS, Judgement
 from app.models import Arm, RunRequest
 from app.runner import _unscored, arm_order, citation_ids, cited_evidence, provider_error, run_eval
 
@@ -137,14 +139,15 @@ def fake_api(monkeypatch) -> type[_FakeClient]:
 
 
 class _FakeJudge:
-    """Stands in for GroundednessJudge: estimates each item at a fixed price, and records every
-    answer it scores with the evidence it was given.
+    """Stands in for GroundednessJudge: estimates each item at a fixed price, and records how many
+    items each estimate was over and every answer it scores with the evidence it was given.
 
     The nth judgement costs n tenths of a cent, so a cost on the wrong outcome, or a sum that is
     really a count, shows. The judgements numbered in `unparseable` come back unscored.
     """
 
     usd_per_item = 0.0345
+    estimated: list[int] = []
     scored: list[tuple[str, list]] = []
     unparseable: set[int] = set()
 
@@ -152,6 +155,7 @@ class _FakeJudge:
         pass
 
     async def estimate_cost_usd(self, items) -> float:
+        _FakeJudge.estimated.append(len(items))
         return self.usd_per_item * len(items)
 
     async def score(self, question, answer, evidence) -> Judgement:
@@ -164,6 +168,7 @@ class _FakeJudge:
 
 @pytest.fixture
 def fake_judge(monkeypatch) -> type[_FakeJudge]:
+    _FakeJudge.estimated = []
     _FakeJudge.scored = []
     _FakeJudge.unparseable = set()
     monkeypatch.setattr(runner_module, "GroundednessJudge", _FakeJudge)
@@ -249,7 +254,8 @@ async def test_the_run_asks_the_api_for_the_evidence_text(fake_api):
         RunRequest(api_key="rl_test", limit=1, judge=False, arms=[_ARM])
     )
 
-    assert report.query_count == 1
+    assert len(report.outcomes) == 1
+    assert report.query_ids == [load_golden()[0].id]
 
     _, sent = fake_api.sent[0]
     assert sent["includeEvidence"] is True
@@ -440,7 +446,13 @@ async def test_a_rejected_reply_keeps_what_it_cost(fake_api, reply, spend):
     assert (
         outcome.cost_usd, outcome.tokens_in, outcome.tokens_out, outcome.cache_read_input_tokens,
     ) == spend
+    assert report.answering_cost_usd == pytest.approx(spend[0])
     assert report.total_cost_usd == pytest.approx(spend[0])
+
+    # The arm's total counts it, as money spent. Its cost per query has no answer to be over.
+    (summary,) = report.arm_summaries
+    assert summary.total_cost_usd == pytest.approx(spend[0])
+    assert summary.mean_cost_usd_per_query is None
 
     # Only the spend is kept. The quality metrics are still those of an outcome with no answer.
     assert outcome.citations == []
@@ -493,7 +505,13 @@ async def test_dry_run_prices_the_run_it_precedes(fake_api):
 
     # 10 queries, 3 passes, 3 arms: the run the operator is about to authorise.
     assert report.estimated_cost_usd_before_run == pytest.approx(0.01 * 10 * 3 * 3)
+
+    # Unjudged, so there is no judge allowance to own up to.
     assert report.estimate_note is None
+
+    # The report's header is the run it prices, not the sample.
+    assert report.query_ids == [q.id for q in runner_module._stratify(load_golden(), 2)]
+    assert report.passes == 3
 
 
 @pytest.mark.parametrize(
@@ -544,11 +562,44 @@ async def test_dry_run_estimate_adds_the_judge_for_every_answer_of_the_run(fake_
     )
 
     # A dry run estimates the judge but never calls it.
+    assert fake_judge.estimated == [5 * 3]
     assert fake_judge.scored == []
     assert report.judge_cost_usd == 0.0
     assert report.estimated_cost_usd_before_run == pytest.approx(
         0.01 * 10 * 3 * 3 + fake_judge.usd_per_item * 10 * 3 * 3
     )
+
+
+_ALLOWANCE = (
+    f"The judge's output share is an allowance of {JUDGE_OUTPUT_ALLOWANCE_TOKENS} tokens per "
+    "judgement, not a measurement."
+)
+
+
+@pytest.mark.parametrize(
+    ("z_fails", "note"),
+    [
+        (False, _ALLOWANCE),
+        (True, "no estimate: arm Z had 5 of 5 errors. " + _ALLOWANCE),
+    ],
+    ids=["estimated", "refused"],
+)
+async def test_a_judged_dry_run_says_the_judge_output_is_an_allowance(
+    fake_api, fake_judge, monkeypatch, z_fails, note,
+):
+    """count_tokens counts the judge's input only. What it will write is allowed for, not known."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    fake_api.replies = {
+        arm.base_url: 503 if z_fails and arm.name == "Z" else _reply(arm.expected_provider, costUsd=0.01)
+        for arm in _ARMS
+    }
+
+    report = await run_eval(
+        RunRequest(api_key="rl_test", per_category=2, passes=3, judge=True, dry_run=True, arms=_ARMS)
+    )
+
+    assert report.estimate_note == note
+    assert (report.estimated_cost_usd_before_run is None) == z_fails
 
 
 async def test_the_judge_is_blinded_to_the_arm(fake_api, recording_anthropic):
@@ -610,4 +661,60 @@ async def test_judge_cost_lands_on_the_outcome(fake_api, fake_judge, monkeypatch
     assert [o.judge_cost_usd for o in report.outcomes if o.error is not None] == [0.0, 0.0]
 
     assert report.judge_cost_usd == pytest.approx(sum(0.001 * n for n in range(1, 11)))
-    assert report.total_cost_usd == pytest.approx(sum(o.cost_usd for o in report.outcomes))
+    assert report.answering_cost_usd == pytest.approx(sum(o.cost_usd for o in report.outcomes))
+    assert report.total_cost_usd == pytest.approx(report.answering_cost_usd + report.judge_cost_usd)
+
+    # Pricing the run is the dry run's job. A real run neither counts its judge's tokens after the
+    # answering has been paid for nor reports a judge-only figure as what the run would cost.
+    assert fake_judge.estimated == []
+    assert report.estimated_cost_usd_before_run is None
+    assert report.estimate_note is None
+
+
+async def test_report_carries_summaries_and_the_requested_comparisons(fake_api, fake_judge, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    fake_api.replies = _each_arm_answers_as_itself()
+
+    report = await run_eval(RunRequest(
+        api_key="rl_test", per_category=2, passes=3, judge=True, arms=_ARMS,
+        comparisons=[("Z", "O"), ("Z", "A")],
+    ))
+
+    # 4 metrics × 2 comparisons, each comparison as requested and the metrics in their fixed order.
+    assert [(c.x, c.y, c.metric) for c in report.comparisons] == [
+        (x, y, metric) for x, y in [("Z", "O"), ("Z", "A")] for metric in QUALITY_METRICS
+    ]
+
+    # Each metric over the queries it applies to (spec §8): 10, the 8 answerable, and the 6 with
+    # something to contain, every pass of each paired.
+    assert [(c.k, c.pairs, c.passes) for c in report.comparisons[:4]] == [
+        (10, 30, 3), (8, 24, 3), (8, 24, 3), (6, 18, 3),
+    ]
+    assert list(report.comparisons[3].per_query_delta) == ["gq-001", "gq-002", "gq-022", "gq-023", "gq-029", "gq-030"]
+
+    # One summary per arm, in the request's arm order.
+    assert [(s.arm, s.outcome_count, s.models_seen) for s in report.arm_summaries] == [
+        (arm.name, 30, [_MODELS[arm.expected_provider]]) for arm in _ARMS
+    ]
+
+    assert report.passes == 3
+    assert report.arms == _ARMS
+    assert len(report.query_ids) == 10
+
+
+async def test_started_at_is_read_before_the_first_query_is_sent(fake_api, monkeypatch):
+    """A sweep runs for many minutes; read at the end, the published date could be the next day."""
+    requests_sent_when_read = []
+
+    class _Clock:
+        @staticmethod
+        def now(tz=None):
+            requests_sent_when_read.append(len(fake_api.sent))
+            return datetime(2026, 10, 2, 23, 59, tzinfo=tz)
+
+    monkeypatch.setattr(runner_module, "datetime", _Clock)
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=1, judge=False, arms=[_ARM]))
+
+    assert requests_sent_when_read == [0]
+    assert report.started_at == "2026-10-02T23:59:00+00:00"

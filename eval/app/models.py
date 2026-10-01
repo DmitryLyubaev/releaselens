@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .analysis import ArmSummary, Comparison
 
 
 class GoldenQuery(BaseModel):
@@ -77,40 +79,6 @@ class QueryOutcome(BaseModel):
     filtered_stage: str | None = None
 
     error: str | None = None
-
-
-class RunReport(BaseModel):
-    run_id: str
-    started_at: str
-    query_count: int
-    mean_citation_recall: float
-    mean_citation_precision: float
-    mean_groundedness: float | None
-
-    # How many queries the groundedness mean is actually over. A judgement that could not be
-    # parsed scores None rather than zero — deliberately, so a harness fault never masquerades
-    # as a hallucinating system — but that leaves the mean computed over the survivors. One run
-    # reported groundedness 1.000 from two scored queries out of five, which reads as a perfect
-    # score and is not one. Report the denominator so it cannot.
-    groundedness_scored_count: int
-    unanswerable_accuracy: float | None
-    must_contain_pass_rate: float
-    p50_latency_ms: float
-    p95_latency_ms: float
-    total_cost_usd: float
-
-    # What judging cost, summed over the outcomes, kept out of total_cost_usd for the reason
-    # QueryOutcome keeps it out of cost_usd. Zero on a dry run, which prices the judge but never
-    # calls it.
-    judge_cost_usd: float = 0.0
-
-    # None when a dry run's sample had errors, and estimate_note then says which arms and how
-    # many. A sample with a hole in it understates the run it is meant to price, and a missing
-    # number cannot be mistaken for a price the way a low one can.
-    estimated_cost_usd_before_run: float | None
-    estimate_note: str | None = None
-
-    outcomes: list[QueryOutcome]
 
 
 class Arm(BaseModel):
@@ -188,3 +156,59 @@ class RunRequest(BaseModel):
                 raise ValueError(f"comparison {pair!r} compares arm {pair[0]!r} with itself")
 
         return self
+
+
+class RunReport(BaseModel):
+    """One run: the study's design, each arm's figures, each comparison, and every outcome.
+
+    Replaces a report that pooled every outcome into one mean per metric. That gave unanswerable
+    queries a vacuous 1.0 on both citation metrics and passed every query with no `must_contain`,
+    which eval/baseline.md had to correct by hand. Here each metric is scored only over the
+    queries it applies to (spec §8), per arm and per comparison.
+    """
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    run_id: str
+    started_at: str
+    """When the sweep began, in UTC, read before the first query was sent."""
+
+    passes: int
+    """The passes the study asked for. On a dry run, those of the run it prices; the sample
+    itself is one pass, as each of its comparisons' `passes` says."""
+
+    query_ids: list[str]
+    """The run's selection of queries, in order. On a dry run, the selection of the run it
+    prices, not the one query per category the sample answered."""
+
+    arms: list[Arm]
+    arm_summaries: list[ArmSummary]
+    """One per arm, in the order of `arms`."""
+
+    comparisons: list[Comparison]
+    """For each comparison requested, in the order requested, one per quality metric."""
+
+    answering_cost_usd: float
+    """What the arms reported answering cost, summed over every outcome of every arm. That
+    includes replies rejected as errors, which were billed whether or not they count."""
+
+    judge_cost_usd: float = 0.0
+    """What judging cost, summed over every outcome. Kept out of answering_cost_usd for the
+    reason QueryOutcome keeps it out of cost_usd. Zero on a dry run, which prices the judge but
+    never calls it."""
+
+    total_cost_usd: float
+    """answering_cost_usd + judge_cost_usd: everything the run spent on models."""
+
+    estimated_cost_usd_before_run: float | None
+    """On a dry run, what the run it precedes will cost. None on a dry run whose sample had
+    errors, since a sample with a hole in it understates the run it is meant to price, and a
+    missing number cannot be mistaken for a price the way a low one can. None on a real run,
+    because pricing the run is the dry run's job."""
+
+    estimate_note: str | None = None
+    """On a dry run: which arms' samples had errors and how many, when the estimate was refused;
+    then, when the run is judged, that the judge's output share is an allowance, not a
+    measurement. None on a real run, and on an unjudged dry run whose sample had no errors."""
+
+    outcomes: list[QueryOutcome]

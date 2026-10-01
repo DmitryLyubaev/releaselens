@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from datetime import UTC, datetime
 
 import httpx
 
+from .analysis import compare, summarise
 from .golden import load_golden
-from .judge import GroundednessJudge
+from .judge import JUDGE_OUTPUT_ALLOWANCE_TOKENS, GroundednessJudge
 from .metrics import (
     citation_precision,
     citation_recall,
-    latency_percentiles,
     unanswerable_correct,
 )
 from .models import Arm, CitedEvidence, GoldenQuery, QueryOutcome, RunReport, RunRequest
@@ -247,12 +248,23 @@ def _price_of_the_run(
     from its own sample, because the arms run different models at different rates. The judge
     is priced for every answer that run gets, from every arm, at the sample's mean per answer.
 
-    Returns the estimate and None, or None and a note naming each arm whose sample had errors
-    and how many. Any error refuses the estimate. Cost varies enormously by category, so a
-    mean over the categories that did answer is not the arm's cost, and an arm that answered
-    nothing has no cost to scale up. Either would understate the run the operator is about
-    to authorise.
+    Returns the estimate and its note, or None and a note naming each arm whose sample had
+    errors and how many. Any error refuses the estimate. Cost varies enormously by category,
+    so a mean over the categories that did answer is not the arm's cost, and an arm that
+    answered nothing has no cost to scale up. Either would understate the run the operator is
+    about to authorise.
+
+    When the run is judged, the note also says that the judge's output share is an allowance
+    rather than a measurement, after the refusal when there is one, and is the whole note when
+    there is not. count_tokens prices the judge's input only. Unjudged, there is no judge share
+    to say that of, and the note is None unless the estimate was refused.
     """
+    allowance = (
+        f"The judge's output share is an allowance of {JUDGE_OUTPUT_ALLOWANCE_TOKENS} tokens per "
+        "judgement, not a measurement."
+        if request.judge else None
+    )
+
     holes = []
     for arm in request.arms:
         drawn = [o for o in sample if o.arm == arm.name]
@@ -261,7 +273,8 @@ def _price_of_the_run(
             holes.append(f"arm {arm.name} had {errors} of {len(drawn)} errors")
 
     if holes:
-        return None, "no estimate: " + "; ".join(holes)
+        refusal = "no estimate: " + "; ".join(holes)
+        return None, f"{refusal}. {allowance}" if allowance else refusal
 
     answers_per_arm = selection_size * request.passes
 
@@ -272,10 +285,14 @@ def _price_of_the_run(
     if sample:
         estimate += judge_cost_usd / len(sample) * answers_per_arm * len(request.arms)
 
-    return estimate, None
+    return estimate, allowance
 
 
 async def run_eval(request: RunRequest) -> RunReport:
+    # Read now, not when the report is built: a sweep runs for many minutes, and the date it
+    # publishes is this one.
+    started_at = datetime.now(UTC).isoformat()
+
     selection = load_golden()
 
     if request.per_category:
@@ -321,16 +338,16 @@ async def run_eval(request: RunRequest) -> RunReport:
         # The judge is handed the question, the answer and the evidence that answer cited,
         # and nothing that says which arm, provider or model wrote it. A judge that knew could
         # favour one, and the difference it found would be its own (spec §8).
-        scorable = [
-            (o.question, o.answer, evidence_by_answer.get((o.id, o.arm, o.pass_index), []))
-            for o in outcomes
-            if o.error is None
-        ]
-
-        # Free, and it prices the sweep before any money is spent on it.
-        estimated_judge_cost = await judge.estimate_cost_usd(scorable)
-
-        if not request.dry_run:
+        if request.dry_run:
+            # Free, and it prices the judging of the run the operator is about to authorise.
+            # Only a dry run prices: on a real run the count would come after the answering
+            # had been paid for, and nothing would read it.
+            estimated_judge_cost = await judge.estimate_cost_usd([
+                (o.question, o.answer, evidence_by_answer.get((o.id, o.arm, o.pass_index), []))
+                for o in outcomes
+                if o.error is None
+            ])
+        else:
             for outcome in outcomes:
                 if outcome.error is not None:
                     continue
@@ -343,33 +360,32 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     # On a dry run, the number the operator reads is the price of the run they are about to
     # authorise, not the price of the sample that just ran.
-    estimated_cost: float | None = estimated_judge_cost
+    estimated_cost: float | None = None
     estimate_note: str | None = None
     if request.dry_run:
         estimated_cost, estimate_note = _price_of_the_run(
             request, outcomes, len(selection), estimated_judge_cost)
 
-    scored = [o for o in outcomes if o.groundedness is not None]
-    unanswerable = [o for o in outcomes if o.unanswerable_handled is not None]
-    latencies = latency_percentiles([o.latency_ms for o in outcomes])
+    asked = {query.id: query for query in queries}
+    answering_cost = math.fsum(o.cost_usd for o in outcomes)
+    judge_cost = math.fsum(o.judge_cost_usd for o in outcomes)
 
     return RunReport(
         run_id=str(uuid.uuid4()),
-        started_at=datetime.now(UTC).isoformat(),
-        query_count=len(outcomes),
-        mean_citation_recall=_mean([o.citation_recall for o in outcomes]),
-        mean_citation_precision=_mean([o.citation_precision for o in outcomes]),
-        mean_groundedness=_mean([o.groundedness for o in scored]) if scored else None,
-        groundedness_scored_count=len(scored),
-        unanswerable_accuracy=(
-            sum(1 for o in unanswerable if o.unanswerable_handled) / len(unanswerable)
-            if unanswerable else None
-        ),
-        must_contain_pass_rate=_mean([1.0 if o.must_contain_satisfied else 0.0 for o in outcomes]),
-        p50_latency_ms=latencies["p50"],
-        p95_latency_ms=latencies["p95"],
-        total_cost_usd=sum(o.cost_usd for o in outcomes),
-        judge_cost_usd=sum(o.judge_cost_usd for o in outcomes),
+        started_at=started_at,
+        passes=request.passes,
+        query_ids=[query.id for query in selection],
+        arms=request.arms,
+        arm_summaries=[summarise(outcomes, asked, arm) for arm in request.arms],
+        # Over the passes the outcomes really have: one, on a dry run.
+        comparisons=[
+            comparison
+            for x, y in request.comparisons
+            for comparison in compare(outcomes, asked, x, y, passes)
+        ],
+        answering_cost_usd=answering_cost,
+        judge_cost_usd=judge_cost,
+        total_cost_usd=answering_cost + judge_cost,
         estimated_cost_usd_before_run=estimated_cost,
         estimate_note=estimate_note,
         outcomes=outcomes,
