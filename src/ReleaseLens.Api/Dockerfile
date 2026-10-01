@@ -18,7 +18,7 @@ RUN dotnet publish src/ReleaseLens.Api/ReleaseLens.Api.csproj -c Release -o /app
 
 # The embedding weights are a separate layer: ~130 MB that changes far less often
 # than the application code, so it stays cached across almost every rebuild.
-FROM curlimages/curl:8.11.0 AS model
+FROM curlimages/curl:8.21.0 AS model
 WORKDIR /model
 RUN curl -sSL -o model.onnx     https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx && \
     curl -sSL -o vocab.txt      https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/vocab.txt && \
