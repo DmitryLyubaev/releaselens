@@ -128,6 +128,11 @@ public static class ModelPricing
     {
         "gpt-4o" => new Rates(2.5m, 2.5m, 0m, 10m),
         "gpt-4o-mini" => new Rates(0.15m, 0.15m, 0m, 0.6m),
+
+        // https://developers.openai.com/api/docs/pricing, Standard tier, read 2026-10-02 (the page
+        // shows no date): input, cached input and output all read from the page, so no upper bound.
+        "gpt-4.1-mini" => new Rates(0.40m, 0.10m, 0m, 1.60m),
+
         _ => null
     };
 

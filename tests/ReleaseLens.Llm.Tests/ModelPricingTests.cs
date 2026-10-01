@@ -118,6 +118,15 @@ public class ModelPricingTests
     }
 
     [Fact]
+    public void OpenAiGpt41Mini_UsesOpenAisPublishedRates()
+    {
+        var identity = new PricingIdentity("openai", "gpt-4.1-mini");
+        var oneMillionEach = new TokenUsage(InputTokens: 1_000_000, OutputTokens: 1_000_000,
+            CacheReadInputTokens: 1_000_000, CacheCreationInputTokens: 0);
+        Assert.Equal(2.10m, ModelPricing.CostUsd(identity, oneMillionEach, AfterIntroductoryPricing)); // 0.40 + 1.60 + 0.10
+    }
+
+    [Fact]
     public void UnpricedIdentity_CostsNothing()
     {
         var ollama = new PricingIdentity("openai", "llama3.1", Unpriced: true);
@@ -181,4 +190,8 @@ public class ModelPricingTests
             ],
             AfterIntroductoryPricing);
     }
+
+    [Fact]
+    public void EnsurePriced_AcceptsTheOpenAiArmsIdentity()
+        => ModelPricing.EnsurePriced([new PricingIdentity("openai", "gpt-4.1-mini")], AfterIntroductoryPricing);
 }
