@@ -7,7 +7,7 @@ so nothing here can reach api.anthropic.com.
 import pytest
 
 from app import runner as runner_module
-from app.models import RunRequest
+from app.models import Arm, RunRequest
 from app.runner import citation_ids, cited_evidence, run_eval
 
 _BODY = {
@@ -39,6 +39,9 @@ _BODY = {
         "unresolvedCitationMarkers": [],
     },
 }
+
+
+_ARM = Arm(name="A", base_url="http://api.invalid", expected_provider="anthropic")
 
 
 def _without_evidence(body: dict) -> dict:
@@ -121,7 +124,7 @@ def test_cited_evidence_when_the_api_returned_none():
 
 async def test_the_run_asks_the_api_for_the_evidence_text(captured_requests):
     report = await run_eval(
-        RunRequest(api_key="rl_test", limit=1, judge=False, api_base_url="http://api.invalid")
+        RunRequest(api_key="rl_test", limit=1, judge=False, arms=[_ARM])
     )
 
     assert report.query_count == 1
@@ -133,7 +136,7 @@ async def test_the_run_asks_the_api_for_the_evidence_text(captured_requests):
 
 async def test_the_run_still_scores_recall_and_precision_over_identifiers(captured_requests):
     report = await run_eval(
-        RunRequest(api_key="rl_test", limit=1, judge=False, api_base_url="http://api.invalid")
+        RunRequest(api_key="rl_test", limit=1, judge=False, arms=[_ARM])
     )
 
     outcome = report.outcomes[0]

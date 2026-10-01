@@ -39,6 +39,27 @@ def test_stratify_takes_at_most_n_per_category():
     assert all(n <= 3 for n in counts.values())
 
 
+def test_the_preregistered_selection():
+    """Spec §8 names these ten queries. A golden-set edit that moves them breaks the study.
+
+    Inserting, reordering or recategorising an entry changes what per_category=2 selects
+    without changing anything that reads as a study parameter, and the run would then
+    measure a different set from the one that was pre-registered.
+    """
+    selection = _stratify(load_golden(), 2)
+
+    assert [q.id for q in selection] == [
+        "gq-001", "gq-002", "gq-014", "gq-015", "gq-022",
+        "gq-023", "gq-029", "gq-030", "gq-036", "gq-037",
+    ]
+    assert [q.id for q in selection if q.must_contain] == [
+        "gq-001", "gq-002", "gq-022", "gq-023", "gq-029", "gq-030",
+    ]
+    assert [q.category for q in selection if q.id in ("gq-036", "gq-037")] == [
+        "unanswerable", "unanswerable",
+    ]
+
+
 def test_stratify_is_capped_by_what_each_category_actually_has():
     """A category with fewer than N entries contributes all of them, not an error."""
     every = load_golden()

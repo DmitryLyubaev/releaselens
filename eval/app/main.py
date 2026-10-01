@@ -50,9 +50,15 @@ async def start_run(request: RunRequest) -> RunReport:
     return report
 
 
-@app.get("/eval/runs/{run_id}", response_model=RunReport)
-def get_run(run_id: str) -> RunReport:
+@app.get("/eval/runs/{run_id}")
+def get_run(run_id: str) -> dict[str, object]:
+    """The stored report, exactly as it was written.
+
+    Deliberately not validated against RunReport. The report's shape changes as the study
+    does, and a report written under an earlier shape is still the record of a run that
+    happened and was paid for; validating it against today's model would turn it into a 500.
+    """
     path = REPORTS / f"{run_id}.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"No run {run_id}")
-    return RunReport(**json.loads(path.read_text(encoding="utf-8")))
+    return json.loads(path.read_text(encoding="utf-8"))

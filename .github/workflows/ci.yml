@@ -55,9 +55,10 @@ jobs:
           name: test-results
           path: TestResults/
 
+      # The eval harness's interpreter (eval/Dockerfile), so its tests run on the runtime it ships on.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.13'
+          python-version: '3.14'
 
       - name: Install infra test requirements
         run: pip install -r tests/infra/requirements.txt
@@ -67,6 +68,14 @@ jobs:
 
       - name: Check workflows
         run: python scripts/check_workflows.py .github/workflows
+
+      - name: Install eval requirements
+        run: pip install -r eval/requirements.txt
+
+      # From eval/, because the tests import the harness as the top-level package `app`.
+      - name: Eval tests
+        working-directory: eval
+        run: python -m pytest -q
 
   terraform-plan:
     runs-on: ubuntu-latest

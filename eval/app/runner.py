@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import time
 import uuid
 from datetime import UTC, datetime
@@ -96,14 +97,16 @@ async def run_eval(request: RunRequest) -> RunReport:
     # of kilobytes and every outcome is written to reports/<run_id>.json; folding it in
     # would turn a metrics report into an evidence dump nobody can read. The judge's reason
     # for each score still lands on the outcome, which is what a reader of the report needs.
-    evidence_by_query: dict[str, list[CitedEvidence]] = {}
+    # Keyed by query and arm: every arm answers every query, and each answer is judged against
+    # the evidence it cited itself, never another arm's.
+    evidence_by_answer: dict[tuple[str, str], list[CitedEvidence]] = {}
 
     async with httpx.AsyncClient(timeout=180.0) as client:
-        for query in queries:
+        for query, arm in itertools.product(queries, request.arms):
             started = time.perf_counter()
             try:
                 response = await client.post(
-                    f"{request.api_base_url}/query",
+                    f"{arm.base_url}/query",
                     headers={"X-Api-Key": request.api_key},
                     json={
                         "question": query.question,
@@ -120,7 +123,8 @@ async def run_eval(request: RunRequest) -> RunReport:
             except Exception as exc:  # noqa: BLE001 — a failed query is a data point, not a crash
                 outcomes.append(
                     QueryOutcome(
-                        id=query.id, category=query.category, question=query.question,
+                        id=query.id, arm=arm.name, pass_index=0,
+                        category=query.category, question=query.question,
                         answer="", citations=[], citation_recall=0.0, citation_precision=0.0,
                         groundedness=None, groundedness_reason=None,
                         must_contain_satisfied=False, must_not_contain_satisfied=False,
@@ -136,11 +140,13 @@ async def run_eval(request: RunRequest) -> RunReport:
             answer = body["answer"]
             metadata = body["metadata"]
             citations = citation_ids(body)
-            evidence_by_query[query.id] = cited_evidence(body)
+            evidence_by_answer[query.id, arm.name] = cited_evidence(body)
 
             outcomes.append(
                 QueryOutcome(
                     id=query.id,
+                    arm=arm.name,
+                    pass_index=0,
                     category=query.category,
                     question=query.question,
                     answer=answer,
@@ -169,7 +175,7 @@ async def run_eval(request: RunRequest) -> RunReport:
     if request.judge:
         judge = GroundednessJudge(request.judge_model)
         scorable = [
-            (o.question, o.answer, evidence_by_query.get(o.id, []))
+            (o.question, o.answer, evidence_by_answer.get((o.id, o.arm), []))
             for o in outcomes
             if not o.error
         ]
@@ -191,7 +197,8 @@ async def run_eval(request: RunRequest) -> RunReport:
                 if outcome.error:
                     continue
                 score, reason = await judge.score(
-                    outcome.question, outcome.answer, evidence_by_query.get(outcome.id, []))
+                    outcome.question, outcome.answer,
+                    evidence_by_answer.get((outcome.id, outcome.arm), []))
                 outcome.groundedness = None if score < 0 else score
                 outcome.groundedness_reason = reason
 
