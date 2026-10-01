@@ -1,18 +1,51 @@
 """LLM-as-judge for groundedness.
 
-Every sweep prices itself with count_tokens (free) before spending anything, and
-uses the Batch API where a sweep is large — eval is the textbook non-latency-sensitive
-workload and the Batch API is half price.
+Every sweep prices itself with count_tokens (free) before spending anything.
+
+The judge is given a question, an answer and the evidence that answer cited. It is never
+told which arm, provider or model wrote the answer.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
 
 from .models import CitedEvidence
+
+# Claude Sonnet 5, USD per million tokens: the rates ModelPricing
+# (src/ReleaseLens.Llm/Providers/ModelPricing.cs) gives claude-sonnet-5 from 2026-09-01, once
+# its introductory 2.00 and 10.00 ended on 2026-08-31.
+JUDGE_INPUT_USD_PER_MTOK = 3.00
+JUDGE_OUTPUT_USD_PER_MTOK = 15.00
+
+# What the estimate allows each judgement to write. An allowance, not a measurement:
+# count_tokens counts input only, and how much a judge writes is known only once it has
+# written it.
+JUDGE_OUTPUT_ALLOWANCE_TOKENS = 512
+
+
+def _cost_usd(input_tokens: int, output_tokens: int) -> float:
+    return (
+        input_tokens * JUDGE_INPUT_USD_PER_MTOK + output_tokens * JUDGE_OUTPUT_USD_PER_MTOK
+    ) / 1_000_000
+
+
+@dataclass(frozen=True)
+class Judgement:
+    """One groundedness score, why the judge gave it, and what asking cost.
+
+    `score` is -1.0 when the reply could not be parsed. That reply was billed all the same,
+    so it still carries its cost.
+    """
+
+    score: float
+    reason: str
+    cost_usd: float
+
 
 _JUDGE_SYSTEM = """You score whether an answer is grounded in the evidence it cites.
 
@@ -88,46 +121,47 @@ class GroundednessJudge:
             f"Evidence cited:\n{self._render(evidence)}"
         )
 
-    async def estimate_cost(self, items: list[tuple[str, str, list[CitedEvidence]]]) -> int:
-        """Total input tokens for the whole sweep. count_tokens is free — call it first.
+    async def estimate_cost_usd(self, items: list[tuple[str, str, list[CitedEvidence]]]) -> float:
+        """What judging the whole sweep will cost, in USD. count_tokens is free — call it first.
 
         Counts the same system prompt and the same _prompt() the scoring call sends, so the
         estimate moves with the evidence text automatically. Its whole purpose is to be
         trusted before money is spent, so the two must not be able to drift apart: any
         cheaper approximation here would have gone stale the moment evidence text was added.
+
+        count_tokens says nothing about the reply, so each item adds
+        JUDGE_OUTPUT_ALLOWANCE_TOKENS at the output rate.
         """
-        total = 0
+        total = 0.0
         for question, answer, evidence in items:
             counted = await self._client.messages.count_tokens(
                 model=self._model,
                 system=_JUDGE_SYSTEM,
                 messages=[{"role": "user", "content": self._prompt(question, answer, evidence)}],
             )
-            total += counted.input_tokens
+            total += _cost_usd(counted.input_tokens, JUDGE_OUTPUT_ALLOWANCE_TOKENS)
         return total
 
-    async def score(
-        self, question: str, answer: str, evidence: list[CitedEvidence]
-    ) -> tuple[float, str]:
+    async def score(self, question: str, answer: str, evidence: list[CitedEvidence]) -> Judgement:
         response = await self._client.messages.create(
             model=self._model,
             # 256 was enough when the judge saw bare identifiers and had nothing to reason
             # about. Given the actual evidence it reasons first and answers second, and three
             # of five judgements in one run were cut off before emitting a single '{' —
             # scoring nothing, on exactly the queries carrying the most evidence. The reply is
-            # one float and one sentence; the headroom costs nothing when unused, and output
-            # tokens are a rounding error against the evidence in the prompt.
+            # one float and one sentence, and the headroom costs nothing when unused.
             max_tokens=2048,
             system=_JUDGE_SYSTEM,
             messages=[{"role": "user", "content": self._prompt(question, answer, evidence)}],
         )
 
+        cost_usd = _cost_usd(response.usage.input_tokens, response.usage.output_tokens)
         text = "".join(block.text for block in response.content if block.type == "text")
 
         try:
             parsed = json.loads(text[text.index("{") : text.rindex("}") + 1])
-            return float(parsed["score"]), str(parsed["reason"])
+            return Judgement(float(parsed["score"]), str(parsed["reason"]), cost_usd)
         except (ValueError, KeyError) as exc:
             # A judge that cannot be parsed must not silently score zero — that would
             # look like a groundedness failure in the report when it is a harness bug.
-            return -1.0, f"judge output unparseable: {exc}"
+            return Judgement(-1.0, f"judge output unparseable: {exc}", cost_usd)

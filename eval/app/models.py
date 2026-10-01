@@ -99,6 +99,11 @@ class RunReport(BaseModel):
     p95_latency_ms: float
     total_cost_usd: float
 
+    # What judging cost, summed over the outcomes, kept out of total_cost_usd for the reason
+    # QueryOutcome keeps it out of cost_usd. Zero on a dry run, which prices the judge but never
+    # calls it.
+    judge_cost_usd: float = 0.0
+
     # None when a dry run's sample had errors, and estimate_note then says which arms and how
     # many. A sample with a hole in it understates the run it is meant to price, and a missing
     # number cannot be mistaken for a price the way a low one can.

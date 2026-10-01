@@ -1,14 +1,20 @@
 """What the runner asks the API for, and what it does with the reply.
 
 No network and no real judge: the HTTP client is replaced, every sweep that judges uses a
-fake judge, and the rest run with judge=False, so nothing here can reach api.anthropic.com.
+fake judge or the real one over a fake Anthropic client, and the rest run with judge=False, so
+nothing here can reach api.anthropic.com.
 """
+
+import re
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from app import judge as judge_module
 from app import runner as runner_module
 from app.golden import load_golden
+from app.judge import Judgement
 from app.models import Arm, RunRequest
 from app.runner import _unscored, arm_order, citation_ids, cited_evidence, provider_error, run_eval
 
@@ -131,28 +137,79 @@ def fake_api(monkeypatch) -> type[_FakeClient]:
 
 
 class _FakeJudge:
-    """Stands in for GroundednessJudge: prices each item at a fixed token count, and records
-    every answer it scores with the evidence it was given."""
+    """Stands in for GroundednessJudge: estimates each item at a fixed price, and records every
+    answer it scores with the evidence it was given.
 
-    tokens_per_item = 10_000
+    The nth judgement costs n tenths of a cent, so a cost on the wrong outcome, or a sum that is
+    really a count, shows. The judgements numbered in `unparseable` come back unscored.
+    """
+
+    usd_per_item = 0.0345
     scored: list[tuple[str, list]] = []
+    unparseable: set[int] = set()
 
     def __init__(self, model: str) -> None:
         pass
 
-    async def estimate_cost(self, items) -> int:
-        return self.tokens_per_item * len(items)
+    async def estimate_cost_usd(self, items) -> float:
+        return self.usd_per_item * len(items)
 
-    async def score(self, question, answer, evidence):
+    async def score(self, question, answer, evidence) -> Judgement:
         _FakeJudge.scored.append((answer, evidence))
-        return 1.0, "supported"
+        n = len(_FakeJudge.scored)
+        if n in _FakeJudge.unparseable:
+            return Judgement(score=-1.0, reason="judge output unparseable", cost_usd=0.001 * n)
+        return Judgement(score=1.0, reason="supported", cost_usd=0.001 * n)
 
 
 @pytest.fixture
 def fake_judge(monkeypatch) -> type[_FakeJudge]:
     _FakeJudge.scored = []
+    _FakeJudge.unparseable = set()
     monkeypatch.setattr(runner_module, "GroundednessJudge", _FakeJudge)
     return _FakeJudge
+
+
+class _RecordingMessages:
+    """Stands in for the Anthropic client's `messages` under the real GroundednessJudge, and keeps
+    every request the judge sends, the free counts as well as the paid judgements."""
+
+    sent: list[dict] = []
+
+    async def count_tokens(self, **kwargs):
+        _RecordingMessages.sent.append(kwargs)
+        return SimpleNamespace(input_tokens=1_000)
+
+    async def create(self, **kwargs):
+        _RecordingMessages.sent.append(kwargs)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text='{"score": 1.0, "reason": "supported"}')],
+            usage=SimpleNamespace(input_tokens=1_000, output_tokens=50),
+        )
+
+
+class _RecordingAnthropic:
+    def __init__(self, api_key: str | None = None) -> None:
+        self.messages = _RecordingMessages()
+
+
+@pytest.fixture
+def recording_anthropic(monkeypatch) -> type[_RecordingMessages]:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    _RecordingMessages.sent = []
+    monkeypatch.setattr(judge_module, "AsyncAnthropic", _RecordingAnthropic)
+    return _RecordingMessages
+
+
+def _strings(value) -> list[str]:
+    """Every string in a request, however deeply it is nested."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _strings(v)]
+    return []
 
 
 def test_citation_ids_are_the_type_key_identifiers_the_metrics_score():
@@ -486,10 +543,71 @@ async def test_dry_run_estimate_adds_the_judge_for_every_answer_of_the_run(fake_
         RunRequest(api_key="rl_test", per_category=2, passes=3, judge=True, dry_run=True, arms=_ARMS)
     )
 
-    judge_usd_per_answer = fake_judge.tokens_per_item / 1_000_000 * runner_module._JUDGE_INPUT_USD_PER_MTOK
-
     # A dry run estimates the judge but never calls it.
     assert fake_judge.scored == []
+    assert report.judge_cost_usd == 0.0
     assert report.estimated_cost_usd_before_run == pytest.approx(
-        0.01 * 10 * 3 * 3 + judge_usd_per_answer * 10 * 3 * 3
+        0.01 * 10 * 3 * 3 + fake_judge.usd_per_item * 10 * 3 * 3
     )
+
+
+async def test_the_judge_is_blinded_to_the_arm(fake_api, recording_anthropic):
+    """The judge is given the question, the answer and the evidence it cited, and nothing that
+    says which arm, provider or model wrote the answer (spec §8). A judge that knew could favour
+    one, and the difference it found would be its own."""
+    arms = [arm for arm in _ARMS if arm.expected_provider in ("azure-openai", "openai")]
+    fake_api.replies = {arm.base_url: _reply(arm.expected_provider) for arm in arms}
+
+    report = await run_eval(
+        RunRequest(api_key="rl_test", per_category=2, passes=3, judge=True, arms=arms)
+    )
+
+    # Every answer was judged, so the search below is over every prompt the run sent.
+    judgements = [sent for sent in recording_anthropic.sent if "max_tokens" in sent]
+    assert len(judgements) == len(report.outcomes) == 10 * 3 * len(arms)
+    assert all(_BODY["answer"] in "\n".join(_strings(sent["messages"])) for sent in judgements)
+
+    leaks = ["azure-openai", "openai", "anthropic", *_MODELS.values()]
+    for sent in recording_anthropic.sent:
+        # The model the request is addressed to is the judge's own, and is not part of the prompt.
+        assert sent["model"] == "claude-sonnet-5"
+        prompt = "\n".join(_strings({k: v for k, v in sent.items() if k != "model"}))
+
+        for leak in leaks:
+            assert leak not in prompt.lower()
+        for arm in arms:
+            assert re.search(rf"\b{re.escape(arm.name)}\b", prompt) is None
+
+
+async def test_judge_cost_lands_on_the_outcome(fake_api, fake_judge, monkeypatch):
+    """What each judgement cost is kept on the outcome it judged, and the report sums them.
+
+    Kept apart from cost_usd, which is what the arm reported for answering: judging is the
+    harness's cost, not the arm's.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    z = _ARMS[1]
+    failing_question = load_golden()[1].question
+    fake_api.replies = {
+        **_each_arm_answers_as_itself(),
+        z.base_url: lambda sent: 503 if sent["question"] == failing_question else _reply("azure-openai"),
+    }
+    fake_judge.unparseable = {3}
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=2, passes=2, judge=True, arms=_ARMS))
+
+    judged = [o for o in report.outcomes if o.error is None]
+
+    # Judged in run order, each judgement's cost on the outcome it judged.
+    assert len(judged) == len(fake_judge.scored) == 10
+    assert [o.judge_cost_usd for o in judged] == pytest.approx([0.001 * n for n in range(1, 11)])
+
+    # An unparseable judgement scores nothing and was still billed.
+    assert judged[2].groundedness is None
+    assert judged[2].judge_cost_usd == pytest.approx(0.003)
+
+    # An outcome with an error is not judged, so it costs the judge nothing.
+    assert [o.judge_cost_usd for o in report.outcomes if o.error is not None] == [0.0, 0.0]
+
+    assert report.judge_cost_usd == pytest.approx(sum(0.001 * n for n in range(1, 11)))
+    assert report.total_cost_usd == pytest.approx(sum(o.cost_usd for o in report.outcomes))

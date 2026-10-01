@@ -16,11 +16,6 @@ from .metrics import (
 )
 from .models import Arm, CitedEvidence, GoldenQuery, QueryOutcome, RunReport, RunRequest
 
-# Sonnet 5 introductory input pricing, USD per million tokens. Reverts to 3.00 on
-# 1 September 2026 — see ModelPricing in the .NET side for the authoritative table.
-_JUDGE_INPUT_USD_PER_MTOK = 2.00
-
-
 # A dry run answers one query per category for real before extrapolating. An agentic
 # loop's cost cannot be known without running it: the tool calls it chooses, and the
 # evidence they return, are what drive the token count. One per category rather than the
@@ -322,6 +317,10 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     if request.judge:
         judge = GroundednessJudge(request.judge_model)
+
+        # The judge is handed the question, the answer and the evidence that answer cited,
+        # and nothing that says which arm, provider or model wrote it. A judge that knew could
+        # favour one, and the difference it found would be its own (spec §8).
         scorable = [
             (o.question, o.answer, evidence_by_answer.get((o.id, o.arm, o.pass_index), []))
             for o in outcomes
@@ -329,18 +328,18 @@ async def run_eval(request: RunRequest) -> RunReport:
         ]
 
         # Free, and it prices the sweep before any money is spent on it.
-        estimated_tokens = await judge.estimate_cost(scorable)
-        estimated_judge_cost = estimated_tokens / 1_000_000 * _JUDGE_INPUT_USD_PER_MTOK
+        estimated_judge_cost = await judge.estimate_cost_usd(scorable)
 
         if not request.dry_run:
             for outcome in outcomes:
                 if outcome.error is not None:
                     continue
-                score, reason = await judge.score(
+                judgement = await judge.score(
                     outcome.question, outcome.answer,
                     evidence_by_answer.get((outcome.id, outcome.arm, outcome.pass_index), []))
-                outcome.groundedness = None if score < 0 else score
-                outcome.groundedness_reason = reason
+                outcome.groundedness = None if judgement.score < 0 else judgement.score
+                outcome.groundedness_reason = judgement.reason
+                outcome.judge_cost_usd = judgement.cost_usd
 
     # On a dry run, the number the operator reads is the price of the run they are about to
     # authorise, not the price of the sample that just ran.
@@ -370,6 +369,7 @@ async def run_eval(request: RunRequest) -> RunReport:
         p50_latency_ms=latencies["p50"],
         p95_latency_ms=latencies["p95"],
         total_cost_usd=sum(o.cost_usd for o in outcomes),
+        judge_cost_usd=sum(o.judge_cost_usd for o in outcomes),
         estimated_cost_usd_before_run=estimated_cost,
         estimate_note=estimate_note,
         outcomes=outcomes,

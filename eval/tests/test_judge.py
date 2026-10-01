@@ -22,6 +22,9 @@ class _FakeMessages:
         self.counted: list[dict] = []
         self.created: list[dict] = []
 
+        # What every reply says it used, as a real reply's `usage` does.
+        self.usage = SimpleNamespace(input_tokens=1_000, output_tokens=50)
+
     async def count_tokens(self, **kwargs):
         self.counted.append(kwargs)
         return SimpleNamespace(input_tokens=len(kwargs["messages"][0]["content"]))
@@ -29,7 +32,8 @@ class _FakeMessages:
     async def create(self, **kwargs):
         self.created.append(kwargs)
         return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text='{"score": 1.0, "reason": "supported"}')]
+            content=[SimpleNamespace(type="text", text='{"score": 1.0, "reason": "supported"}')],
+            usage=self.usage,
         )
 
 
@@ -61,10 +65,15 @@ def _sent_prompt(fake_judge: GroundednessJudge) -> str:
     return fake_judge._client.messages.created[0]["messages"][0]["content"]
 
 
-async def test_score_sends_the_evidence_text_not_just_the_identifier(fake_judge):
-    score, reason = await fake_judge.score("What fixed the planner?", "Fixed in [E2].", [_evidence()])
+def test_the_module_claims_no_batch_api():
+    """Nothing here uses the Batch API, so nothing here may say it does (F7)."""
+    assert "Batch" not in judge_module.__doc__
 
-    assert (score, reason) == (1.0, "supported")
+
+async def test_score_sends_the_evidence_text_not_just_the_identifier(fake_judge):
+    judgement = await fake_judge.score("What fixed the planner?", "Fixed in [E2].", [_evidence()])
+
+    assert (judgement.score, judgement.reason) == (1.0, "supported")
 
     prompt = _sent_prompt(fake_judge)
     assert _CHUNK_ONE in prompt
@@ -115,7 +124,7 @@ async def test_estimate_prices_exactly_the_prompt_that_scoring_sends(fake_judge)
     """
     items = [("What fixed the planner?", "Fixed in [E2].", [_evidence(text=[_CHUNK_ONE, _CHUNK_TWO])])]
 
-    total = await fake_judge.estimate_cost(items)
+    total = await fake_judge.estimate_cost_usd(items)
     await fake_judge.score(*items[0])
 
     counted = fake_judge._client.messages.counted[0]
@@ -126,24 +135,48 @@ async def test_estimate_prices_exactly_the_prompt_that_scoring_sends(fake_judge)
     assert counted["messages"] == created["messages"]
 
     # And the count really is over the evidence, not over a stub of it.
-    assert total == len(counted["messages"][0]["content"])
+    assert total == pytest.approx(len(counted["messages"][0]["content"]) * 3 / 1e6 + 512 * 15 / 1e6)
 
 
 async def test_estimating_an_artefact_with_text_costs_more_than_one_without(fake_judge):
     """Guards the claim that the estimate reflects the evidence, not just the answer."""
-    bare = await fake_judge.estimate_cost([("q", "a", [_evidence(text=[])])])
-    full = await fake_judge.estimate_cost([("q", "a", [_evidence(text=[_CHUNK_ONE, _CHUNK_TWO])])])
+    bare = await fake_judge.estimate_cost_usd([("q", "a", [_evidence(text=[])])])
+    full = await fake_judge.estimate_cost_usd([("q", "a", [_evidence(text=[_CHUNK_ONE, _CHUNK_TWO])])])
 
     assert full > bare
 
 
+async def test_a_judgement_is_priced_with_output_tokens(fake_judge):
+    """Sonnet 5 bills output at five times its input rate, so leaving it out understates (F8)."""
+    fake_judge._client.messages.usage = SimpleNamespace(input_tokens=10_000, output_tokens=200)
+
+    judgement = await fake_judge.score("q", "Fixed in [E2].", [_evidence()])
+
+    assert judgement.cost_usd == pytest.approx(10_000 * 3 / 1e6 + 200 * 15 / 1e6)
+
+
+async def test_the_estimate_includes_the_output_allowance(fake_judge):
+    """count_tokens counts input only, so the estimate adds an allowance for what the judge writes."""
+    estimate = await fake_judge.estimate_cost_usd([("q", "Fixed in [E2].", [_evidence()])])
+
+    # The fake counts one token per character of the prompt it was asked to count.
+    counted = len(fake_judge._client.messages.counted[0]["messages"][0]["content"])
+    assert estimate == pytest.approx(counted * 3 / 1e6 + 512 * 15 / 1e6)
+
+
 async def test_unparseable_judge_output_is_reported_rather_than_scored_zero(fake_judge, monkeypatch):
     async def _garbage(**kwargs):
-        return SimpleNamespace(content=[SimpleNamespace(type="text", text="I could not decide.")])
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="I could not decide.")],
+            usage=SimpleNamespace(input_tokens=10_000, output_tokens=200),
+        )
 
     monkeypatch.setattr(fake_judge._client.messages, "create", _garbage)
 
-    score, reason = await fake_judge.score("q", "a", [_evidence()])
+    judgement = await fake_judge.score("q", "a", [_evidence()])
 
-    assert score == -1.0
-    assert "unparseable" in reason
+    assert judgement.score == -1.0
+    assert "unparseable" in judgement.reason
+
+    # Scoring nothing is not free: the reply was billed whether or not it could be read.
+    assert judgement.cost_usd == pytest.approx(10_000 * 3 / 1e6 + 200 * 15 / 1e6)
