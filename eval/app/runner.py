@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import time
 import uuid
 from datetime import UTC, datetime
@@ -15,7 +14,7 @@ from .metrics import (
     latency_percentiles,
     unanswerable_correct,
 )
-from .models import CitedEvidence, QueryOutcome, RunReport, RunRequest
+from .models import Arm, CitedEvidence, GoldenQuery, QueryOutcome, RunReport, RunRequest
 
 # Sonnet 5 introductory input pricing, USD per million tokens. Reverts to 3.00 on
 # 1 September 2026 — see ModelPricing in the .NET side for the authoritative table.
@@ -61,6 +60,44 @@ def cited_evidence(body: dict) -> list[CitedEvidence]:
     ]
 
 
+def arm_order(arms: list[Arm], pass_index: int) -> list[Arm]:
+    """The order the arms answer each query in this pass: the list rotated left by the pass.
+
+    Each arm takes each position once in every len(arms) passes. Whatever going first or
+    last on a query does to an answer, such as meeting a cold database cache, then does not
+    fall on the same arm every time. With three arms and three passes the order is A,Z,O,
+    then Z,O,A, then O,A,Z.
+    """
+    shift = pass_index % len(arms)
+    return arms[shift:] + arms[:shift]
+
+
+def provider_error(arm: Arm, metadata: dict) -> str | None:
+    """Why this reply cannot count as the arm's answer, or None when it can.
+
+    An arm is a process started with one provider and nothing to fall back to, so a reply
+    answered by any other provider, by more than one, or by none at all did not come from
+    the configuration under test. Scored, it would be counted as that arm's quality.
+
+    A content filter from the arm's own provider is the exception. That provider blocked the
+    request rather than answering it, which is a result about the provider, recorded as
+    filtered rather than as an error.
+
+    Checks who answered only. An answer from the right provider can still be degraded, and
+    that is the caller's to check.
+    """
+    providers = metadata.get("providers") or []
+    if providers == [arm.expected_provider]:
+        return None
+
+    filtered = metadata.get("filtered")
+    if filtered and filtered.get("provider") == arm.expected_provider:
+        return None
+
+    answered = ", ".join(providers)
+    return f"arm {arm.name} expected {arm.expected_provider}; answered by {answered or 'none'}"
+
+
 def _stratify(queries: list, per_category: int) -> list:
     """First N of each category, in the file's own category order."""
     taken: dict[str, int] = {}
@@ -75,21 +112,164 @@ def _stratify(queries: list, per_category: int) -> list:
     return kept
 
 
+def _answered_by(metadata: dict) -> dict:
+    """Who the reply says answered, as the outcome records it whether or not it is scored."""
+    filtered = metadata.get("filtered")
+    return {
+        "provider": metadata.get("provider"),
+        "providers": metadata.get("providers") or [],
+        "model": metadata.get("model"),
+        "filtered_stage": filtered.get("stage") if filtered else None,
+    }
+
+
+def _unscored(
+    query: GoldenQuery, arm: Arm, pass_index: int, latency_ms: float, error: str,
+    metadata: dict | None = None,
+) -> QueryOutcome:
+    """An outcome with no score: the request failed, or its reply cannot count as the arm's.
+
+    Every metric field is zero or None whatever the reply held, so nothing downstream can
+    count it as a quality result, and `error` says why. When there was a reply, who answered
+    is kept from it, because that is what the operator needs to see what went wrong.
+    """
+    metadata = metadata or {}
+    return QueryOutcome(
+        id=query.id, arm=arm.name, pass_index=pass_index,
+        category=query.category, question=query.question,
+        answer="", citations=[], citation_recall=0.0, citation_precision=0.0,
+        groundedness=None, groundedness_reason=None,
+        must_contain_satisfied=False, must_not_contain_satisfied=False,
+        unanswerable_handled=None,
+        latency_ms=latency_ms,
+        cost_usd=0.0, tokens_in=0, tokens_out=0, cache_read_input_tokens=0,
+        degraded=bool(metadata.get("degraded", False)), unresolved_citation_markers=[],
+        error=error,
+        **_answered_by(metadata),
+    )
+
+
+async def _ask(
+    client: httpx.AsyncClient, request: RunRequest, query: GoldenQuery, arm: Arm, pass_index: int,
+) -> tuple[QueryOutcome, list[CitedEvidence] | None]:
+    """Put one query to one arm, and score the reply if it is that arm's answer.
+
+    Returns the evidence the answer cited beside the outcome, for the judge. It is None when
+    the outcome carries an error, because there is then no answer to judge.
+    """
+    started = time.perf_counter()
+    try:
+        response = await client.post(
+            f"{arm.base_url}/query",
+            headers={"X-Api-Key": request.api_key},
+            json={
+                "question": query.question,
+                "k": request.k,
+                # The judge scores whether each claim is supported by the evidence
+                # cited, which is unanswerable from an identifier. Opt-in on the
+                # API, so the harness has to ask; production responses do not carry
+                # it and are not paying for this.
+                "includeEvidence": True,
+            },
+        )
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:  # noqa: BLE001 — a failed query is a data point, not a crash
+        latency_ms = (time.perf_counter() - started) * 1000
+        return _unscored(query, arm, pass_index, latency_ms, str(exc)), None
+
+    latency_ms = (time.perf_counter() - started) * 1000
+    metadata = body["metadata"]
+
+    # A degraded answer is the retrieved evidence handed back verbatim because the provider
+    # became unavailable. No model wrote it, so scoring it would measure retrieval and charge
+    # the result to the arm's model. provider_error already catches a provider that never
+    # answered; this catches one that answered at least once and then failed.
+    error = provider_error(arm, metadata)
+    if error is None and metadata["degraded"]:
+        reason = metadata.get("degradedReason") or "no reason given"
+        error = f"arm {arm.name} returned a degraded answer: {reason}"
+    if error is not None:
+        return _unscored(query, arm, pass_index, latency_ms, error, metadata), None
+
+    answer = body["answer"]
+    citations = citation_ids(body)
+
+    outcome = QueryOutcome(
+        id=query.id,
+        arm=arm.name,
+        pass_index=pass_index,
+        category=query.category,
+        question=query.question,
+        answer=answer,
+        citations=citations,
+        citation_recall=citation_recall(query.expected_citations, citations),
+        citation_precision=citation_precision(query.expected_citations, citations),
+        groundedness=None,
+        groundedness_reason=None,
+        must_contain_satisfied=all(s in answer for s in query.must_contain),
+        must_not_contain_satisfied=not any(s in answer for s in query.must_not_contain),
+        unanswerable_handled=(
+            unanswerable_correct(answer) if query.category == "unanswerable" else None
+        ),
+        latency_ms=latency_ms,
+        cost_usd=float(metadata["costUsd"]),
+        tokens_in=metadata["tokensIn"],
+        tokens_out=metadata["tokensOut"],
+        cache_read_input_tokens=metadata["cacheReadInputTokens"],
+        degraded=metadata["degraded"],
+        unresolved_citation_markers=metadata["unresolvedCitationMarkers"],
+        **_answered_by(metadata),
+    )
+    return outcome, cited_evidence(body)
+
+
+def _price_of_the_run(
+    request: RunRequest, sample: list[QueryOutcome], selection_size: int, judge_cost_usd: float,
+) -> float:
+    """What the run this dry run precedes will cost, scaled up from what the sample cost.
+
+    That run puts every query in the selection to every arm on every pass. Each arm is priced
+    from its own sample, because the arms run different models at different rates. The judge
+    is priced for every answer that run gets, from every arm, at the sample's mean per answer.
+
+    Only answers are averaged. An outcome with an error has a cost of zero that the harness
+    wrote rather than measured, and averaging it in would price the run below what answering
+    costs. An arm with no answers in the sample adds nothing to the estimate. Its errors are
+    in the outcomes, for the operator to read before authorising the run.
+    """
+    answered = [o for o in sample if not o.error]
+    answers_per_arm = selection_size * request.passes
+
+    estimate = 0.0
+    for arm in request.arms:
+        costs = [o.cost_usd for o in answered if o.arm == arm.name]
+        if costs:
+            estimate += sum(costs) / len(costs) * answers_per_arm
+
+    if answered:
+        estimate += judge_cost_usd / len(answered) * answers_per_arm * len(request.arms)
+
+    return estimate
+
+
 async def run_eval(request: RunRequest) -> RunReport:
-    queries = load_golden()
-    full_query_count = len(queries)
+    selection = load_golden()
 
     if request.per_category:
-        queries = _stratify(queries, request.per_category)
+        selection = _stratify(selection, request.per_category)
     elif request.limit:
-        queries = queries[: request.limit]
+        selection = selection[: request.limit]
 
     # A dry run is a *sample*, not a simulation. It really does call the API and really
-    # does spend money — just on a few queries instead of all of them — and it skips the
-    # judge, whose cost is estimated for free with count_tokens. Calling it free would be
-    # a lie that costs whoever believed it the price of a whole sweep.
+    # does spend money — just on one query per category, once, instead of every query on
+    # every pass — and it skips the judge, whose cost is estimated for free with
+    # count_tokens. Calling it free would be a lie that costs whoever believed it the price
+    # of a whole sweep.
     if request.dry_run:
-        queries = _stratify(queries, _DRY_RUN_PER_CATEGORY)
+        queries, passes = _stratify(selection, _DRY_RUN_PER_CATEGORY), 1
+    else:
+        queries, passes = selection, request.passes
 
     outcomes: list[QueryOutcome] = []
 
@@ -97,85 +277,26 @@ async def run_eval(request: RunRequest) -> RunReport:
     # of kilobytes and every outcome is written to reports/<run_id>.json; folding it in
     # would turn a metrics report into an evidence dump nobody can read. The judge's reason
     # for each score still lands on the outcome, which is what a reader of the report needs.
-    # Keyed by query and arm: every arm answers every query, and each answer is judged against
-    # the evidence it cited itself, never another arm's.
-    evidence_by_answer: dict[tuple[str, str], list[CitedEvidence]] = {}
+    # Keyed by query, arm and pass: each pass is a fresh answer citing evidence of its own,
+    # and each answer is judged against the evidence it cited, never another arm's or
+    # another pass's.
+    evidence_by_answer: dict[tuple[str, str, int], list[CitedEvidence]] = {}
 
     async with httpx.AsyncClient(timeout=180.0) as client:
-        for query, arm in itertools.product(queries, request.arms):
-            started = time.perf_counter()
-            try:
-                response = await client.post(
-                    f"{arm.base_url}/query",
-                    headers={"X-Api-Key": request.api_key},
-                    json={
-                        "question": query.question,
-                        "k": request.k,
-                        # The judge scores whether each claim is supported by the evidence
-                        # cited, which is unanswerable from an identifier. Opt-in on the
-                        # API, so the harness has to ask; production responses do not carry
-                        # it and are not paying for this.
-                        "includeEvidence": True,
-                    },
-                )
-                response.raise_for_status()
-                body = response.json()
-            except Exception as exc:  # noqa: BLE001 — a failed query is a data point, not a crash
-                outcomes.append(
-                    QueryOutcome(
-                        id=query.id, arm=arm.name, pass_index=0,
-                        category=query.category, question=query.question,
-                        answer="", citations=[], citation_recall=0.0, citation_precision=0.0,
-                        groundedness=None, groundedness_reason=None,
-                        must_contain_satisfied=False, must_not_contain_satisfied=False,
-                        unanswerable_handled=None,
-                        latency_ms=(time.perf_counter() - started) * 1000,
-                        cost_usd=0.0, tokens_in=0, tokens_out=0, cache_read_input_tokens=0,
-                        degraded=False, unresolved_citation_markers=[], error=str(exc),
-                    )
-                )
-                continue
-
-            latency_ms = (time.perf_counter() - started) * 1000
-            answer = body["answer"]
-            metadata = body["metadata"]
-            citations = citation_ids(body)
-            evidence_by_answer[query.id, arm.name] = cited_evidence(body)
-
-            outcomes.append(
-                QueryOutcome(
-                    id=query.id,
-                    arm=arm.name,
-                    pass_index=0,
-                    category=query.category,
-                    question=query.question,
-                    answer=answer,
-                    citations=citations,
-                    citation_recall=citation_recall(query.expected_citations, citations),
-                    citation_precision=citation_precision(query.expected_citations, citations),
-                    groundedness=None,
-                    groundedness_reason=None,
-                    must_contain_satisfied=all(s in answer for s in query.must_contain),
-                    must_not_contain_satisfied=not any(s in answer for s in query.must_not_contain),
-                    unanswerable_handled=(
-                        unanswerable_correct(answer) if query.category == "unanswerable" else None
-                    ),
-                    latency_ms=latency_ms,
-                    cost_usd=float(metadata["costUsd"]),
-                    tokens_in=metadata["tokensIn"],
-                    tokens_out=metadata["tokensOut"],
-                    cache_read_input_tokens=metadata["cacheReadInputTokens"],
-                    degraded=metadata["degraded"],
-                    unresolved_citation_markers=metadata["unresolvedCitationMarkers"],
-                )
-            )
+        for pass_index in range(passes):
+            for query in queries:
+                for arm in arm_order(request.arms, pass_index):
+                    outcome, evidence = await _ask(client, request, query, arm, pass_index)
+                    outcomes.append(outcome)
+                    if evidence is not None:
+                        evidence_by_answer[query.id, arm.name, pass_index] = evidence
 
     estimated_judge_cost = 0.0
 
     if request.judge:
         judge = GroundednessJudge(request.judge_model)
         scorable = [
-            (o.question, o.answer, evidence_by_answer.get((o.id, o.arm), []))
+            (o.question, o.answer, evidence_by_answer.get((o.id, o.arm, o.pass_index), []))
             for o in outcomes
             if not o.error
         ]
@@ -184,23 +305,22 @@ async def run_eval(request: RunRequest) -> RunReport:
         estimated_tokens = await judge.estimate_cost(scorable)
         estimated_judge_cost = estimated_tokens / 1_000_000 * _JUDGE_INPUT_USD_PER_MTOK
 
-        # On a dry run, scale what the sample actually cost up to the whole set, so the
-        # number the operator reads is the price of the run they are about to authorise
-        # rather than the price of the three queries that just ran.
-        if request.dry_run and outcomes:
-            agent_cost_so_far = sum(o.cost_usd for o in outcomes)
-            per_query = (agent_cost_so_far + estimated_judge_cost) / len(outcomes)
-            estimated_judge_cost = per_query * full_query_count
-
         if not request.dry_run:
             for outcome in outcomes:
                 if outcome.error:
                     continue
                 score, reason = await judge.score(
                     outcome.question, outcome.answer,
-                    evidence_by_answer.get((outcome.id, outcome.arm), []))
+                    evidence_by_answer.get((outcome.id, outcome.arm, outcome.pass_index), []))
                 outcome.groundedness = None if score < 0 else score
                 outcome.groundedness_reason = reason
+
+    # On a dry run, the number the operator reads is the price of the run they are about to
+    # authorise, not the price of the sample that just ran.
+    estimated_cost = (
+        _price_of_the_run(request, outcomes, len(selection), estimated_judge_cost)
+        if request.dry_run else estimated_judge_cost
+    )
 
     scored = [o for o in outcomes if o.groundedness is not None]
     unanswerable = [o for o in outcomes if o.unanswerable_handled is not None]
@@ -222,7 +342,7 @@ async def run_eval(request: RunRequest) -> RunReport:
         p50_latency_ms=latencies["p50"],
         p95_latency_ms=latencies["p95"],
         total_cost_usd=sum(o.cost_usd for o in outcomes),
-        estimated_cost_usd_before_run=estimated_judge_cost,
+        estimated_cost_usd_before_run=estimated_cost,
         outcomes=outcomes,
     )
 
