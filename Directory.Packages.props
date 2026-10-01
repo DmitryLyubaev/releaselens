@@ -6,7 +6,7 @@
   <ItemGroup Label="Data">
     <PackageVersion Include="Npgsql" Version="9.0.3" />
     <PackageVersion Include="Npgsql.DependencyInjection" Version="9.0.3" />
-    <PackageVersion Include="Dapper" Version="2.1.66" />
+    <PackageVersion Include="Dapper" Version="2.1.79" />
     <PackageVersion Include="Pgvector" Version="0.3.0" />
     <PackageVersion Include="Pgvector.Dapper" Version="0.3.0" />
   </ItemGroup>
@@ -15,16 +15,23 @@
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="1.0.2" />
   </ItemGroup>
   <ItemGroup Label="Hosting">
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <!--
-      10.0.3, not 10.0.0: Azure.Identity 1.21.0 depends on Azure.Core 1.53.0, which depends on
-      Microsoft.Extensions.Hosting.Abstractions 10.0.3, which needs this package at 10.0.3 or
-      later. With transitive pinning on, a 10.0.0 pin is a downgrade (NU1109) and restore fails.
+      Never below a package that needs it. Hosting 10.0.11 and Http 10.0.11 need this package at
+      10.0.11, and Azure.Identity 1.21.0 needs it at 10.0.3 (through Azure.Core 1.53.0 and
+      Microsoft.Extensions.Hosting.Abstractions 10.0.3). With transitive pinning on, a lower pin
+      is a downgrade (NU1109) and restore fails, so it moves with Hosting and Http.
     -->
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="9.5.0" />
-    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <!--
+      Transitive pin, through Microsoft.AspNetCore.OpenApi. Versions up to and including 2.7.4
+      carry GHSA-v5pm-xwqc-g5wc (high), and 2.7.5 is the first patched release. AspNetCore.OpenApi
+      10.0.11 needs 2.7.5 or later, and 10.0.12 needs 2.12.0 or later, so raising that package
+      past 10.0.11 means raising this pin with it, or restore fails on NU1109.
+    -->
     <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerUI" Version="7.2.0" />
   </ItemGroup>
