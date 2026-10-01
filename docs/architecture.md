@@ -218,8 +218,9 @@ commit message.
 ## Azure deployment
 
 Both Terraform stacks are built and tested with mocked plans, and the deploy and destroy
-workflows are built. **The app stack has not been deployed yet**, and nothing below describes a
-deployment of it. What the checks after the bootstrap apply showed is under
+workflows are built. **The app stack was deployed and destroyed twice on 1 October 2026**; the
+[README's record](../README.md#two-stack-deployment-1-october-2026) has the runs. Apart from
+the verified items below, this section describes what the code configures. What the checks after the bootstrap apply showed is under
 [Verified by the bootstrap apply](#verified-by-the-bootstrap-apply). The owner's runbook is
 [infra/bootstrap/README.md](../infra/bootstrap/README.md). The
 decisions and the reasons for them are in the
@@ -262,7 +263,7 @@ The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
 ### The workflows
 
 [`deploy.yml`](../.github/workflows/deploy.yml) and [`destroy.yml`](../.github/workflows/destroy.yml)
-are the only workflows that name the environment `azure`. Neither has run yet.
+are the only workflows that name the environment `azure`. Both ran on 1 October 2026.
 - **`deploy.yml`** is dispatched by hand. Its `preflight` job, with only `actions: read`, refuses
   to continue while `destroy.yml` is disabled. It also resolves the image tag `sha-<commit>` to
   its digest with an anonymous GHCR call. The `deploy` job applies the app stack with the image
@@ -508,22 +509,26 @@ The checks after the full bootstrap apply on 2026-09-30 (runbook step R8) showed
   successfully at Global Standard, capacity 100.
 - **That key authentication is off.** The account reports `disableLocalAuth: true`.
 
+### Verified by the first deploys
+
+The deploys and destroys on 1 October 2026 (runbook steps R14 and R15) showed these:
+- **`Cognitive Services OpenAI User` grants inference on an `AIServices` account.** The app
+  identity, which holds only that role, got the smoke test's question answered.
+- **The account accepts the app's default token scope,** `https://ai.azure.com/.default`. The
+  app stack sets no other scope, so no other was tried.
+- **GitHub-hosted runners pass the `allow-azure-services` firewall rule.** Both smoke tests
+  reached Postgres without `SMOKE_OPEN_RUNNER_IP`.
+- **CI's rights are enough.** With no subscription-scope role, `init`, apply and destroy
+  succeeded:
+  - Contributor on one resource group created Postgres and the Container Apps resources.
+  - Managed Identity Operator attached the app identity.
+- **Destroying Container Apps resources trips azurerm issue
+  [#33433](https://github.com/hashicorp/terraform-provider-azurerm/issues/33433).** Azure deletes them, but the provider reports a failure.
+  The destroy workflow retries on that error only.
+
 ### Not yet verified
 
-Each of these waits for a real run:
-- **Whether `Cognitive Services OpenAI User` grants inference on an `AIServices` account.** The
-  first real call will show.
-- **Which token scope the account accepts.** The app defaults to `https://ai.azure.com/.default`,
-  and the scope is configurable. The first real token will show.
-- **Whether GitHub-hosted runners pass the `allow-azure-services` firewall rule.** The first smoke
-  test will show. If they do not, `SMOKE_OPEN_RUNNER_IP` makes the deploy job set
-  `smoke_runner_ip`, which opens the server to the runner alone.
 - **Whether MSAL's own managed-identity retry is capped.** `AzureCredentialFactory` caps
   Azure.Core's retry at one fixed 200 ms retry. Whether MSAL adds retries of its own beneath that
   is unverified.
-- **Whether CI's rights are enough.** These are to be established by the first CI apply:
-  - that Contributor on one resource group is enough to create Postgres and the Container Apps
-    resources
-  - that azurerm makes no subscription-scope call at `init` for CI's identity
-  - that Managed Identity Operator is enough to attach the app identity
 - **Whether the deployment charges anything while idle.** The first invoice will show.

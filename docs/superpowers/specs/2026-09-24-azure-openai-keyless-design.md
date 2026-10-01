@@ -1086,19 +1086,19 @@ fallback to other providers in the cloud.
 | Item | How |
 |---|---|
 | ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. ~~Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply~~ Settled by the full bootstrap apply on 2026-09-30 (R8): the deployment provisioned at capacity 100 | `az cognitiveservices model list` and `usage list` |
-| Which token scope the account accepts, and that `Cognitive Services OpenAI User` grants inference on an `AIServices` account | One real token for each scope, and one real call |
+| Which token scope the account accepts, and that `Cognitive Services OpenAI User` grants inference on an `AIServices` account. Settled 2026-10-01 by the first deploys (R14, R15): the default scope `https://ai.azure.com/.default` works and the role grants inference; no other scope was tried | One real token for each scope, and one real call |
 | The wire shape of a filtered-prompt 400 on `/openai/v1/chat/completions` (envelope or not; `innererror` or `inner_error`) | One deliberately filtered prompt against the deployed account, with the owner's approval; until then the classifier accepts both shapes |
 | What OpenAI-direct returns for a filtered prompt | OpenAI's documentation, or one real response |
 | Whether OpenAI's `prompt_tokens` includes cached tokens (the premise of F4) | OpenAI's and Azure's current usage-object documentation, read and dated |
 | What Azure returns in the response `model` field | One real call; informational only, since pricing no longer depends on it |
-| That Contributor on one resource group is enough to create Postgres Flexible Server and the Container Apps resources, with no subscription-scope name check | The first real CI plan and apply |
-| That azurerm 5.x makes no subscription-scope provider call at init for an identity scoped to one resource group | The same first run |
-| That Managed Identity Operator is enough to attach the identity from the other resource group | The same first run; a failure would be a linked-authorisation error |
-| Whether GitHub-hosted runners reach Postgres through the "allow Azure services" rule | The first smoke test |
+| ~~That Contributor on one resource group is enough to create Postgres Flexible Server and the Container Apps resources, with no subscription-scope name check~~ Settled 2026-10-01 by the first deploys (R14, R15): it is | The first real CI plan and apply |
+| ~~That azurerm 5.x makes no subscription-scope provider call at init for an identity scoped to one resource group~~ Settled 2026-10-01 by the first deploys (R14, R15): `init` succeeded with no subscription-scope role | The same first run |
+| ~~That Managed Identity Operator is enough to attach the identity from the other resource group~~ Settled 2026-10-01 by the first deploys (R14, R15): it is | The same first run; a failure would be a linked-authorisation error |
+| ~~Whether GitHub-hosted runners reach Postgres through the "allow Azure services" rule~~ Settled 2026-10-01 by the first deploys (R14, R15): they do, in both smoke tests | The first smoke test |
 | OpenAI's own price for `gpt-4.1-mini` | OpenAI's pricing page, read and dated |
 | Whether the Global Standard deployment charges anything while idle | The first invoice |
 | ~~Whether a budget exists on the subscription today, and whether any Defender for Cloud plan is on~~ Checked 2026-09-27: no budget; only `Discovery` and `FoundationalCspm` are on Standard, and that they cost nothing is *unverified* | `az consumption budget list`, `az security pricing list` |
-| The full environment subject of the federated credential | The probe (§6, step 7) |
+| ~~The full environment subject of the federated credential~~ Settled 2026-09-30 by the probe (R7); the credential was written with it | The probe (§6, step 7) |
 | That current `Azure.Identity` and `Azure.Core` have no advisory | NuGet audit on restore |
 
 ---

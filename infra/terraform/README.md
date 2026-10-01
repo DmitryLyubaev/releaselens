@@ -5,7 +5,9 @@ session. It holds the Container App and Postgres, and nothing long-lived. The lo
 [`../bootstrap`](../bootstrap/README.md). It holds the identities, the Azure OpenAI account, the
 state storage, the budget and every role assignment.
 
-**Nothing described here has been deployed yet.**
+**Deployed and destroyed twice on 1 October 2026** through the workflows. The
+[README's record](../../README.md#two-stack-deployment-1-october-2026) has the runs. The stack
+exists only between a deploy and the next destroy.
 
 ## What it holds
 
@@ -100,7 +102,7 @@ password.
 
 Deploys and destroys go through GitHub Actions, signed in through OIDC as the deploy identity.
 Their design is in the [spec](../../docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md)
-(§4.12, §6.1). Neither workflow has run yet.
+(§4.12, §6.1). Both ran on 1 October 2026.
 - **[`deploy.yml`](../../.github/workflows/deploy.yml)** is dispatched by hand, from `main`, under
   the environment `azure`.
   1. Its `preflight` job refuses to continue while `destroy.yml` is disabled. It resolves the

@@ -314,10 +314,11 @@ money.
 
 ## Deployment
 
-**The app stack has not been deployed in this form yet.** Both Terraform stacks are built and
-tested with mocked plans. The deploy and destroy workflows are built, and the delivery tools they
-call are tested against faked HTTP responses; neither workflow has run yet. What this section
-says is about what the code configures, and each Azure fact carries its source and date. The
+**The app stack was deployed and destroyed twice on 1 October 2026,** through the deploy and
+destroy workflows. The runs are recorded in
+[Two-stack deployment, 1 October 2026](#two-stack-deployment-1-october-2026). Between runs,
+nothing is deployed. The rest of this section is about what the code configures, and each
+Azure fact carries its source and date. The
 detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
 There are two Terraform stacks:
@@ -409,6 +410,45 @@ forecast spend. Microsoft's
 stops working on that date instead of moving to a model the app was not tested with. Its
 successors need payload changes. Review this in February 2027.
 
+### Two-stack deployment, 1 October 2026
+
+The owner applied the bootstrap stack on 30 September 2026. On 1 October the app stack was
+deployed and destroyed twice through the workflows, signed in through OIDC as the deploy
+identity. This records only what those runs showed.
+
+- **The OIDC boundary** (30 September, runbook step R11). A job in the environment `azure`
+  exchanged its GitHub token for an Azure token, and a job without the environment was refused
+  (`AADSTS700213`). That run has since been deleted, because its log showed the tenant ID. The
+  probe workflow that printed it no longer exists.
+- **First deploy** ([run 36778651088](https://github.com/DmitryLyubaev/releaselens/actions/runs/36778651088), commit `542258e`): preflight, apply and
+  the smoke test passed.
+  - Azure OpenAI answered the smoke test's question, with model `gpt-4.1-mini-2025-04-14`, not
+    degraded. It cost **US$0.0012420**: 2,345 uncached input tokens, 2,176 cached input tokens
+    and 54 output tokens. The Worker's `price` command recomputed the same cost, to 6 decimal
+    places.
+  - The runner reached Postgres through `allow-azure-services`, so the runner rule was not
+    needed.
+- **The first destroy stopped on a provider bug**, azurerm issue [#33433](https://github.com/hashicorp/terraform-provider-azurerm/issues/33433). Azure deleted
+  the Container App, but the provider reported a failure and stopped.
+  - A second run deleted Postgres, hit the same bug on the Container Apps environment, which
+    Azure had also deleted, and the empty-group check passed.
+  - Both logs showed the first 24 characters of the subscription ID. Terraform truncates IDs in
+    its progress lines, and GitHub masks only whole values. Both runs were deleted.
+    [PR #16](https://github.com/DmitryLyubaev/releaselens/pull/16) added the output filter and
+    the retry.
+- **Second deploy** ([run 36794105021](https://github.com/DmitryLyubaev/releaselens/actions/runs/36794105021), commit `7029367`): passed. It cost
+  **US$0.0012452**, for 2,345 uncached input, 2,176 cached input and 56 output tokens. Again,
+  the runner rule was not needed.
+- **Second destroy** ([run 36795849202](https://github.com/DmitryLyubaev/releaselens/actions/runs/36795849202)): passed. The retry for #33433 fired
+  twice, the third attempt finished cleanly, and the empty-group check passed. Neither of the
+  last two logs shows any part of the subscription or tenant ID.
+
+What the runs did **not** establish:
+- **Answer quality.** The smoke tenant has no evidence, so the question was answered without any
+  of the corpus. The runs prove the path from the API, through the managed identity, to Azure
+  OpenAI and back, not answer quality.
+- **The idle cost.** What the deployment costs while idle waits for the invoice.
+
 ### Single-stack deployment, 12 August 2026
 
 This is a record of the earlier, single-stack design, kept as history. That stack had a Key
@@ -456,9 +496,9 @@ password, not Microsoft Entra authentication.
 **Postgres is open to Azure services.** Its firewall rule `allow-azure-services` (`0.0.0.0`)
 admits any Azure-hosted client in any tenant, not only this subscription. The password is the
 only control.
-- Whether GitHub-hosted runners pass that rule is *unverified*. The first smoke test will show.
-  If they do not, setting `SMOKE_OPEN_RUNNER_IP` to `true` makes the deploy workflow add a rule
-  for the runner's IP alone before the smoke test, and remove it afterwards.
+- GitHub-hosted runners pass that rule: both deploys on 1 October 2026 reached Postgres without
+  the runner rule. If that changes, setting `SMOKE_OPEN_RUNNER_IP` to `true` makes the deploy
+  workflow add a rule for the runner's IP alone before the smoke test, and remove it afterwards.
 - Private networking is later work.
 
 **CI can do four things, because deploying needs them:**
