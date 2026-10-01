@@ -161,9 +161,19 @@ class RunRequest(BaseModel):
         an arm that is not in the run, or one arm against itself, has no delta to report.
         Each would otherwise be discovered only after the sweep had been paid for.
 
+        A judge model other than claude-sonnet-5 is refused too. That is the pre-registered
+        judge (spec §8) and the only model the judge holds rates for, so any other would be
+        billed at its own rates and reported at Sonnet 5's.
+
         Checks the study's shape only. Whether each arm's URL answers, and from the
         provider it claims, is not known until a query is sent to it.
         """
+        if self.judge_model != "claude-sonnet-5":
+            raise ValueError(
+                f"the judge has no rates for judge model {self.judge_model!r}; "
+                "only 'claude-sonnet-5' can be priced"
+            )
+
         names: set[str] = set()
         for arm in self.arms:
             if arm.name in names:

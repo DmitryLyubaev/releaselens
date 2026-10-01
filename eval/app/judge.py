@@ -18,7 +18,8 @@ from .models import CitedEvidence
 
 # Claude Sonnet 5, USD per million tokens: the rates ModelPricing
 # (src/ReleaseLens.Llm/Providers/ModelPricing.cs) gives claude-sonnet-5 from 2026-09-01, once
-# its introductory 2.00 and 10.00 ended on 2026-08-31.
+# its introductory 2.00 and 10.00 ended on 2026-08-31. They are Sonnet 5's alone, so RunRequest
+# refuses any other judge model.
 JUDGE_INPUT_USD_PER_MTOK = 3.00
 JUDGE_OUTPUT_USD_PER_MTOK = 15.00
 
