@@ -37,7 +37,13 @@ _SETTLED_DECIMALS = 12
 
 
 class Comparison(BaseModel):
-    """Arm x against arm y on one quality metric, as the decision rule reads it."""
+    """Arm x against arm y on one quality metric, as the decision rule reads it.
+
+    k and pairs are what the comparison is really over, and nominal_k and nominal_pairs what it
+    would be over had every pass of every query in scope been paired. A comparison short of its
+    nominal size has a weaker interval than the study planned for: at k of 3 or fewer, the 95%
+    interval is in effect the range of the per-query deltas.
+    """
 
     model_config = ConfigDict(use_attribute_docstrings=True)
 
@@ -49,8 +55,15 @@ class Comparison(BaseModel):
     """Queries with at least one pass where both arms have a value for the metric."""
 
     pairs: int
-    """The (query, pass) pairs those deltas are over. Fewer than k × passes means that many
-    pairs dropped out, because one side errored or was not scored."""
+    """The (query, pass) pairs the deltas are over. Its shortfall against nominal_pairs is how
+    many pairs dropped out, because one side errored, was not scored, or is missing."""
+
+    nominal_k: int
+    """The run's queries in this metric's scope: every query for groundedness, the answerable
+    ones for the citation metrics, and those with a `must_contain` for must_contain."""
+
+    nominal_pairs: int
+    """nominal_k × passes."""
 
     passes: int
     """The passes each arm answered each query, as `k queries × passes` is worded."""
@@ -145,18 +158,25 @@ def metric_value(outcome: QueryOutcome, query: GoldenQuery, metric: str) -> floa
         raise ValueError(f"unknown quality metric {metric!r}")
 
     # Never truthiness: an httpx timeout once recorded an error of "".
-    if outcome.error is not None:
+    if outcome.error is not None or not _in_scope(query, metric):
         return None
 
     if metric == "groundedness":
         return outcome.groundedness
+    if metric == "must_contain":
+        return 1.0 if outcome.must_contain_satisfied else 0.0
+    return getattr(outcome, metric)
 
+
+def _in_scope(query: GoldenQuery, metric: str) -> bool:
+    """Whether the metric applies to the query at all (spec §8): groundedness to every query,
+    the citation metrics to the answerable ones, and `must_contain` to those with something to
+    contain."""
     if metric in ("citation_recall", "citation_precision"):
-        return None if query.category == "unanswerable" else getattr(outcome, metric)
-
-    if not query.must_contain:
-        return None
-    return 1.0 if outcome.must_contain_satisfied else 0.0
+        return query.category != "unanswerable"
+    if metric == "must_contain":
+        return bool(query.must_contain)
+    return True
 
 
 def _kept_differences(
@@ -270,6 +290,8 @@ def compare(
 ) -> list[Comparison]:
     """x against y on each quality metric, in QUALITY_METRICS order.
 
+    `queries` is the run's queries by id, which each metric's nominal size is counted from.
+
     With no query left to compare (k = 0), the verdict is "no data" and the mean and interval
     are None, never a NaN or a zero that would read as no difference.
     """
@@ -278,7 +300,11 @@ def compare(
     for metric in QUALITY_METRICS:
         kept = _kept_differences(outcomes, queries, x, y, metric)
         per_query = _means(kept)
-        common = {"metric": metric, "x": x, "y": y, "passes": passes, "per_query_delta": per_query}
+        nominal_k = sum(1 for query in queries.values() if _in_scope(query, metric))
+        common = {
+            "metric": metric, "x": x, "y": y, "passes": passes, "per_query_delta": per_query,
+            "nominal_k": nominal_k, "nominal_pairs": nominal_k * passes,
+        }
 
         if not per_query:
             comparisons.append(Comparison(

@@ -173,9 +173,13 @@ class RunReport(BaseModel):
     started_at: str
     """When the sweep began, in UTC, read before the first query was sent."""
 
+    dry_run: bool
+    """True when this report prices a run rather than being one. Its outcomes are a sample of
+    one query per category on one pass, and it carries no comparisons."""
+
     passes: int
     """The passes the study asked for. On a dry run, those of the run it prices; the sample
-    itself is one pass, as each of its comparisons' `passes` says."""
+    itself is one pass."""
 
     query_ids: list[str]
     """The run's selection of queries, in order. On a dry run, the selection of the run it
@@ -183,10 +187,12 @@ class RunReport(BaseModel):
 
     arms: list[Arm]
     arm_summaries: list[ArmSummary]
-    """One per arm, in the order of `arms`."""
+    """One per arm, in the order of `arms`. On a dry run, over the sample."""
 
     comparisons: list[Comparison]
-    """For each comparison requested, in the order requested, one per quality metric."""
+    """For each comparison requested, in the order requested, one per quality metric. Empty on
+    a dry run, whose sample is not the study's design, so that no verdict on it can be read as
+    the study's."""
 
     answering_cost_usd: float
     """What the arms reported answering cost, summed over every outcome of every arm. That
@@ -208,7 +214,7 @@ class RunReport(BaseModel):
 
     estimate_note: str | None = None
     """On a dry run: which arms' samples had errors and how many, when the estimate was refused;
-    then, when the run is judged, that the judge's output share is an allowance, not a
-    measurement. None on a real run, and on an unjudged dry run whose sample had no errors."""
+    then how the estimate treats judging. Judged, the judge's output share is an allowance, not a
+    measurement; unjudged, the estimate excludes judging. None on a real run."""
 
     outcomes: list[QueryOutcome]

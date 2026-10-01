@@ -254,15 +254,15 @@ def _price_of_the_run(
     answered nothing has no cost to scale up. Either would understate the run the operator is
     about to authorise.
 
-    When the run is judged, the note also says that the judge's output share is an allowance
-    rather than a measurement, after the refusal when there is one, and is the whole note when
-    there is not. count_tokens prices the judge's input only. Unjudged, there is no judge share
-    to say that of, and the note is None unless the estimate was refused.
+    The note always says how the estimate treats judging, after the refusal when there is one,
+    and is the whole note when there is not. Judged, the judge's output share is an allowance
+    rather than a measurement, since count_tokens prices the judge's input only. Unjudged, the
+    estimate leaves judging out, and would understate a judged run with nothing to say so.
     """
-    allowance = (
+    judging = (
         f"The judge's output share is an allowance of {JUDGE_OUTPUT_ALLOWANCE_TOKENS} tokens per "
         "judgement, not a measurement."
-        if request.judge else None
+        if request.judge else "The estimate excludes judging."
     )
 
     holes = []
@@ -273,8 +273,7 @@ def _price_of_the_run(
             holes.append(f"arm {arm.name} had {errors} of {len(drawn)} errors")
 
     if holes:
-        refusal = "no estimate: " + "; ".join(holes)
-        return None, f"{refusal}. {allowance}" if allowance else refusal
+        return None, "no estimate: " + "; ".join(holes) + ". " + judging
 
     answers_per_arm = selection_size * request.passes
 
@@ -285,7 +284,7 @@ def _price_of_the_run(
     if sample:
         estimate += judge_cost_usd / len(sample) * answers_per_arm * len(request.arms)
 
-    return estimate, allowance
+    return estimate, judging
 
 
 async def run_eval(request: RunRequest) -> RunReport:
@@ -373,12 +372,15 @@ async def run_eval(request: RunRequest) -> RunReport:
     return RunReport(
         run_id=str(uuid.uuid4()),
         started_at=started_at,
+        dry_run=request.dry_run,
         passes=request.passes,
         query_ids=[query.id for query in selection],
         arms=request.arms,
         arm_summaries=[summarise(outcomes, asked, arm) for arm in request.arms],
-        # Over the passes the outcomes really have: one, on a dry run.
-        comparisons=[
+        # Empty on a dry run. Its sample is one query per category on one pass, under a header
+        # giving the priced run's queries and passes, and a verdict on it could be read as the
+        # study's.
+        comparisons=[] if request.dry_run else [
             comparison
             for x, y in request.comparisons
             for comparison in compare(outcomes, asked, x, y, passes)

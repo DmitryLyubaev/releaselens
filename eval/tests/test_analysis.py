@@ -163,6 +163,31 @@ def test_pairs_with_an_errored_side_are_dropped_and_counted():
     assert broken["citation_recall"].mean_delta == 0.5
 
 
+def test_a_short_sample_falls_below_its_nominal_size():
+    """The nominal size is the run's queries in each metric's scope, times the passes, so a
+    comparison over fewer, and so with a weaker interval, says so."""
+    every_pass = [_outcome(q, arm, p) for q in _QUERIES for arm in ("Z", "O") for p in range(3)]
+    # O's answers to q-ans are missing altogether, on every pass.
+    short = [o for o in every_pass if (o.id, o.arm) != ("q-ans", "O")]
+
+    # Three queries; two answerable; one with something to contain.
+    nominal = [(3, 9), (2, 6), (2, 6), (1, 3)]
+
+    full = compare(every_pass, _QUERIES, "Z", "O", passes=3)
+    assert [(c.k, c.pairs) for c in full] == nominal
+    assert [(c.nominal_k, c.nominal_pairs) for c in full] == nominal
+
+    cut = compare(short, _QUERIES, "Z", "O", passes=3)
+    assert [(c.nominal_k, c.nominal_pairs) for c in cut] == nominal
+    assert [(c.k, c.pairs) for c in cut] == [(2, 6), (1, 3), (1, 3), (0, 0)]
+    for comparison in cut:
+        assert comparison.k < comparison.nominal_k
+        assert comparison.pairs < comparison.nominal_pairs
+
+    # With nothing left in scope, the size it should have had is still reported beside "no data".
+    assert cut[3].verdict == "no data"
+
+
 def test_unscored_groundedness_drops_the_pair_from_groundedness_only():
     outcomes = [
         _outcome("q-ans", "Z", 0),
@@ -331,7 +356,8 @@ def test_degenerate_inputs():
     assert (failed.p50_latency_ms, failed.p95_latency_ms, failed.mean_cost_usd_per_query) == (None, None, None)
 
     report = RunReport(
-        run_id="run", started_at="2026-10-02T00:00:00+00:00", passes=3, query_ids=list(_QUERIES),
+        run_id="run", started_at="2026-10-02T00:00:00+00:00", dry_run=False, passes=3,
+        query_ids=list(_QUERIES),
         arms=[_Z, _O],
         arm_summaries=[summarise(nothing, _QUERIES, _Z), failed],
         comparisons=[*compare(single, _QUERIES, "Z", "O", passes=3), *empty],

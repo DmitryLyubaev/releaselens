@@ -506,20 +506,37 @@ async def test_dry_run_prices_the_run_it_precedes(fake_api):
     # 10 queries, 3 passes, 3 arms: the run the operator is about to authorise.
     assert report.estimated_cost_usd_before_run == pytest.approx(0.01 * 10 * 3 * 3)
 
-    # Unjudged, so there is no judge allowance to own up to.
-    assert report.estimate_note is None
+    # Unjudged, so the estimate leaves judging out, which would understate a judged run.
+    assert report.estimate_note == "The estimate excludes judging."
 
     # The report's header is the run it prices, not the sample.
     assert report.query_ids == [q.id for q in runner_module._stratify(load_golden(), 2)]
     assert report.passes == 3
 
 
+async def test_a_dry_run_publishes_no_comparisons(fake_api):
+    """A dry run's sample is one query per category on one pass, under a header giving the priced
+    run's queries and passes. A verdict on it could be read as the study's."""
+    fake_api.replies = _each_arm_answers_as_itself()
+
+    report = await run_eval(RunRequest(
+        api_key="rl_test", per_category=2, passes=3, judge=False, dry_run=True, arms=_ARMS,
+        comparisons=[("Z", "O")],
+    ))
+
+    assert report.dry_run is True
+    assert report.comparisons == []
+
+
 @pytest.mark.parametrize(
     ("failing", "note"),
     [
-        ({"Z": "all"}, "no estimate: arm Z had 5 of 5 errors"),
-        ({"O": "gq-014"}, "no estimate: arm O had 1 of 5 errors"),
-        ({"Z": "all", "O": "gq-014"}, "no estimate: arm Z had 5 of 5 errors; arm O had 1 of 5 errors"),
+        ({"Z": "all"}, "no estimate: arm Z had 5 of 5 errors. The estimate excludes judging."),
+        ({"O": "gq-014"}, "no estimate: arm O had 1 of 5 errors. The estimate excludes judging."),
+        (
+            {"Z": "all", "O": "gq-014"},
+            "no estimate: arm Z had 5 of 5 errors; arm O had 1 of 5 errors. The estimate excludes judging.",
+        ),
     ],
     ids=["one-arm-fails-its-whole-sample", "one-arm-fails-one-query", "two-arms-fail"],
 )
@@ -692,6 +709,11 @@ async def test_report_carries_summaries_and_the_requested_comparisons(fake_api, 
     ]
     assert list(report.comparisons[3].per_query_delta) == ["gq-001", "gq-002", "gq-022", "gq-023", "gq-029", "gq-030"]
 
+    # The pre-registered selection's nominal sizes, which every comparison carries, short or not.
+    assert [(c.nominal_k, c.nominal_pairs) for c in report.comparisons] == 2 * [
+        (10, 30), (8, 24), (8, 24), (6, 18),
+    ]
+
     # One summary per arm, in the request's arm order.
     assert [(s.arm, s.outcome_count, s.models_seen) for s in report.arm_summaries] == [
         (arm.name, 30, [_MODELS[arm.expected_provider]]) for arm in _ARMS
@@ -700,6 +722,7 @@ async def test_report_carries_summaries_and_the_requested_comparisons(fake_api, 
     assert report.passes == 3
     assert report.arms == _ARMS
     assert len(report.query_ids) == 10
+    assert report.dry_run is False
 
 
 async def test_started_at_is_read_before_the_first_query_is_sent(fake_api, monkeypatch):
