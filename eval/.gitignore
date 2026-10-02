@@ -1,0 +1,3 @@
+# The retrieval benchmark's working data: the corpus export, the embedded vectors and the
+# arms' outputs. Regenerated from the database and Azure, never source, and large.
+/retrieval-data/
