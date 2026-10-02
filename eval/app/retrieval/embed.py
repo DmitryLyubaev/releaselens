@@ -36,8 +36,10 @@ _TIMEOUT_SECONDS = 120.0
 class EmbeddingRun:
     """The saved vectors of one deployment's corpus run, and what they cost.
 
-    `tokens_billed` and `batches` cover every batch saved in `out_dir`, across the calls it took
-    to finish, so a resumed run reports what the whole corpus cost, each batch counted once.
+    `tokens_billed` and `batches` count the batches recorded as saved in `out_dir`, across the
+    calls it took to finish, each batch once. They are what the saved vectors cost, not
+    everything Azure billed: a batch paid for but lost in a crash before its record is not
+    included, and neither is the call that later embeds it again.
     """
 
     deployment: str
@@ -128,8 +130,18 @@ def _resume(progress_path: Path, ids_path: Path, vectors_path: Path, *, deployme
             f"{progress_path} was saved for another deployment, chunk order or batch size; "
             "move the deployment's files out of the way to embed afresh"
         )
-    if progress["done"] and not vectors_path.exists():
-        raise ValueError(f"{progress_path} records saved batches, but {vectors_path} is missing")
+    if progress["done"]:
+        if not vectors_path.exists():
+            raise ValueError(f"{progress_path} records saved batches, but {vectors_path} is missing")
+        # Checked here, before any paid call, and even when every batch is done: a resume must
+        # never write into, or report as finished, a file that is not the one recorded.
+        saved = np.lib.format.open_memmap(vectors_path, mode="r")
+        shape, dtype = saved.shape, saved.dtype
+        del saved
+        expected = (progress["chunks"], progress["dimensions"])
+        if shape != expected or dtype != np.float32:
+            raise ValueError(f"{vectors_path} holds {dtype} {shape}, but {progress_path} records "
+                             f"float32 {expected}")
     return progress
 
 

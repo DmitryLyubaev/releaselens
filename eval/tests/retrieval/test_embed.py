@@ -13,6 +13,7 @@ import pytest
 from azure.core.credentials import AccessToken
 
 from app.retrieval import azure_auth
+from app.retrieval import embed as embed_module
 from app.retrieval.azure_auth import TokenSource
 from app.retrieval.corpus import Chunk
 from app.retrieval.embed import embed_corpus, embed_query
@@ -170,6 +171,118 @@ def test_embedding_resumes_after_a_failed_batch(tmp_path):
     assert np.array_equal(np.load(run.vectors_path), np.load(clean.vectors_path))
     assert json.loads(run.ids_path.read_text(encoding="utf-8")) == [c.chunk_id for c in chunks]
     # What the corpus cost, counted once per batch however many calls it took to finish.
+    assert (run.tokens_billed, run.batches) == (clean.tokens_billed, clean.batches)
+
+
+def _partial_run(out_dir, chunks):
+    """Batch 1 of 3 saved and recorded, then a 400 on batch 2 ends the run."""
+
+    def fails_batch_two(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["input"][0] == chunks[64].content:
+            return httpx.Response(400, json={"error": {"code": "BadRequest"}})
+        return _reply(request)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _embed(chunks, out_dir, _Recorder(fails_batch_two), batch_size=64)
+    progress = json.loads((out_dir / f"{_DEPLOYMENT}.progress.json").read_text(encoding="utf-8"))
+    assert list(progress["done"]) == ["0"]
+
+
+def _files(out_dir) -> dict[str, bytes]:
+    return {path.name: path.read_bytes() for path in sorted(out_dir.iterdir())}
+
+
+def _assert_refused(chunks, out_dir, **kwargs) -> None:
+    """The resume raises before any request, and leaves every file as it was."""
+    before = _files(out_dir)
+    recorder = _Recorder()
+    with pytest.raises(ValueError):
+        _embed(chunks, out_dir, recorder, **kwargs)
+    assert recorder.requests == []
+    assert _files(out_dir) == before
+
+
+def test_resume_refuses_a_different_chunk_list(tmp_path):
+    chunks = _chunks(130)
+    _partial_run(tmp_path, chunks)
+
+    _assert_refused(chunks[:100], tmp_path, batch_size=64)
+    _assert_refused(chunks[::-1], tmp_path, batch_size=64)
+
+
+@pytest.mark.parametrize("change", ["deployment", "batch_size"])
+def test_resume_refuses_another_deployment_or_batch_size(tmp_path, change):
+    chunks = _chunks(130)
+    _partial_run(tmp_path, chunks)
+
+    if change == "deployment":
+        # The files are named for the deployment, so only a copied or renamed progress file can
+        # name another one.
+        progress_path = tmp_path / f"{_DEPLOYMENT}.progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        progress["deployment"] = "another-embed-not-real"
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        _assert_refused(chunks, tmp_path, batch_size=64)
+    else:
+        _assert_refused(chunks, tmp_path, batch_size=32)
+
+
+def test_resume_refuses_progress_without_its_vectors(tmp_path):
+    chunks = _chunks(130)
+    _partial_run(tmp_path, chunks)
+    (tmp_path / f"{_DEPLOYMENT}.npy").unlink()
+
+    _assert_refused(chunks, tmp_path, batch_size=64)
+
+
+@pytest.mark.parametrize(
+    ("finished", "replacement"),
+    [
+        (False, np.zeros((130, _DIMENSIONS + 1), dtype=np.float32)),
+        (False, np.zeros((130, _DIMENSIONS), dtype=np.float64)),
+        (False, np.zeros((129, _DIMENSIONS), dtype=np.float32)),
+        (True, np.zeros((130, _DIMENSIONS + 1), dtype=np.float32)),
+    ],
+    ids=["partial-dimensions", "partial-dtype", "partial-rows", "finished-dimensions"],
+)
+def test_resume_refuses_vectors_that_do_not_match_the_record(tmp_path, finished, replacement):
+    chunks = _chunks(130)
+    if finished:
+        _embed(chunks, tmp_path, _Recorder(), batch_size=64)
+    else:
+        _partial_run(tmp_path, chunks)
+    np.save(tmp_path / f"{_DEPLOYMENT}.npy", replacement)
+
+    _assert_refused(chunks, tmp_path, batch_size=64)
+
+
+def test_a_batch_flushed_but_not_recorded_is_sent_again(tmp_path, monkeypatch):
+    """The one window that pays twice: rows flushed, then a crash before the batch's record."""
+    chunks = _chunks(130)
+    real_write_json = embed_module._write_json
+
+    def crash_on_the_last_record(path, value):
+        if path.name.endswith(".progress.json") and "2" in value["done"]:
+            raise RuntimeError("crashed before the record")
+        real_write_json(path, value)
+
+    monkeypatch.setattr(embed_module, "_write_json", crash_on_the_last_record)
+    with pytest.raises(RuntimeError):
+        _embed(chunks, tmp_path, _Recorder(), batch_size=64)
+    monkeypatch.setattr(embed_module, "_write_json", real_write_json)
+
+    # Batch 3's rows are in the file, but the record says only batches 1 and 2 are saved.
+    expected = np.array([_vector(c.content) for c in chunks], dtype=np.float32)
+    assert np.array_equal(np.load(tmp_path / f"{_DEPLOYMENT}.npy")[128:], expected[128:])
+    progress = json.loads((tmp_path / f"{_DEPLOYMENT}.progress.json").read_text(encoding="utf-8"))
+    assert sorted(progress["done"]) == ["0", "1"]
+
+    resumed = _Recorder()
+    run = _embed(chunks, tmp_path, resumed, batch_size=64)
+
+    assert resumed.first_inputs() == [chunks[128].content]
+    clean = _embed(chunks, tmp_path / "clean", _Recorder(), batch_size=64)
+    assert np.array_equal(np.load(run.vectors_path), np.load(clean.vectors_path))
     assert (run.tokens_billed, run.batches) == (clean.tokens_billed, clean.batches)
 
 
