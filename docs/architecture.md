@@ -428,9 +428,13 @@ repository.
 (2026-10-02, spec §4.8). It was 100, an estimate inferred from the most expensive query of the
 12 August run.
 - The dry run (2026-10-02, five queries per arm, once) measured Z's largest query (gq-022) at
-  46,422 tokens, cached input included. Typical in-study use is about 49,000 tokens a minute.
-- Azure also counts each request's `max_tokens` (2048 here) against the per-minute quota. Two
-  adjacent heavy queries, gq-022 and gq-023, could together pass 100,000 tokens in one minute.
+  46,422 tokens, cached input included. Z's typical in-study use is about 49,000 tokens a
+  minute: its five queries total 72,554 tokens over 89.5 s of A-Z-O rounds, about 48,600, a
+  five-query sample.
+- Azure also counts each request's `max_tokens` (2048 here) against the per-minute quota.
+  gq-023 was not in the dry run and was not measured; it is assumed to be similar in size to
+  gq-022, as the other causal query in the selection. If it is, the adjacent pair could
+  together pass 100,000 tokens in one minute.
 - 300 is within the subscription's Global Standard quota of 5,000.
 
 Capacity caps how fast spend can grow, not how much. Sustained around the clock, 300,000 tokens a

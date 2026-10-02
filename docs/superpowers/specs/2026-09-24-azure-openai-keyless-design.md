@@ -345,11 +345,12 @@ Standard over asking Microsoft for regional quota.
 2026-10-02) answered one query per category on each arm, once: five queries per arm. From it:
 
 - arm Z's largest query (gq-022) measured 46,422 tokens, cached input included
-- typical in-study use is about 49,000 TPM
-- the adjacent causal pair gq-022 and gq-023 are each about 46,000 tokens. Together with
-  Azure's per-request `max_tokens` reservation (2,048), they could pass 100,000 tokens in one
-  minute and draw 429s on Z's hardest queries. gq-023 was not in the dry run, so its size is
-  not measured
+- Z's typical in-study use is about 49,000 TPM: its five dry-run queries total 72,554 tokens
+  over 89.5 s of A-Z-O rounds, about 48,600 TPM. That is a five-query sample
+- the adjacent causal pair gq-022 and gq-023. gq-023 was not in the dry run, so its size was
+  not measured; it is assumed to be similar to gq-022's, as the other causal query in the
+  selection. If it is, the pair, together with Azure's per-request `max_tokens` reservation
+  (2,048), could pass 100,000 tokens in one minute and draw 429s on Z's hardest queries
 - the capacity check in `eval/baseline.md` pairs each of Z's queries with its own A-Z-O round
   time. gq-022's round took 28.1 s (A 8,119 + Z 9,049 + O 10,980 ms), which gives about
   99,000 TPM (46,422 × 60,000 / 28,148 ms), the largest of the five. Azure's `max_tokens`

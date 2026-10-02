@@ -458,8 +458,10 @@ $reservation_bound_tpm = [math]::Round(2048 * 6 * 60000 / $fastest_round_ms)
      that fast, so this cannot occur: it is a pessimistic bound for the record, not the check.
 
    Adjacent heavy queries can still peak above the typical rate, since two in a row can fall in
-   the same minute; spec §4.8 has the dry run's figures. Revise the price estimate if the check
-   fails, and report both numbers to the owner.
+   the same minute; spec §4.8 has the dry run's figures. The check covers only the dry run's
+   sample of one query per category, so it does not cover gq-023, the other half of the heavy
+   causal pair; that is why the capacity has headroom above the check. Revise the price estimate
+   if the check fails, and report both numbers to the owner.
 3. **The tenant budget (step 1).** Read the budget and what today has used, in UTC as `/query`
    counts it. On the dry run's UTC day, `used_today` already holds the dry run's own tokens.
 
