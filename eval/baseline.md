@@ -225,17 +225,33 @@ wsl.exe -d Ubuntu --exec docker cp src/ReleaseLens.Storage/Migrations/007_app_ro
 wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres psql -U releaselens -d releaselens_eval -f /tmp/007_app_role.sql
 ```
 
-Point the Worker at the restored database, bring its schema up to date, and issue the harness a
-key. The key goes straight into this window's environment and is never shown. It is stored only
-as a hash, so it cannot be recovered, only reissued. The check prints `True` or `False`, never
-the key; go on only on `True`.
+Point the Worker at the restored database, bring its schema up to date, raise the tenant's daily
+token budget, and issue the harness a key. The key goes straight into this window's environment
+and is never shown. It is stored only as a hash, so it cannot be recovered, only reissued. The
+check prints `True` or `False`, never the key; go on only on `True`.
 
 ```powershell
 $env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
 dotnet run --project src/ReleaseLens.Worker -- migrate
+$env:RELEASELENS_Tenant__Slug = "semantic-kernel"
+$env:RELEASELENS_Tenant__DailyTokenBudget = "20000000"
+dotnet run --project src/ReleaseLens.Worker -- create-tenant
 $env:EVAL_API_KEY = (dotnet run --project src/ReleaseLens.Worker -- issue-key semantic-kernel eval)
 $env:EVAL_API_KEY -cmatch '^rl_[0-9a-f]{48}$'
 ```
+
+The budget is raised because one tenant serves all three arms. They share one database and one
+key, so they share the tenant's daily token budget, and `/query` refuses every arm with HTTP 429
+once the tenant's tokens for the UTC day reach it. The restored tenant row keeps the budget it
+was created with, most likely `create-tenant`'s default of 2,000,000. The study needs about 3.5
+million: an estimate from the 12 August token counts and spec §8's cost per query, not a
+measurement. Cut off partway, the study would publish a fraction of its pairs, and the money
+already spent would buy a study that has to be run again.
+
+`create-tenant` is an upsert on the slug. On the restored `semantic-kernel` tenant it keeps the
+tenant and its evidence, sets the budget to 20,000,000, and rewrites the tenant's names from the
+Worker's settings, which are the names it already has. It changes `releaselens_eval` only,
+because `RELEASELENS_DB` points there. Step 4 checks the budget again before the paid run.
 
 Keep this window open: it holds `EVAL_API_KEY`, and the study's request is sent from it.
 
@@ -321,18 +337,27 @@ Each arm must answer `/health`:
 ## 3. Start the harness
 
 In a fourth window, from `eval/`. The judge needs `ANTHROPIC_API_KEY`, for its token counts and
-its scoring:
+its scoring. A run that asks for the judge fails before it sends any query when the key is
+missing.
 
 ```powershell
 $env:ANTHROPIC_API_KEY = (Select-String -Path ..\.env -Pattern '^ANTHROPIC_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
-.venv/Scripts/fastapi run app/main.py --port 8000
+.venv/Scripts/fastapi run app/main.py --host 127.0.0.1 --port 8000
 ```
+
+`--host 127.0.0.1` keeps the harness on this machine. `fastapi run` listens on every interface
+by default, and this window holds the Anthropic key: anyone on the network who could reach port
+8000 could point the harness at an arm of their own and spend the key on judgements.
 
 ## 4. Price it, then run it
 
 Both spend money, and each needs the owner's approval first. The dry run answers one query per
 category on each arm, once, and prices the whole run. Spec §8 estimates the dry run at about
-$0.55, and the run at about $5, which could be half or double that. From the window that holds
+$0.55, and the run at about $5, which could be half or double that.
+
+Each request is one call that returns only when the sweep has finished: minutes for the dry run,
+and tens of minutes for the run. `-TimeoutSec 0` makes PowerShell wait as long as that takes,
+rather than give up while the harness is still spending. From the window that holds
 `EVAL_API_KEY`:
 
 ```powershell
@@ -346,14 +371,71 @@ $study = @{
     per_category = 2; passes = 3; judge = $true; dry_run = $true
     api_key = $env:EVAL_API_KEY
 }
-$report = Invoke-RestMethod -Method Post -Uri http://localhost:8000/eval/run -ContentType application/json -Body ($study | ConvertTo-Json -Depth 4)
+$report = Invoke-RestMethod -Method Post -Uri http://localhost:8000/eval/run -ContentType application/json -Body ($study | ConvertTo-Json -Depth 4) -TimeoutSec 0
 $report | Select-Object run_id, estimated_cost_usd_before_run, estimate_note
 ```
 
-For the run itself, set `$study.dry_run = $false` and send it again. Each report is also saved
-as `eval/reports/<run_id>.json`, which is git-ignored. From `eval/`, this prints a run's
-write-up exactly as it is published. It refuses a dry run, which prices the study and carries
-no verdicts:
+**If the call fails, do not send it again.** A client that gives up, through a timeout, Ctrl+C
+or a closed window, ends only the client. The harness carries on, and when the sweep finishes it
+still saves the report as `eval/reports/<run_id>.json`, which is git-ignored; the harness's
+window logs `POST /eval/run` at that moment. Sending the request again would start a second paid
+run beside the first, drawing on the same token budget. Check `eval/reports/` first, and take
+the report from there once it appears:
+
+```powershell
+Get-ChildItem eval/reports/*.json | Sort-Object LastWriteTime | Select-Object -Last 3 Name, LastWriteTime
+$report = Get-Content eval/reports/<run_id>.json -Raw | ConvertFrom-Json
+```
+
+### Before the run: the dry run's checks
+
+Each must pass before the owner is asked to approve the run. From the dry run's `$report`:
+
+```powershell
+$report.outcomes | Group-Object arm | ForEach-Object {
+    $budget = $_.Group | ForEach-Object { $_.tokens_in + $_.tokens_out }
+    $all = $_.Group | ForEach-Object { $_.tokens_in + $_.cache_read_input_tokens + $_.tokens_out }
+    [pscustomobject]@{
+        arm = $_.Name
+        mean_budget_tokens = [math]::Round(($budget | Measure-Object -Average).Average)
+        max_tokens_with_cached = ($all | Measure-Object -Maximum).Maximum
+        fastest_ms = [math]::Round(($_.Group | Measure-Object latency_ms -Minimum).Minimum)
+        errors = @($_.Group | Where-Object { $null -ne $_.error }).Count
+    }
+} | Format-Table
+$report.outcomes | Where-Object { $null -ne $_.error } | Select-Object arm, id, error
+```
+
+1. **Each arm's tokens per query, and no errors.** Record `mean_budget_tokens` for each arm.
+   Every arm must show 0 errors, and in particular no wrong-provider error, which reads
+   `arm Z expected azure-openai; answered by …`. A dry run with any error also refuses to
+   estimate. Fix the arm and run the dry run again.
+2. **The capacity check (spec §4.8).** Z's largest query, multiplied by the queries Z runs per
+   minute, must stay under the deployment's 100,000 tokens per minute. Take Z's
+   `max_tokens_with_cached` as the largest query, cached input included. Z answers one query at
+   a time, so it runs at most `60000 / fastest_ms` queries a minute, using Z's own `fastest_ms`.
+   Revise the price estimate if the check fails, and report both numbers to the owner.
+3. **The tenant budget (step 1).** Read the budget and what today has used, in UTC as `/query`
+   counts it. On the dry run's UTC day, `used_today` already holds the dry run's own tokens.
+
+   ```powershell
+   wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres psql -U releaselens -d releaselens_eval -c "select t.daily_token_budget, coalesce(u.tokens_in + u.tokens_out, 0) as used_today from tenants t left join token_usage u on u.tenant_id = t.tenant_id and u.usage_date = (now() at time zone 'utc')::date where t.slug = 'semantic-kernel'"
+   ```
+
+   `daily_token_budget` must read 20,000,000. `used_today`, plus 30 times the sum of the three
+   arms' `mean_budget_tokens`, must stay well under it: each arm answers 10 queries on 3 passes,
+   and the run's tokens could be double the dry run's. If it would not fit, wait for the next UTC
+   day or raise the budget again as in step 1.
+4. **The judge's allowance.** The estimate allows each judgement 512 output tokens, which is an
+   allowance and not a measurement. The judge may write up to its cap of 2,048. Over the run's 90
+   judgements, at Sonnet 5's $15 per million output tokens, the worst case is
+   90 × 2,048 × $15/M ≈ $2.76 of judge output, against the 90 × 512 × $15/M ≈ $0.69 the estimate
+   includes. Tell the owner the worst case, about $2.07 above the estimate.
+
+For the run itself, set `$study.dry_run = $false` and send it the same way, with
+`-TimeoutSec 0`, and with the same rule: if the call fails, check `eval/reports/` before
+anything else. From `eval/`, this prints a run's write-up exactly as it is published. It refuses
+a dry run, which prices the study and carries no verdicts:
 
 ```powershell
 .venv/Scripts/python -m app.study_report <run_id>
