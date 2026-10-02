@@ -199,8 +199,19 @@ against A is reported as well, but it compares two different models.
 The commands are PowerShell, run from the repository root unless a step says otherwise. Docker
 runs inside WSL (Ubuntu) on this machine and is not on the Windows path, so each `docker`
 command goes through `wsl.exe`, which starts in the same folder as
-`/mnt/e/Projects/ReleaseLens`. Keys are read from the git-ignored `.env` straight into the
-environment of the process that needs them, so none is typed, printed or written to a file.
+`/mnt/e/Projects/ReleaseLens`.
+
+Keys reach only the environment of the window that needs them, and none is printed or written to
+a file. On this machine `ANTHROPIC_API_KEY` is a Windows user environment variable, which every
+new window inherits. Each window that needs a key checks that it is set, without printing it,
+and asks for it at a masked prompt when it is not (`Read-Host -MaskInput`, PowerShell 7).
+
+If a git-ignored `.env` exists in the repository root, a window can read its key from there
+instead of the check, as here for the O arm; from `eval/` the path is `..\.env`:
+
+```powershell
+$env:OPENAI_API_KEY = (Select-String -Path .env -Pattern '^OPENAI_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+```
 
 ## 1. Restore the corpus
 
@@ -288,7 +299,7 @@ that stops at startup says why, and a model with no price is one such reason.
 ```powershell
 $env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
 $env:Chat__Providers__0 = "anthropic"
-$env:ANTHROPIC_API_KEY = (Select-String -Path .env -Pattern '^ANTHROPIC_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+if ($env:ANTHROPIC_API_KEY) { "ANTHROPIC_API_KEY is set" } else { $env:ANTHROPIC_API_KEY = Read-Host -MaskInput "ANTHROPIC_API_KEY" }
 dotnet run --project src/ReleaseLens.Api -c Release --no-build --no-launch-profile --urls http://localhost:8081
 ```
 
@@ -324,7 +335,7 @@ output.
 $env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
 $env:Chat__Providers__0 = "openai"
 $env:OpenAi__Model = "gpt-4.1-mini"
-$env:OPENAI_API_KEY = (Select-String -Path .env -Pattern '^OPENAI_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+if ($env:OPENAI_API_KEY) { "OPENAI_API_KEY is set" } else { $env:OPENAI_API_KEY = Read-Host -MaskInput "OPENAI_API_KEY" }
 dotnet run --project src/ReleaseLens.Api -c Release --no-build --no-launch-profile --urls http://localhost:8083
 ```
 
@@ -341,13 +352,18 @@ its scoring. A run that asks for the judge fails before it sends any query when 
 missing.
 
 ```powershell
-$env:ANTHROPIC_API_KEY = (Select-String -Path ..\.env -Pattern '^ANTHROPIC_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
-.venv/Scripts/fastapi run app/main.py --host 127.0.0.1 --port 8000
+if ($env:ANTHROPIC_API_KEY) { "ANTHROPIC_API_KEY is set" } else { $env:ANTHROPIC_API_KEY = Read-Host -MaskInput "ANTHROPIC_API_KEY" }
+.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`--host 127.0.0.1` keeps the harness on this machine. `fastapi run` listens on every interface
-by default, and this window holds the Anthropic key: anyone on the network who could reach port
-8000 could point the harness at an arm of their own and spend the key on judgements.
+`app.main:app` imports the harness as the package `app`, which its relative imports need.
+`fastapi run app/main.py` fails with "attempted relative import with no known parent package",
+because `eval/app/` has no `__init__.py`.
+
+`--host 127.0.0.1` keeps the harness on this machine. This window holds the Anthropic key:
+bound to every interface, as `fastapi run` binds by default, the harness would let anyone on the
+network who could reach port 8000 point it at an arm of their own and spend the key on
+judgements.
 
 ## 4. Price it, then run it
 
@@ -404,17 +420,29 @@ $report.outcomes | Group-Object arm | ForEach-Object {
     }
 } | Format-Table
 $report.outcomes | Where-Object { $null -ne $_.error } | Select-Object arm, id, error
+$round_ms = ($report.outcomes | Group-Object arm | ForEach-Object { ($_.Group | Measure-Object latency_ms -Minimum).Minimum } | Measure-Object -Sum).Sum
+$z_max = ($report.outcomes | Where-Object arm -eq "Z" | ForEach-Object { $_.tokens_in + $_.cache_read_input_tokens + $_.tokens_out } | Measure-Object -Maximum).Maximum
+[pscustomobject]@{
+    fastest_round_ms = [math]::Round($round_ms)
+    rounds_per_minute = [math]::Round(60000 / $round_ms, 2)
+    z_worst_tpm = [math]::Round($z_max * 60000 / $round_ms)
+}
 ```
 
 1. **Each arm's tokens per query, and no errors.** Record `mean_budget_tokens` for each arm.
    Every arm must show 0 errors, and in particular no wrong-provider error, which reads
    `arm Z expected azure-openai; answered by …`. A dry run with any error also refuses to
    estimate. Fix the arm and run the dry run again.
-2. **The capacity check (spec §4.8).** Z's largest query, multiplied by the queries Z runs per
-   minute, must stay under the deployment's 100,000 tokens per minute. Take Z's
-   `max_tokens_with_cached` as the largest query, cached input included. Z answers one query at
-   a time, so it runs at most `60000 / fastest_ms` queries a minute, using Z's own `fastest_ms`.
-   Revise the price estimate if the check fails, and report both numbers to the owner.
+2. **The capacity check (spec §4.8).** Z's largest query, multiplied by the most A-Z-O rounds a
+   minute can hold, must stay under the deployment's 300,000 tokens per minute. Take Z's
+   `max_tokens_with_cached` as the largest query, cached input included. In the study Z answers
+   once in each A-Z-O round, not back to back, so a minute holds at most
+   `60000 / (fastest A + fastest Z + fastest O)` rounds, using each arm's `fastest_ms`. The last
+   block above prints that sum as `fastest_round_ms` and the product as `z_worst_tpm`.
+   Adjacent heavy queries can still peak above the typical rate, all the more because Azure
+   also counts each request's `max_tokens` reservation (2,048) against the minute; spec §4.8 has
+   the dry run's figures. Revise the price estimate if the check fails, and report both numbers
+   to the owner.
 3. **The tenant budget (step 1).** Read the budget and what today has used, in UTC as `/query`
    counts it. On the dry run's UTC day, `used_today` already holds the dry run's own tokens.
 

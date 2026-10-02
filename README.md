@@ -511,8 +511,8 @@ only control.
   Operator on the app identity.
   - That identity can call the model and the account's data plane directly, outside `/query`,
     where no tenant token budget applies.
-  - The deployment's capacity (100,000 tokens per minute, an estimate) caps how fast that spend
-    can grow, not how much it can total.
+  - The deployment's capacity (300,000 tokens per minute, from the dry run's measurement) caps
+    how fast that spend can grow, not how much it can total.
   - The budget alerts, and stops nothing.
 - **Read the Postgres password,** which is in the app stack's state.
 - **Create any billable resource in `rg-releaselens`.** So the right to push to `main` is also

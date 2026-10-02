@@ -237,7 +237,7 @@ GitHub Actions: environment "azure", whose only branch rule is main
 │  id-releaselens-deploy       federated credential github-environment-azure (env azure)      │
 │  id-releaselens-app          the identity the Container App runs as                         │
 │  aoai-releaselens-<suffix>   kind AIServices · key authentication disabled                  │
-│    └ releaselens-chat        gpt-4.1-mini 2025-04-14 · GlobalStandard · capacity 100        │
+│    └ releaselens-chat        gpt-4.1-mini 2025-04-14 · GlobalStandard · capacity 300        │
 │  ag-releaselens-budget       emails for budget-releaselens-monthly (subscription scope)     │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ rg-releaselens · created empty by bootstrap · contents deployed and destroyed by CI ───────┐
@@ -423,13 +423,17 @@ repository.
 - Its Global Standard successors, such as the GPT-5 family, need payload changes. Review this in
   February 2027.
 
-**Capacity 100, which is 100,000 tokens per minute, is an estimate, not a measurement.**
-- It is inferred from the most expensive query of the 12 August run.
-- Azure also counts each request's `max_tokens` (2048 here) against the per-minute quota.
-- The first dry run's measured token counts will revise it.
+**Capacity 300, which is 300,000 tokens per minute, is revised from the dry run's measurement**
+(2026-10-02, spec §4.8). It was 100, an estimate inferred from the most expensive query of the
+12 August run.
+- The dry run (2026-10-02, five queries per arm, once) measured Z's largest query (gq-022) at
+  46,422 tokens, cached input included. Typical in-study use is about 49,000 tokens a minute.
+- Azure also counts each request's `max_tokens` (2048 here) against the per-minute quota. Two
+  adjacent heavy queries, gq-022 and gq-023, could together pass 100,000 tokens in one minute.
+- 300 is within the subscription's Global Standard quota of 5,000.
 
-Capacity caps how fast spend can grow, not how much. Sustained around the clock, 100,000 tokens a
-minute is about 144 million tokens a day. At the Global Standard input rate that is about $58 a
+Capacity caps how fast spend can grow, not how much. Sustained around the clock, 300,000 tokens a
+minute is about 432 million tokens a day. At the Global Standard input rate that is about $173 a
 day. That figure is arithmetic, not a measurement.
 
 **Kind `AIServices`, not `OpenAI`.** Microsoft automatically upgrades eligible long-lived

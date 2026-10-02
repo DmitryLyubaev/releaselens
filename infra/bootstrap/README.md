@@ -20,7 +20,7 @@ stack as built, and that runbook. The design and its reasons are in the
 | Federated credential | `github-environment-azure` | on the deploy identity, with one subject, for the GitHub environment `azure`; it does not exist while `github_oidc_subject` is unset |
 | App identity | `id-releaselens-app` | user-assigned; the identity the Container App runs as |
 | Azure OpenAI account | `aoai-releaselens-<suffix>` | kind `AIServices`, SKU `S0`, `local_auth_enabled = false`, `project_management_enabled = false`, custom subdomain equal to its name |
-| Model deployment | `releaselens-chat` | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `100`, `version_upgrade_option = "NoAutoUpgrade"` |
+| Model deployment | `releaselens-chat` | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `300`, `version_upgrade_option = "NoAutoUpgrade"` |
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
@@ -341,7 +341,7 @@ The plan must show:
 - model version `2025-04-14`
 - `version_upgrade_option = "NoAutoUpgrade"`
 - SKU `GlobalStandard`
-- capacity `100`
+- capacity `300`
 
 Then apply it:
 

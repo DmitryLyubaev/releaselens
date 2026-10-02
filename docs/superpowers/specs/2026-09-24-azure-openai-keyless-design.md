@@ -340,8 +340,24 @@ japaneast and westus3. Every regional Standard chat model is at 0 there; only em
 have regional quota. `OpenAI.GlobalStandard.gpt4.1-mini` has 5000. The owner chose Global
 Standard over asking Microsoft for regional quota.
 
-**Capacity: 100, which is 100,000 tokens per minute. This is an estimate, not a
-measurement.** Its basis:
+**Capacity: 300, which is 300,000 tokens per minute (amended 2026-10-02).** Revised from 100 to
+300 by the dry run's measurement, with the owner's approval. The dry run (run 2f8579a3,
+2026-10-02) answered one query per category on each arm, once: five queries per arm. From it:
+
+- arm Z's largest query (gq-022) measured 46,422 tokens, cached input included
+- typical in-study use is about 49,000 TPM
+- the adjacent causal pair gq-022 and gq-023 are each about 46,000 tokens. Together with
+  Azure's per-request `max_tokens` reservation (2,048), they could pass 100,000 tokens in one
+  minute and draw 429s on Z's hardest queries. gq-023 was not in the dry run, so its size is
+  not measured
+- a worst case of about 399,000 TPM, if the largest query ran in every A-Z-O round at the
+  fastest round time of 7.0 s (arithmetic, not a measurement: 46,422 × 60,000 / 6,984 ms). It
+  is above 300,000 TPM
+
+The subscription's Global Standard quota is 5,000, so 300 is within it (§11).
+
+**History: the original capacity of 100, which was 100,000 tokens per minute, was an estimate,
+not a measurement.** Its basis:
 
 - In the 12 August run the most expensive query (gq-022) cost $0.129 in about 23 seconds at
   $2/$10 per MTok. That implies a few tens of thousands of input tokens within a minute; this
@@ -353,9 +369,10 @@ measurement.** Its basis:
   quota must cover it (§11).
 
 **What capacity does and does not bound.** It caps how fast spend can grow, not how much. The
-worst case at 100,000 TPM sustained around the clock is about 144 million tokens a day,
-roughly $58 a day at the Global Standard input rate of $0.40 per 1M tokens (arithmetic, not a
-measurement; $63 at the regional rate).
+worst case at 300,000 TPM sustained around the clock is about 432 million tokens a day,
+roughly $173 a day at the Global Standard input rate of $0.40 per 1M tokens (arithmetic, not a
+measurement; $190 at the regional rate). At the original 100,000 TPM the same arithmetic gave
+about 144 million tokens and $58 a day ($63 at the regional rate).
 
 - Every `/query` caller is limited by its tenant's daily token budget.
 - Code running as the app identity is not: it can call the endpoint directly (§4.10).
@@ -1089,7 +1106,7 @@ fallback to other providers in the cloud.
 
 | Item | How |
 |---|---|
-| ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. ~~Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply~~ Settled by the full bootstrap apply on 2026-09-30 (R8): the deployment provisioned at capacity 100 | `az cognitiveservices model list` and `usage list` |
+| ~~`gpt-4.1-mini` 2025-04-14 is deployable as regional Standard in `australiaeast`, and the subscription's quota covers the chosen capacity~~ Checked 2026-09-27: deployable, but regional quota is 0; Global Standard has 5000, which led to the amendment in §4.8. ~~Whether 5000 covers the chosen capacity of 100 is confirmed by the first apply~~ Settled by the full bootstrap apply on 2026-09-30 (R8): the deployment provisioned at capacity 100. Raised to 300 on 2026-10-02 (§4.8), which is within the quota of 5,000 | `az cognitiveservices model list` and `usage list` |
 | Which token scope the account accepts, and that `Cognitive Services OpenAI User` grants inference on an `AIServices` account. Settled 2026-10-01 by the first deploys (R14, R15): the default scope `https://ai.azure.com/.default` works and the role grants inference; no other scope was tried | One real token for each scope, and one real call |
 | The wire shape of a filtered-prompt 400 on `/openai/v1/chat/completions` (envelope or not; `innererror` or `inner_error`) | One deliberately filtered prompt against the deployed account, with the owner's approval; until then the classifier accepts both shapes |
 | What OpenAI-direct returns for a filtered prompt | OpenAI's documentation, or one real response |

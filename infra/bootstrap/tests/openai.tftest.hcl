@@ -85,8 +85,8 @@ run "account_and_deployment" {
   }
 
   assert {
-    condition     = azurerm_cognitive_deployment.chat.sku[0].capacity == 100
-    error_message = "The deployment's capacity must be 100 by default."
+    condition     = azurerm_cognitive_deployment.chat.sku[0].capacity == 300
+    error_message = "The deployment's capacity must be 300 by default."
   }
 
   assert {

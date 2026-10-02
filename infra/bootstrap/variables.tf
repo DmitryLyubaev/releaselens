@@ -55,6 +55,6 @@ variable "azure_openai_deployment_name" {
 
 variable "azure_openai_capacity" {
   type        = number
-  description = "Capacity of the Global Standard deployment, in thousands of tokens per minute: 100 is 100,000 TPM. It caps how fast spend can grow, not how much. The default is an estimate (spec §4.8)."
-  default     = 100
+  description = "Capacity of the Global Standard deployment, in thousands of tokens per minute: 300 is 300,000 TPM. It caps how fast spend can grow, not how much. The default is revised from the dry run's measured token counts (spec §4.8)."
+  default     = 300
 }
