@@ -51,6 +51,7 @@ def render_markdown(report: dict) -> str:
     """
     run = _study_run(report)
     summaries = {summary.arm: summary for summary in run.arm_summaries}
+    providers = {arm.name: arm.expected_provider for arm in run.arms}
 
     lines = [
         *_header(run),
@@ -65,7 +66,7 @@ def render_markdown(report: dict) -> str:
     if not groups:
         lines += ["## Comparisons", "", "No comparisons were requested for this run.", ""]
     for group in groups:
-        lines += _comparison(group, run.query_ids, summaries)
+        lines += _comparison(group, run.query_ids, summaries, providers)
 
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -270,24 +271,46 @@ def _comparison_groups(comparisons: list[Comparison]) -> list[list[Comparison]]:
     return groups
 
 
-def _comparison(group: list[Comparison], query_ids: list[str], summaries: dict[str, ArmSummary]) -> list[str]:
+def _models_note(x: str, y: str, summaries: dict[str, ArmSummary], providers: dict[str, str]) -> str:
+    """What the comparison's models say about the claim, as a sentence to follow its intro.
+
+    Decided by the arms' providers, never by the model names their replies gave. Azure OpenAI
+    against OpenAI is the claim's comparison: the same model, gpt-4.1-mini, through two auth paths.
+    Any other pair compares two different models and cannot test the claim (spec §8).
+
+    In the claim's comparison, model names that differ are recorded, as spec §8 asks, and do not
+    stop it testing the claim. OpenAI may name the model without a date, or by another snapshot,
+    where Azure names its 2025-04-14 deployment. Recorded only where both arms named a model: an
+    arm that answered nothing has no name to differ by.
+    """
+    if {providers.get(x), providers.get(y)} != {"azure-openai", "openai"}:
+        return " It compares two different models, and does not test the keyless claim."
+
+    x_models, y_models = (summaries[arm].models_seen if arm in summaries else [] for arm in (x, y))
+    if not x_models or not y_models or x_models == y_models:
+        return ""
+
+    azure, openai = (x, y) if providers[x] == "azure-openai" else (y, x)
+    return (
+        f" The replies named the model differently: {azure} (Azure OpenAI) as "
+        f"{_models(summaries[azure])}, and {openai} (OpenAI) as {_models(summaries[openai])}. "
+        "OpenAI's `gpt-4.1-mini` may not be the same snapshot as Azure's `2025-04-14`. This is "
+        "recorded as a difference between the arms, and the comparison still tests the claim."
+    )
+
+
+def _comparison(
+    group: list[Comparison], query_ids: list[str], summaries: dict[str, ArmSummary],
+    providers: dict[str, str],
+) -> list[str]:
     x, y = group[0].x, group[0].y
     names = [_METRIC_NAMES.get(c.metric, c.metric) for c in group]
-
-    # Spec §8: Z against A is reported, but it compares two different models. Said wherever the
-    # arms' replies named different models, and only where both named one: an arm that answered
-    # nothing has no model to differ by.
-    x_models, y_models = (summaries[arm].models_seen if arm in summaries else [] for arm in (x, y))
-    two_models = (
-        " It compares two different models, and does not test the keyless claim."
-        if x_models and y_models and x_models != y_models else ""
-    )
 
     lines = [
         f"## {x} against {y}",
         "",
         f"Each delta is {x} − {y}. {x}'s models seen: {_models(summaries.get(x))}. "
-        f"{y}'s: {_models(summaries.get(y))}.{two_models}",
+        f"{y}'s: {_models(summaries.get(y))}.{_models_note(x, y, summaries, providers)}",
         "",
         "| Metric | Sample | Mean delta | 95% CI | Verdict |",
         "|---|---|---:|---|---|",

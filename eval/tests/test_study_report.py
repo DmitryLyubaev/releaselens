@@ -351,24 +351,57 @@ def test_per_query_deltas_stay_at_3_places():
     assert _row(section, "gq-002")[1] == "+0.000"
 
 
-def test_a_comparison_of_two_models_says_so():
+_TWO_MODELS = "compares two different models, and does not test the keyless claim"
+_SNAPSHOT = "may not be the same snapshot as Azure's `2025-04-14`"
+
+
+def _sections_with(a: list[str], z: list[str], o: list[str]) -> dict[str, str]:
+    summaries = [_summary("A", models_seen=a), _summary("Z", models_seen=z), _summary("O", models_seen=o)]
+    return _sections(render_markdown(_report(summaries=summaries)))
+
+
+def test_the_claims_comparison_with_one_model_name_says_neither():
+    section = _sections_with(["claude-sonnet-5"], ["gpt-4.1-mini-2025-04-14"], ["gpt-4.1-mini-2025-04-14"])["Z against O"]
+
+    assert _TWO_MODELS not in section
+    assert "snapshot" not in section
+
+
+@pytest.mark.parametrize(
+    "o_models",
+    [["gpt-4.1-mini"], ["gpt-4.1-mini-2025-08-01"], ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"]],
+    ids=["undated", "another-snapshot", "a-mix-across-passes"],
+)
+def test_the_claims_comparison_records_a_snapshot_difference_and_still_tests_the_claim(o_models):
+    """Z against O is the same model through two auth paths, whatever name OpenAI's reply gives it.
+    A different name is a difference spec §8 asks to be recorded, not a reason the comparison
+    stops testing the claim."""
+    section = _sections_with(["claude-sonnet-5"], ["gpt-4.1-mini-2025-04-14"], o_models)["Z against O"]
+
+    assert _TWO_MODELS not in section
+    assert _SNAPSHOT in section
+    sentence = next(line for line in section.splitlines() if _SNAPSHOT in line)
+    assert "`gpt-4.1-mini-2025-04-14`" in sentence
+    assert all(f"`{model}`" in sentence for model in o_models)
+
+
+@pytest.mark.parametrize(
+    ("a_models", "z_models"),
+    [
+        (["claude-sonnet-5"], ["gpt-4.1-mini-2025-04-14"]),
+        # Keyed on the providers, not the names: no names, or the same names, change nothing.
+        ([], ["gpt-4.1-mini-2025-04-14"]),
+        (["gpt-4.1-mini-2025-04-14"], ["gpt-4.1-mini-2025-04-14"]),
+    ],
+    ids=["different-names", "no-names", "same-names"],
+)
+def test_a_comparison_outside_the_claim_says_it_compares_two_models(a_models, z_models):
     """Z against A compares gpt-4.1-mini with Claude Sonnet 5, so it cannot test whether Azure
     without a key matches OpenAI with one (spec §8)."""
-    summaries = [
-        _summary("A", models_seen=["claude-sonnet-5"]),
-        _summary("Z", models_seen=["gpt-4.1-mini-2025-04-14"]),
-        _summary("O", models_seen=["gpt-4.1-mini-2025-04-14"]),
-    ]
+    section = _sections_with(a_models, z_models, ["gpt-4.1-mini-2025-04-14"])["Z against A"]
 
-    sections = _sections(render_markdown(_report(summaries=summaries)))
-
-    sentence = "compares two different models, and does not test the keyless claim"
-    assert sentence in sections["Z against A"]
-    assert sentence not in sections["Z against O"]
-
-    # An arm that answered nothing has no model to differ by.
-    silent = [_summary("A", models_seen=[]), *summaries[1:]]
-    assert sentence not in _sections(render_markdown(_report(summaries=silent)))["Z against A"]
+    assert _TWO_MODELS in section
+    assert "snapshot" not in section
 
 
 def test_the_method_says_filtered_answers_are_scored():
