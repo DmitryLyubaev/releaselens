@@ -102,6 +102,9 @@ a filter that hides the subscription ID even when Terraform truncates it.
   repository, so the base URL would give the storage account's name away. The Azure OpenAI
   endpoint's own 401 names no tenant. Other routes to the tenant ID have not been ruled out.
 
+The outputs `embedding_small_deployment` and `embedding_large_deployment` are for the
+retrieval benchmark's `--deployment`, and are not in `github_environment_variables`.
+
 `SMOKE_OPEN_RUNNER_IP`, a fifth variable, is set by hand, and only if the smoke test cannot reach
 Postgres.
 
@@ -110,7 +113,7 @@ Postgres.
 On the owner's Windows machine, TLS inspection software intercepts Terraform's local connection
 to its provider plugins. Every provider then fails with
 `x509: certificate signed by unknown authority`. That does not happen in Ubuntu under WSL. So
-every Terraform command for both stacks runs there, with Terraform 1.15.8, and so does the
+every Terraform command for every stack runs there, with Terraform 1.15.8, and so does the
 Azure CLI that Terraform signs in through.
 
 Inside Ubuntu, once per shell:

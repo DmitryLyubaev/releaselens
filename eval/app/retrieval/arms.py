@@ -29,6 +29,13 @@ EMBEDDING_ARMS = ("E2", "E3")
 SEARCH_ARMS = ("S2", "S3")
 WORKER_ARMS = ("E1", "S1")
 NO_QUERY_VECTOR = "no query vector: E2 did not embed this question"
+# A search arm that gets this many identical errors in a row stops, as an arm failure.
+IDENTICAL_ERRORS_LIMIT = 10
+
+
+class ArmStopped(Exception):
+    """A search arm that stopped before its last question, because the same error kept coming
+    back: a setup error, such as a role not yet in force or a wrong index, and not one question's."""
 
 
 @dataclass(frozen=True)
@@ -86,7 +93,8 @@ def _top(unit_vectors: np.ndarray, ids: list[int], artefacts: Mapping[int, str],
     scores = unit_vectors @ unit_query
     k = min(k, len(scores))
     best = np.argpartition(-scores, k - 1)[:k]
-    # Best first; an exact tie goes to the earlier row, so a rerun ranks it the same way.
+    # Best first, rows tied within the k ranked by the earlier row. Which of several rows tied
+    # at the kth score makes the k is argpartition's choice, not necessarily the earlier row.
     ranked = best[np.lexsort((best, -scores[best]))]
     return [Hit(ids[row], artefacts[ids[row]], float(scores[row])) for row in ranked]
 
@@ -165,7 +173,9 @@ def run_search_arm(
     `query_tokens` are E2's, so latency and cost include the embedding the arm depends on. The
     search token is fetched before the first question is timed. Any reply that is not a success,
     and any exception, is that question's `error`, with the reply's body verbatim, so a ranker
-    billing error says what it was. Nothing is retried.
+    billing error says what it was. Nothing is retried. After 10 identical errors in a row the
+    arm raises ArmStopped, sending no more requests: an error that every question gets is a
+    setup error, and would otherwise be paid for, and counted, once per question.
     """
     # Imported here because search_index builds this module's Hits.
     from .search_index import new_client, search
@@ -178,6 +188,7 @@ def run_search_arm(
     results = []
     try:
         tokens.token()
+        repeated, last_error = 0, None
         for question in questions:
             embedded = query_vectors.get(question.qid)
             if embedded is None:
@@ -188,9 +199,16 @@ def run_search_arm(
                 hits = search(question.question, embedded.vector, semantic=semantic, endpoint=endpoint,
                               tokens=tokens, client=client)
             except Exception as error:
-                results.append(ArmResult(question.qid, arm, [], embedded.ms + _elapsed_ms(start),
-                                         _describe(error), embedded.tokens))
+                described = _describe(error)
+                results.append(ArmResult(question.qid, arm, [], embedded.ms + _elapsed_ms(start), described,
+                                         embedded.tokens))
+                repeated = repeated + 1 if described == last_error else 1
+                last_error = described
+                if repeated == IDENTICAL_ERRORS_LIMIT:
+                    raise ArmStopped(f"{arm} stopped after {repeated} identical errors in a row, sending no "
+                                     f"more requests: {described}") from error
                 continue
+            repeated, last_error = 0, None
             results.append(ArmResult(question.qid, arm, hits, embedded.ms + _elapsed_ms(start), None,
                                      embedded.tokens))
     finally:

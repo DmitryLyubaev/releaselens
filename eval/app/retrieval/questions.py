@@ -275,6 +275,18 @@ def _standalone(token: str, *, prefix: str = "") -> re.Pattern[str]:
     return re.compile(rf"(?<!\w)(?<!\d\.){prefix}{re.escape(token)}(?!\w)(?!\.\d)")
 
 
+def _versions(tag: str) -> set[str]:
+    """A release tag's version, from its first `-`-separated part that starts with a digit to
+    its end, and that version's bare x.y.z: `1.79.0-preview.1` and `1.79.0` for
+    `dotnet-1.79.0-preview.1`. Empty when no part starts with a digit."""
+    parts = tag.split("-")
+    first = next((index for index, part in enumerate(parts) if part[:1].isdigit()), None)
+    if first is None:
+        return set()
+    version = "-".join(parts[first:])
+    return {version, re.match(r"\d+(?:\.\d+)*", version).group()}
+
+
 def _contains_key(question: str, target: Artefact) -> bool:
     lowered = question.lower()
     key = target.artefact.split(":", 1)[1].lower()
@@ -287,8 +299,7 @@ def _contains_key(question: str, target: Artefact) -> bool:
     elif target.entity_type == "release":
         if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", lowered):
             return True
-        version = key.rsplit("-", 1)[-1]
-        if version[:1].isdigit() and _standalone(version, prefix="v?").search(lowered):
+        if any(_standalone(version, prefix="v?").search(lowered) for version in _versions(key)):
             return True
     return any(
         re.search(rf"{re.escape(hint.lower())}(?!\w)", lowered) for hint in target.url_hints
@@ -301,8 +312,9 @@ def check(question: str, target: Artefact) -> list[str]:
     - copying: more than half of its content words appear among the target's text's words
     - the key: a SHA prefix of 7 or more hex characters; an issue's or pull request's number,
       as `#<number>` or standing alone ("issue 14111"); a release's tag, or its version (the
-      tag after its last `-`, when that starts with a digit: `1.79.0` or `v1.79.0` for
-      `dotnet-1.79.0`); or the URL
+      tag from its first `-`-separated part that starts with a digit, and that version's bare
+      x.y.z, each alone or after a `v`: `1.79.0-preview.1`, `1.79.0` or `v1.79.0` for
+      `dotnet-1.79.0-preview.1`); or the URL
     - length: fewer than 6 or more than 40 whitespace-separated words
 
     A question with no content words copies nothing. A number or version is the key only when
@@ -558,9 +570,9 @@ def build_set(stream: SampleStream, client, *, checkpoint: Path | None = None) -
 
 def spot_check_sheet(
     questions: list[Question], artefacts: Mapping[str, Artefact], *, seed: int = SEED,
-    n: int = SPOT_CHECK_SIZE, round: int = 0, why_unique: Mapping[str, str] | None = None,
+    n: int = SPOT_CHECK_SIZE, round_: int = 0, why_unique: Mapping[str, str] | None = None,
 ) -> list[dict]:
-    """n questions drawn with `random.Random(seed + round)`, in qid order, each with the
+    """n questions drawn with `random.Random(seed + round_)`, in qid order, each with the
     writer's `why_unique`, its target's text, and an empty `mark` for the owner to fill in as
     fine, ambiguous or wrong.
 
@@ -568,7 +580,7 @@ def spot_check_sheet(
     round, so the owner sees a fresh 30 rather than the same positions again (spec §3.5).
     """
     reasons = why_unique or {}
-    drawn = random.Random(seed + round).sample(questions, n)
+    drawn = random.Random(seed + round_).sample(questions, n)
     return [
         asdict(question)
         | {"why_unique": reasons.get(question.qid, ""), "text": artefacts[question.target].text,

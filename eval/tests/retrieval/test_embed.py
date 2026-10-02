@@ -261,10 +261,10 @@ def test_a_batch_flushed_but_not_recorded_is_sent_again(tmp_path, monkeypatch):
     chunks = _chunks(130)
     real_write_json = embed_module._write_json
 
-    def crash_on_the_last_record(path, value):
+    def crash_on_the_last_record(path, value, **kwargs):
         if path.name.endswith(".progress.json") and "2" in value["done"]:
             raise RuntimeError("crashed before the record")
-        real_write_json(path, value)
+        real_write_json(path, value, **kwargs)
 
     monkeypatch.setattr(embed_module, "_write_json", crash_on_the_last_record)
     with pytest.raises(RuntimeError):
@@ -346,3 +346,56 @@ def test_token_source_caches_until_five_minutes_before_expiry():
     credential.expires_on = 10**9
     assert source.token() == "fake-token-2"
     assert credential.requested == [(_SCOPE,), (_SCOPE,)]
+
+
+def test_a_progress_file_held_open_by_a_scanner_is_swapped_in_on_a_retry(tmp_path, monkeypatch):
+    # On Windows a scanner can hold the new file open for a moment, and os.replace then raises
+    # PermissionError. The temporary file is synced to disk before it is swapped in.
+    real_replace, events, blocked = embed_module.os.replace, [], [2]
+
+    def replace(source, target):
+        events.append("replace")
+        if str(target).endswith(".progress.json") and blocked[0]:
+            blocked[0] -= 1
+            raise PermissionError("[WinError 5] Access is denied (not real)")
+        real_replace(source, target)
+
+    real_fsync = embed_module.os.fsync
+    monkeypatch.setattr(embed_module.os, "replace", replace)
+    monkeypatch.setattr(embed_module.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd)))
+    slept: list[float] = []
+
+    run = _embed(_chunks(5), tmp_path, _Recorder(), sleep=slept.append)
+
+    assert run.batches == 1
+    assert slept == [0.1, 0.1]
+    assert events[:2] == ["fsync", "replace"] and events.count("fsync") == 3
+    progress = json.loads((tmp_path / f"{_DEPLOYMENT}.progress.json").read_text(encoding="utf-8"))
+    assert progress["done"] == {"0": 15}
+
+
+def test_a_progress_file_that_stays_blocked_fails_after_five_retries(tmp_path, monkeypatch):
+    attempts = []
+
+    def replace(source, target):
+        attempts.append(target)
+        raise PermissionError("[WinError 5] Access is denied (not real)")
+
+    monkeypatch.setattr(embed_module.os, "replace", replace)
+    slept: list[float] = []
+
+    with pytest.raises(PermissionError):
+        _embed(_chunks(5), tmp_path, _Recorder(), sleep=slept.append)
+
+    assert len(attempts) == 6 and slept == [0.1] * 5
+
+
+def test_embed_query_waits_with_the_sleep_it_is_given():
+    replies = iter([httpx.Response(429, headers={"Retry-After": "7"})])
+    recorder = _Recorder(lambda request: next(replies, None) or _reply(request))
+    slept: list[float] = []
+
+    vector, tokens = embed_query("chunk text 3", base_url=_BASE_URL, deployment=_DEPLOYMENT, tokens=_tokens(),
+                                 client=recorder.client(), sleep=slept.append)
+
+    assert slept == [7.0] and tokens == 3 and len(recorder.requests) == 2

@@ -17,7 +17,10 @@ public static class BenchmarkRunner
     /// <summary>Every arm of the benchmark returns its top 50 chunks (spec §4).</summary>
     public const int K = 50;
 
-    /// <summary>The camelCase shape the Python side reads, for both the corpus export and the hits.</summary>
+    /// <summary>
+    /// The camelCase shape the Python side reads. Shared with the corpus export: the Worker's
+    /// <c>export-corpus</c> writes <c>chunks.jsonl</c> and <c>links.jsonl</c> with it too.
+    /// </summary>
     public static JsonSerializerOptions Json { get; } = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     private static readonly Dictionary<string, string> ArmsByMode = new(StringComparer.Ordinal)
@@ -27,11 +30,25 @@ public static class BenchmarkRunner
     };
 
     /// <summary>
+    /// The arm a retrieve mode runs: <c>S1</c> for <see cref="HybridMode"/>, <c>E1</c> for
+    /// <see cref="BgeExactMode"/>. The mode is checked here alone: the Worker calls this before
+    /// it opens the database or the output file, and <see cref="RunRetrieveAsync"/> takes its
+    /// arm from it.
+    /// </summary>
+    /// <exception cref="ArgumentException">The mode is neither.</exception>
+    public static string ArmFor(string mode) =>
+        ArmsByMode.TryGetValue(mode, out var arm)
+            ? arm
+            : throw new ArgumentException($"Unknown retrieve mode '{mode}'. Use {HybridMode} or {BgeExactMode}.",
+                nameof(mode));
+
+    /// <summary>
     /// Reads <c>{"qid", "question"}</c> lines, ignoring any other field, and writes
     /// <c>{"qid", "arm", "hits", "ms", "error"}</c> lines in input order. <c>ms</c> times the
     /// whole <paramref name="search"/> call, so it covers whatever the caller put inside it.
     /// An exception from one question becomes that line's <c>error</c>, with no hits, and the
-    /// run moves on. Cancellation is not a question's failure: it stops the run.
+    /// run moves on; so does a hit that cannot be written as JSON, such as a NaN score.
+    /// Cancellation is not a question's failure: it stops the run.
     /// </summary>
     /// <returns>How many questions were run, and how many of them recorded an error.</returns>
     public static async Task<(int Questions, int Errors)> RunRetrieveAsync(
@@ -41,11 +58,7 @@ public static class BenchmarkRunner
         Func<string, CancellationToken, Task<IReadOnlyList<(long ChunkId, string Artefact, double Score)>>> search,
         CancellationToken cancellationToken)
     {
-        if (!ArmsByMode.TryGetValue(mode, out var arm))
-        {
-            throw new ArgumentException(
-                $"Unknown retrieve mode '{mode}'. Use {HybridMode} or {BgeExactMode}.", nameof(mode));
-        }
+        var arm = ArmFor(mode);
 
         var count = 0;
         var errors = 0;
@@ -67,25 +80,29 @@ public static class BenchmarkRunner
                 throw new InvalidDataException($"Question line {lineNumber} has no qid or question.");
             }
 
-            IReadOnlyList<HitLine> hits;
-            string? error = null;
+            string written;
             var stopwatch = Stopwatch.StartNew();
             try
             {
                 var found = await search(question.Question, cancellationToken);
-                hits = [.. found.Take(K).Select(h => new HitLine(h.ChunkId, h.Artefact, h.Score))];
+                stopwatch.Stop();
+                IReadOnlyList<HitLine> hits =
+                    [.. found.Take(K).Select(h => new HitLine(h.ChunkId, h.Artefact, h.Score))];
+                // Serialized here, so a hit JSON cannot hold, such as a NaN score, is this
+                // question's error and not the end of the run.
+                written = JsonSerializer.Serialize(
+                    new OutputLine(question.Qid, arm, hits, stopwatch.Elapsed.TotalMilliseconds, null), Json);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                hits = [];
-                error = $"{ex.GetType().Name}: {ex.Message}";
+                stopwatch.Stop();
+                written = JsonSerializer.Serialize(
+                    new OutputLine(question.Qid, arm, [], stopwatch.Elapsed.TotalMilliseconds,
+                        $"{ex.GetType().Name}: {ex.Message}"), Json);
                 errors++;
             }
 
-            stopwatch.Stop();
-
-            await output.WriteLineAsync(JsonSerializer.Serialize(
-                new OutputLine(question.Qid, arm, hits, stopwatch.Elapsed.TotalMilliseconds, error), Json));
+            await output.WriteLineAsync(written);
             count++;
         }
 

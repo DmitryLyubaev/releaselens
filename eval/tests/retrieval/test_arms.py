@@ -244,3 +244,47 @@ def test_read_worker_output_refuses_another_arm(tmp_path):
 
     with pytest.raises(ValueError, match="E2"):
         read_worker_output(path)
+
+
+def _searched(replies, count: int = 15):
+    """S2 over `count` questions against replies drawn in turn from `replies`; the results, or
+    the exception, and how many requests were sent."""
+    sent = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return next(replies)
+
+    questions = _questions(count)
+    vectors = {question.qid: QueryVector(np.ones(4, dtype=np.float32), 1.0, 5) for question in questions}
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        return run_search_arm("S2", questions, query_vectors=vectors, endpoint=_ENDPOINT, tokens=_Tokens(),
+                              client=client), len(sent)
+    except Exception as error:
+        return error, len(sent)
+
+
+def test_a_search_arm_stops_after_ten_identical_errors_in_a_row():
+    # A setup error, such as a 403 before a role has propagated, would otherwise fail every
+    # question, sending a request for each: it is the arm's failure, not 300 questions' errors.
+    forbidden = '{"error":{"code":"Forbidden","message":"Authorization failed (not real)."}}'
+
+    raised, sent = _searched(iter(lambda: httpx.Response(403, text=forbidden), None))
+
+    assert sent == 10
+    assert isinstance(raised, arms.ArmStopped)
+    assert "10" in str(raised) and f"SearchError: HTTP 403: {forbidden}" in str(raised)
+
+
+def test_errors_that_differ_or_are_broken_by_an_answer_do_not_stop_a_search_arm():
+    answer = {"value": [{"@search.score": 0.03, "chunk_id": "26", "artefact": "issue:7"}]}
+    unavailable = httpx.Response(503, text="Service Unavailable (not real)")
+    differing = iter([httpx.Response(503, text=f"Service Unavailable {n} (not real)") for n in range(15)])
+    broken = iter([unavailable] * 9 + [httpx.Response(200, json=answer)] + [unavailable] * 5)
+
+    for replies, errors in ((differing, 15), (broken, 14)):
+        results, sent = _searched(replies)
+
+        assert sent == 15
+        assert sum(1 for result in results if result.error is not None) == errors

@@ -21,8 +21,9 @@ in the [benchmark spec](../../docs/superpowers/specs/2026-10-02-azure-ai-search-
 `endpoint` is `https://srch-releaselens-<suffix>.search.windows.net`, which `build-index` and
 `run-arms` take as `--endpoint`.
 
-- **Keyless.** With key authentication off, only Entra ID works. The service's admin and query
-  keys are never read or output.
+- **Keyless.** With key authentication off, only Entra ID works. The provider stores the
+  service's keys in state, as it does for every search service; they authenticate nothing,
+  because key authentication is off, and none is output or used.
 - **The semantic ranker is on its free plan.** Past the monthly allowance (1,000 requests, read
   2026-10-02), ranked queries return a billing error instead of being billed (spec §6.3).
 - **The role assignments live here, not in bootstrap.** The rule that bootstrap holds every role

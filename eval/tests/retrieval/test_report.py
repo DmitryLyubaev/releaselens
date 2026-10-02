@@ -51,6 +51,10 @@ def _run(*, s1_error: bool = True, changed_on_e2: int = 4) -> dict:
         "deployments": {"E2": "embed-small-not-real", "E3": "embed-large-not-real",
                         "S2": "embed-small-not-real", "S3": "embed-small-not-real"},
         "search": {"index": "releaselens-chunks", "api_version": "2026-04-01"},
+        "corpus_tokens": {
+            "text-embedding-3-small": {"deployment": "embed-small-not-real", "tokens": 5_250_000},
+            "text-embedding-3-large": {"deployment": "embed-large-not-real", "tokens": 5_249_000},
+        },
         "repeat_first": 30,
         "arm_failure": None,
         "analysis": analyse(questions, results, repeat, {}),
@@ -103,6 +107,15 @@ def test_render_appendix_is_exploratory_with_no_interval(page):
     # One minus sign throughout, the same as the text's.
     assert "| S1 − E2 | 299 | −0.067 |" in appendix
     assert "-0." not in page
+
+
+def test_render_states_the_corpus_embedding_as_a_one_time_cost(page):
+    # Spec §8: the tokens embedding the corpus was billed, priced at the run's own rates.
+    cost = page.split("**Cost.**", 1)[1].split("\n## ", 1)[0]
+
+    assert ("- Embedding the corpus is a one-time cost, not a cost per query, billed at the rates above: "
+            "`text-embedding-3-small` 5,250,000 tokens, $0.105000; `text-embedding-3-large` 5,249,000 "
+            "tokens, $0.682370.") in cost
 
 
 def test_render_states_the_chance_and_the_cost_denominators(page):

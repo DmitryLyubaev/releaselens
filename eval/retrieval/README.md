@@ -5,8 +5,9 @@ and the decision rule are fixed in advance, in
 [the spec](../../docs/superpowers/specs/2026-10-02-azure-ai-search-benchmark-design.md). This page
 says how to run each step, and holds no results.
 
-Every command below that starts with `python -m app.retrieval` runs from `eval/`, with the eval
-virtual environment active. The Worker and Terraform commands run from the repository root.
+Every command below runs in PowerShell from `eval/`, with the eval virtual environment active,
+unless it says otherwise. That includes the Worker's commands, which name its project as
+`../src/ReleaseLens.Worker`. The Terraform commands run in WSL, from the stack's own folder.
 Values in `<angle brackets>` are placeholders: fill them in, in your own window, and never commit
 them.
 
@@ -27,26 +28,62 @@ them.
   place before any client is built.
 - **Claude.** `write-questions` needs `ANTHROPIC_API_KEY` set in the window.
 - **The database.** Postgres is the restored `releaselens_eval`, and WSL must be kept running by
-  an open WSL window while Docker is in use.
+  an open WSL window while Docker is in use. The Worker reads its database from
+  `RELEASELENS_DB`, so steps 2 and 5, which run the Worker, need it set in that window to
+  `releaselens_eval`. A window whose `.env` points at the working database would export, or
+  search, the wrong corpus:
+
+  ```
+  $env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=<dev password>"
+  ```
+
+  `run-arms` refuses Worker output with any hit that is not a chunk of the exported corpus, or
+  that gives a chunk another artefact.
 
 ## 1. The embedding deployments (Ask first)
 
-Apply the bootstrap change from WSL. Its plan must add the two deployments and the
-`tfstate-search` container, with one role assignment and nothing else changed. Then confirm that
-both deployments report `Succeeded`:
+Apply the bootstrap change from WSL, set up as the bootstrap README's
+[Terraform runs in WSL](../../infra/bootstrap/README.md#terraform-runs-in-wsl) says, with the
+bootstrap stack's git-ignored `terraform.tfvars` in place. In WSL, from `infra/bootstrap`:
+
+```bash
+terraform plan -out=tfplan
+```
+
+Read the plan. It must end `Plan: 4 to add, 0 to change, 0 to destroy.`: the two embedding
+deployments, the `tfstate-search` container, and the owner's role assignment on that container.
+Nothing on the chat deployment or the account changes. If it shows anything else, stop. Then:
+
+```bash
+terraform apply tfplan
+terraform output -raw azure_openai_base_url
+```
+
+The output is the whole `--base-url` for steps 4 and 6, ending in `/openai/v1/`. The tenant for
+`--tenant` is printed by:
 
 ```
-az cognitiveservices account deployment list --name <account> --resource-group <resource-group> --output table
+az account show --query tenantId -o tsv
+```
+
+Keep both in your own window only. Then confirm that both deployments report `Succeeded`. The
+first command prints the account's name, which the second takes as `<account>`:
+
+```
+az cognitiveservices account list --resource-group rg-releaselens-bootstrap --query "[].name" -o tsv
+az cognitiveservices account deployment list --name <account> --resource-group rg-releaselens-bootstrap --output table
 ```
 
 ## 2. Export the corpus (free)
 
+With `RELEASELENS_DB` set to `releaselens_eval` (see [Before every step](#before-every-step)):
+
 ```
-dotnet run --project src/ReleaseLens.Worker -- export-corpus eval/retrieval-data
+dotnet run --project ../src/ReleaseLens.Worker -- export-corpus retrieval-data
 ```
 
-Check that `eval/retrieval-data/chunks.jsonl` has 41,825 lines. `eval/retrieval-data/` is
-git-ignored: it holds the export, the vectors, the spot-check sheets and the Worker's outputs.
+Check that `retrieval-data/chunks.jsonl` has 41,825 lines. `retrieval-data/` is git-ignored: it
+holds the export, the vectors, the spot-check sheets and the Worker's outputs.
 
 ## 3. The questions (Ask first: about $1 on Anthropic)
 
@@ -83,11 +120,13 @@ regenerated, which is another Ask first:
    spend is part of what the set cost. Keep the round's marked sheet where it is.
 3. Run `write-questions` again.
 4. Run `spot-check --round 1`, which draws a fresh 30.
-5. Freeze with every round's sheet, oldest first:
+5. Freeze with every round's sheet, from round 0, oldest first:
    `freeze --sheet retrieval-data/spot-check-round-0.json --sheet retrieval-data/spot-check-round-1.json`
 
    Each round's spend goes into the manifest's `spot_check`, and their sum into
-   `spend_all_rounds`, so the generations that were thrown away are counted too.
+   `spend_all_rounds`, so the generations that were thrown away are counted too. `freeze`
+   refuses a round left out, and an earlier round's sheet in `retrieval-data/` that was not
+   given.
 
 `freeze` writes `retrieval/questions.jsonl` and `retrieval/questions.manifest.json`. The manifest
 holds:
@@ -104,15 +143,33 @@ that file, and refuses it if it has changed since freezing.
 ## 4. Embed the corpus (Ask first: about $1.55 on Azure)
 
 ```
-python -m app.retrieval embed --deployment releaselens-embed-small --base-url https://<account>.openai.azure.com/openai/v1/ --tenant <tenant-id>
-python -m app.retrieval embed --deployment releaselens-embed-large --base-url https://<account>.openai.azure.com/openai/v1/ --tenant <tenant-id>
+python -m app.retrieval embed --deployment releaselens-embed-small --base-url <base-url> --tenant <tenant-id>
+python -m app.retrieval embed --deployment releaselens-embed-large --base-url <base-url> --tenant <tenant-id>
 ```
 
-Record the `tokens_billed` each one prints. A run that fails partway (a throttle past its
-retries, or a dropped connection) is resumed by running the same command again, and pays for no
-batch already saved.
+Each prints its `tokens_billed`, which `run-arms` reads back from the deployment's
+`retrieval-data/<deployment>.progress.json` into the run, so the write-up states what embedding
+the corpus cost. A run that fails partway (a throttle past its retries, or a dropped connection)
+is resumed by running the same command again, and pays for no batch already saved.
 
-## 5. The measurement session (Ask first: about $1–2)
+## 5. The Worker's arms (free)
+
+These run locally and cost nothing, so they come before the search service is applied: a
+failure here is fixed while nothing bills by the hour. They need `RELEASELENS_DB` set to
+`releaselens_eval` in this window (see [Before every step](#before-every-step)), even if steps 2
+to 4 ran in another session.
+
+Run each mode **twice**, into separate files. The second run of each mode is the determinism
+repeat for E1 and S1.
+
+```
+dotnet run --project ../src/ReleaseLens.Worker -- retrieve hybrid retrieval/questions.jsonl retrieval-data/worker-hybrid.jsonl
+dotnet run --project ../src/ReleaseLens.Worker -- retrieve hybrid retrieval/questions.jsonl retrieval-data/worker-hybrid-repeat.jsonl
+dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/questions.jsonl retrieval-data/worker-bge.jsonl
+dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/questions.jsonl retrieval-data/worker-bge-repeat.jsonl
+```
+
+## 6. The measurement session (Ask first: about $1–2)
 
 1. Check that no search group is left from an earlier session. This must print `false`:
 
@@ -120,40 +177,48 @@ batch already saved.
    az group exists --name rg-releaselens-search
    ```
 
-2. Apply `infra/search` from WSL.
+2. Apply `infra/search` from WSL, as its README's
+   [Apply and destroy](../../infra/search/README.md#apply-and-destroy) says:
+   - Its inputs go in a git-ignored `infra/search/terraform.tfvars`, in your own window.
+   - `terraform init -backend-config=storage_account_name=<state storage account>` sets up its
+     state. In `infra/bootstrap`, `terraform output -raw tfstate_storage_account` prints the
+     account's name.
+   - Plan, read the plan, and apply it. `terraform output -raw endpoint` then prints the
+     `--endpoint` for the next steps.
 3. Build the index:
 
    ```
-   python -m app.retrieval build-index --endpoint https://<search-service>.search.windows.net --tenant <tenant-id>
+   python -m app.retrieval build-index --endpoint <endpoint> --tenant <tenant-id>
    ```
 
-   It prints the documents uploaded, which must be 41,825. Any document the service refuses fails
-   the upload, naming it, so every document counted was accepted.
-4. Run the Worker's two arms, each mode **twice**, into separate files. The second run of each
-   mode is the determinism repeat for E1 and S1; both modes are local, so it costs nothing.
+   It prints the documents uploaded, and then the index's document count, which must be 41,825.
+   Any document the service refuses fails the upload, naming it. The index counts a document a
+   moment after it is uploaded, so `build-index` reads the count for up to about a minute, and
+   fails if it never reaches the corpus. A new role assignment can take a few minutes to take
+   effect: if `build-index` gets a `403` straight after the apply, wait a few minutes and run it
+   again.
+4. Run the network arms and the repeat:
 
    ```
-   dotnet run --project src/ReleaseLens.Worker -- retrieve hybrid eval/retrieval/questions.jsonl eval/retrieval-data/worker-hybrid.jsonl
-   dotnet run --project src/ReleaseLens.Worker -- retrieve hybrid eval/retrieval/questions.jsonl eval/retrieval-data/worker-hybrid-repeat.jsonl
-   dotnet run --project src/ReleaseLens.Worker -- retrieve bge-exact eval/retrieval/questions.jsonl eval/retrieval-data/worker-bge.jsonl
-   dotnet run --project src/ReleaseLens.Worker -- retrieve bge-exact eval/retrieval/questions.jsonl eval/retrieval-data/worker-bge-repeat.jsonl
+   python -m app.retrieval run-arms --repeat-first 30 --base-url <base-url> --endpoint <endpoint> --tenant <tenant-id> --worker-hybrid retrieval-data/worker-hybrid.jsonl --worker-hybrid-repeat retrieval-data/worker-hybrid-repeat.jsonl --worker-bge retrieval-data/worker-bge.jsonl --worker-bge-repeat retrieval-data/worker-bge-repeat.jsonl
    ```
 
-5. Run the network arms and the repeat:
+   Before it pays for anything, it checks:
+   - the frozen file
+   - the four Worker files, down to each hit being a chunk of the exported corpus
+   - the saved vectors, and each deployment's record that embedding the corpus finished
+   - a token for each scope, so a sign-in failure costs nothing
+   - that the index at `--endpoint` holds all 41,825 documents, so an empty or wrong index is
+     refused rather than scored as misses
 
-   ```
-   python -m app.retrieval run-arms --repeat-first 30 --base-url https://<account>.openai.azure.com/openai/v1/ --endpoint https://<search-service>.search.windows.net --tenant <tenant-id> --worker-hybrid retrieval-data/worker-hybrid.jsonl --worker-hybrid-repeat retrieval-data/worker-hybrid-repeat.jsonl --worker-bge retrieval-data/worker-bge.jsonl --worker-bge-repeat retrieval-data/worker-bge-repeat.jsonl
-   ```
-
-   Before it pays for anything, it checks the frozen file, the four Worker files and the saved
-   vectors, and gets a token for each scope, so a sign-in failure costs nothing. It then runs E2,
-   E3, S2 and S3 over all 300 questions, and repeats the first 30 on each of them. S2 and S3
-   search with E2's vectors on both passes. For E1 and S1 it compares the first 30 questions of
-   each pair of Worker files.
+   It then runs E2, E3, S2 and S3 over all 300 questions, and repeats the first 30 on each of
+   them. S2 and S3 search with E2's vectors on both passes. For E1 and S1 it compares the first
+   30 questions of each pair of Worker files.
 
    The run is saved to `reports/retrieval-<run_id>.json` after each arm, and the run id is
    printed. If an arm fails as a whole, the run stops there, and is saved with that failure. It
-   is not analysed.
+   is not analysed. A search arm that gets the same error 10 times in a row stops as such a
+   failure, since that is a setup error and not one question's.
 
    **A run has no resume.** A failed run is run again from the start, with a new run id, and
    pays again for everything it had done. The scarce part is the semantic ranker's free
@@ -161,10 +226,11 @@ batch already saved.
    300 of them, and the rerun spends about 330 more, so a month has room for about two failed
    attempts and a successful one.
 
-6. Destroy `infra/search` from WSL, then confirm that the same `az group exists` check prints
-   `false`.
+5. **Whatever happened above, even if a step failed,** destroy `infra/search` from WSL, as its
+   README says, then confirm that the same `az group exists` check prints `false`. A forgotten
+   Basic service costs about US$3.19 a day.
 
-## 6. Publish (Ask first)
+## 7. Publish (Ask first)
 
 ```
 python -m app.retrieval report <run_id>

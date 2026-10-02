@@ -334,11 +334,14 @@ switch (command)
         }
 
         var (mode, questionsPath, outputPath) = (args[1], args[2], args[3]);
-        if (mode is not (BenchmarkRunner.HybridMode or BenchmarkRunner.BgeExactMode))
+        try
         {
-            logger.LogError(
-                "Unknown retrieve mode '{Mode}'. Use {Hybrid} or {BgeExact}.",
-                mode, BenchmarkRunner.HybridMode, BenchmarkRunner.BgeExactMode);
+            // Before the database or the output file is touched.
+            BenchmarkRunner.ArmFor(mode);
+        }
+        catch (ArgumentException ex)
+        {
+            logger.LogError("{Error}", ex.Message);
             return 1;
         }
 

@@ -171,6 +171,7 @@ def test_check_rejects_keys():
     commit = _artefact("commit:" + _SHA, "[commit 1a2b3c4] fix: planner null reference")
     issue = _artefact("issue:14111", "[issue #14111 closed] connectors time out")
     release = _artefact("release:dotnet-1.79.0", "[release dotnet-1.79.0] streaming agents")
+    preview = _artefact("release:dotnet-1.79.0-preview.1", "[release dotnet-1.79.0-preview.1] streaming agents")
     pull = Artefact("pull_request:14111", "pull_request", "[pull request #14111 merged] moves",
                     100, ("pull/14111", "issues/14111"))
 
@@ -185,6 +186,11 @@ def test_check_rejects_keys():
         ("What shipped in dotnet-1.79.0 for the agent framework?", release),
         ("What shipped in version 1.79.0 for the agent framework?", release),
         ("What shipped in v1.79.0 for the agent framework?", release),
+        # A suffixed tag's version is everything from its first part that starts with a digit,
+        # and its bare x.y.z is the key too.
+        ("What shipped in 1.79.0-preview.1 for the agent framework?", preview),
+        ("What shipped in version 1.79.0 for the agent framework?", preview),
+        ("What shipped in v1.79.0 for the agent framework?", preview),
         ("Is https://github.com/example-owner/example-repo/pull/14111 the change that moved them?",
          pull),
     ]
@@ -201,6 +207,8 @@ def test_check_rejects_keys():
         ("Who reported version 14111.2 about the connectors timing out?", issue),
         ("What shipped in dotnet-1.79.01 for the agent framework?", release),
         ("What shipped in version 1.79.01 for the agent framework?", release),
+        ("What shipped in version 1.79.01 for the agent framework?", preview),
+        ("What shipped in version 1.7 for the agent framework?", preview),
     ]
     for question, target in near_misses:
         assert check(question, target) == [], question
@@ -482,10 +490,10 @@ def test_each_spot_check_round_draws_a_fresh_reproducible_sample():
     def qids(**round_):
         return [row["qid"] for row in spot_check_sheet(questions, artefacts, **round_)]
 
-    assert qids() == qids(round=0) == qids(round=0)
-    assert qids(round=1) == qids(round=1)
-    assert set(qids(round=0)) != set(qids(round=1))
-    assert qids(round=1) == qids(seed=20261003)
+    assert qids() == qids(round_=0) == qids(round_=0)
+    assert qids(round_=1) == qids(round_=1)
+    assert set(qids(round_=0)) != set(qids(round_=1))
+    assert qids(round_=1) == qids(seed=20261003)
 
 
 def test_spot_check_refuses_incomplete_or_unknown_marks():

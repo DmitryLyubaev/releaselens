@@ -6,12 +6,15 @@ Azure or spends anything.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import numpy as np
 import pytest
 
 from app.retrieval import __main__ as cli
+from app.retrieval import arms, search_index
 from app.retrieval.arms import ArmResult, Hit, QueryVector
 from app.retrieval.questions import MODEL, PROMPT, REWRITE, SEED, Question, freeze, load_frozen
 
@@ -171,6 +174,34 @@ def test_a_regenerated_set_carries_every_generations_spend(tmp_path, monkeypatch
     assert manifest["spend_all_rounds"] == {"calls": 600, "input_tokens": 600_000, "output_tokens": 24_000}
 
 
+def test_freeze_refuses_a_set_of_rounds_that_leaves_one_out(tmp_path, monkeypatch, capsys):
+    # A round left out would leave its generation's spend out of spend_all_rounds.
+    data, questions_path = tmp_path / "data", tmp_path / "retrieval" / "questions.jsonl"
+    _export(data, _sample_corpus())
+    paths = ["--data", str(data), "--questions", str(questions_path)]
+    monkeypatch.setattr(cli, "_writer", lambda: SimpleNamespace(messages=_Messages(300)))
+    assert cli.main(["write-questions", "--data", str(data)]) == 0
+    for number in range(3):
+        assert cli.main(["spot-check", "--round", str(number), "--data", str(data)]) == 0
+        _mark(data / f"spot-check-round-{number}.json", wrong=0)
+    sheet = [str(data / f"spot-check-round-{number}.json") for number in range(3)]
+    elsewhere = tmp_path / "elsewhere" / "round-0.json"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes((data / "spot-check-round-0.json").read_bytes())
+    capsys.readouterr()
+
+    for given in ([sheet[1]], [sheet[0], sheet[2]], [sheet[1], sheet[0]]):
+        assert cli.main(["freeze", *[item for path in given for item in ("--sheet", path)], *paths]) == 1
+        assert "give every round from 0, oldest first" in capsys.readouterr().err
+    # Round 0 given from another file, so the one in --data was not given.
+    assert cli.main(["freeze", "--sheet", str(elsewhere), "--sheet", sheet[1], *paths]) == 1
+    error = capsys.readouterr().err
+    assert "spot-check-round-0.json" in error and "was not given" in error
+    assert not questions_path.exists()
+
+    assert cli.main(["freeze", *[item for path in sheet for item in ("--sheet", path)], *paths]) == 0
+
+
 # --- run-arms ------------------------------------------------------------------------------
 
 
@@ -190,16 +221,28 @@ class _Tokens:
         return "fake-token"
 
 
+# The measurement's corpus: chunk n is the nth artefact, as _export numbers them.
+_CORPUS = ["commit:c001", "issue:7", "pull_request:1", "release:dotnet-1.0.0"]
+
+
 def _hits(question: Question) -> list[Hit]:
-    return [Hit(1, question.target, 0.9), Hit(2, "issue:999", 0.5)]
+    # Hits on the corpus's own chunks, with its artefacts, as a Worker run on the same database gives.
+    return [Hit(_CORPUS.index(question.target) + 1, question.target, 0.9), Hit(4, _CORPUS[3], 0.5)]
 
 
-def _measurement(tmp_path, monkeypatch, *, fail: str | None = None):
+def _progress(data, deployment: str, done: dict[str, int], *, chunks: int = 4, batch_size: int = 64) -> None:
+    (data / f"{deployment}.progress.json").write_text(json.dumps(
+        {"deployment": deployment, "batch_size": batch_size, "chunks": chunks, "dimensions": 3, "done": done}),
+        encoding="utf-8")
+
+
+def _measurement(tmp_path, monkeypatch, *, fail: str | None = None, indexed: int = 4):
     data, reports = tmp_path / "data", tmp_path / "reports"
-    _export(data, ["commit:c001", "issue:7", "pull_request:1", "release:dotnet-1.0.0"])
-    for deployment in ("releaselens-embed-small", "releaselens-embed-large"):
+    _export(data, _CORPUS)
+    for deployment, tokens in (("releaselens-embed-small", 1_234_567), ("releaselens-embed-large", 1_234_000)):
         np.save(data / f"{deployment}.npy", np.ones((4, 3), dtype=np.float32))
         (data / f"{deployment}.ids.json").write_text("[1, 2, 3, 4]", encoding="utf-8")
+        _progress(data, deployment, {"0": tokens})
     questions = [Question("q001", "Which change fixed the planner?", "commit:c001", "commit"),
                  Question("q002", "Which issue reported the crash?", "issue:7", "issue"),
                  Question("q003", "Which pull request added the guard?", "pull_request:1", "pull_request")]
@@ -234,8 +277,15 @@ def _measurement(tmp_path, monkeypatch, *, fail: str | None = None):
         calls.append(("search", arm, [q.qid for q in questions], query_vectors, tokens, endpoint))
         return [ArmResult(q.qid, arm, _hits(q), 60.0, None, query_vectors[q.qid].tokens) for q in questions]
 
+    def document_count(endpoint, tokens, client=None):
+        calls.append(("count", None, [], None, tokens, endpoint))
+        # The tokens are fetched first, so a sign-in failure is found before the index is asked.
+        assert len(set(_Tokens.fetched)) == 2
+        return indexed
+
     monkeypatch.setattr(cli, "run_embedding_arm", embedding_arm)
     monkeypatch.setattr(cli, "run_search_arm", search_arm)
+    monkeypatch.setattr(cli, "document_count", document_count)
     monkeypatch.setattr(cli, "TokenSource", _Tokens)
     monkeypatch.setattr(cli, "REPORTS", reports)
     _Tokens.made, _Tokens.fetched, _Tokens.failing = [], [], None
@@ -252,6 +302,9 @@ def test_run_arms_runs_e2_first_and_hands_its_own_vectors_to_s2_and_s3(tmp_path,
 
     assert cli.main(argv) == 0
 
+    # The index is counted before any arm runs, at the endpoint the arms search.
+    count = calls.pop(0)
+    assert (count[0], count[5]) == ("count", "https://search-not-real.search.windows.net")
     assert [(kind, arm, len(qids)) for kind, arm, qids, *_ in calls] == [
         ("embed", "E2", 3), ("embed", "E3", 3), ("search", "S2", 3), ("search", "S3", 3),
         ("embed", "E2", 2), ("embed", "E3", 2), ("search", "S2", 2), ("search", "S3", 2),
@@ -275,10 +328,17 @@ def test_run_arms_runs_e2_first_and_hands_its_own_vectors_to_s2_and_s3(tmp_path,
     assert sorted((row["arm"], row["qid"]) for row in run["repeat"] if row["arm"] in ("E1", "S1")) == [
         ("E1", "q001"), ("E1", "q002"), ("S1", "q001"), ("S1", "q002")]
     assert run["analysis"]["arms"]["S3"]["top1"] == 1.0
+    # What embedding the corpus was billed, read from each deployment's progress file.
+    assert run["corpus_tokens"] == {
+        "text-embedding-3-small": {"deployment": "releaselens-embed-small", "tokens": 1_234_567},
+        "text-embedding-3-large": {"deployment": "releaselens-embed-large", "tokens": 1_234_000},
+    }
 
     capsys.readouterr()
     assert cli.main(["report", "test-run"]) == 0
-    assert "# Retrieval benchmark" in capsys.readouterr().out
+    page = capsys.readouterr().out
+    assert "# Retrieval benchmark" in page
+    assert "1,234,567" in page and "one-time" in page
 
 
 def test_a_token_failure_is_an_arm_failure_not_300_question_errors(tmp_path, monkeypatch, capsys):
@@ -287,7 +347,7 @@ def test_a_token_failure_is_an_arm_failure_not_300_question_errors(tmp_path, mon
     assert cli.main(argv) == 1
 
     # Nothing after the failed arm is run, so no ranker request is spent on a run that cannot publish.
-    assert [(kind, arm) for kind, arm, *_ in calls] == [("embed", "E2"), ("embed", "E3")]
+    assert [(kind, arm) for kind, arm, *_ in calls] == [("count", None), ("embed", "E2"), ("embed", "E3")]
     run = json.loads(saved.read_text(encoding="utf-8"))
     assert run["arm_failure"] == {"arm": "E3", "pass": "first",
                                   "error": "RuntimeError: az: token request failed (not real)"}
@@ -339,3 +399,191 @@ def test_run_arms_refuses_worker_output_for_another_question_file_before_paying(
     assert calls == []
     assert not saved.exists()
     assert "worker-bge-repeat.jsonl" in capsys.readouterr().err
+
+
+class _Azure:
+    """A fake of everything run-arms calls over HTTP: the embeddings endpoint and a tiny AI
+    Search index of the measurement's four chunks. Chunk n's corpus vector is the nth axis, and
+    a question's embedding leans towards its target's axis, so every arm should find it first."""
+
+    def __init__(self, questions: list[Question]) -> None:
+        self.targets = {question.question: _CORPUS.index(question.target) for question in questions}
+        self.requests: list = []
+
+    def vector(self, text: str) -> list[float]:
+        vector = [0.1] * 4
+        vector[self.targets[text]] = 1.0
+        return vector
+
+    def __call__(self, request):
+        self.requests.append(request)
+        if request.url.path.endswith("/docs/$count"):
+            return httpx.Response(200, text=str(len(_CORPUS)))
+        body = json.loads(request.content)
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json={
+                "data": [{"index": 0, "embedding": self.vector(body["input"][0])}],
+                "usage": {"prompt_tokens": 7, "total_tokens": 7}})
+        assert request.url.path.endswith("/docs/search")
+        first = self.targets[body["search"]]
+        ranked = [first] + [row for row in range(len(_CORPUS)) if row != first]
+        return httpx.Response(200, json={"value": [
+            {"@search.score": 0.05 - row / 100, "@search.rerankerScore": 3.0 - row,
+             "chunk_id": str(chunk + 1), "artefact": _CORPUS[chunk]}
+            for row, chunk in enumerate(ranked)]})
+
+
+def test_run_arms_end_to_end_through_the_real_arms(tmp_path, monkeypatch):
+    # The real arms, embedder and search client, wired by the CLI, against a fake service: only
+    # the Worker's files, the tokens and the HTTP transport are fakes.
+    argv, _, saved = _measurement(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    for deployment in ("releaselens-embed-small", "releaselens-embed-large"):
+        np.save(data / f"{deployment}.npy", np.eye(4, dtype=np.float32))
+    questions = load_frozen(tmp_path / "questions.jsonl")
+    azure = _Azure(questions)
+    monkeypatch.setattr(cli, "run_embedding_arm", arms.run_embedding_arm)
+    monkeypatch.setattr(cli, "run_search_arm", arms.run_search_arm)
+    monkeypatch.setattr(cli, "document_count", search_index.document_count)
+    monkeypatch.setattr(cli, "new_client", lambda: httpx.Client(transport=httpx.MockTransport(azure)))
+
+    assert cli.main(argv) == 0
+
+    run = json.loads(saved.read_text(encoding="utf-8"))
+    assert run["arm_failure"] is None
+    assert sorted((row["arm"], row["qid"]) for row in run["results"]) == sorted(
+        (arm, question.qid) for arm in ("E1", "E2", "E3", "S1", "S2", "S3") for question in questions)
+    assert all(row["error"] is None for row in run["results"] + run["repeat"])
+    assert sorted({row["arm"] for row in run["repeat"]}) == ["E1", "E2", "E3", "S1", "S2", "S3"]
+    analysis = run["analysis"]
+    assert all(analysis["arms"][arm]["top1"] == 1.0 for arm in ("E2", "E3", "S2", "S3"))
+    assert [c["n"] for c in analysis["comparisons"]] == [3, 3, 3]
+    # S2 and S3 carry E2's embedding tokens; E1 and S1 cost none.
+    assert analysis["arms"]["S3"]["query_tokens"] == 7 * 3 and analysis["arms"]["E1"]["query_tokens"] == 0
+
+    paths = [request.url.path for request in azure.requests]
+    # One count, E2 and E3 embedding each question on both passes, and S2 and S3 searching.
+    assert paths.count("/indexes/releaselens-chunks/docs/$count") == 1
+    assert paths.count("/openai/v1/embeddings") == (3 + 2) * 2
+    assert paths.count("/indexes/releaselens-chunks/docs/search") == (3 + 2) * 2
+    semantic = [json.loads(request.content).get("queryType") for request in azure.requests
+                if request.url.path.endswith("/docs/search")]
+    assert semantic.count("semantic") == 3 + 2
+
+
+@pytest.mark.parametrize("bad_hit, named", [
+    ({"chunkId": 99, "artefact": "commit:c001", "score": 0.9}, "chunk 99"),
+    ({"chunkId": 1, "artefact": "commit:c999", "score": 0.9}, "chunk 1"),
+])
+def test_run_arms_refuses_worker_hits_from_another_corpus_before_paying(tmp_path, monkeypatch, capsys,
+                                                                        bad_hit, named):
+    # E1 and S1 searched another database than the one the corpus was exported from: a chunk the
+    # export does not hold, or one whose artefact differs. Scored, C1 and C2 would compare arms
+    # that did not search the same chunks.
+    argv, calls, saved = _measurement(tmp_path, monkeypatch)
+    hybrid = Path(argv[argv.index("--worker-hybrid") + 1])
+    rows = [json.loads(line) for line in hybrid.read_text(encoding="utf-8").splitlines()]
+    rows[1]["hits"].insert(1, bad_hit)
+    hybrid.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    assert cli.main(argv) == 1
+
+    assert calls == []
+    assert not saved.exists()
+    error = capsys.readouterr().err
+    assert "worker-hybrid.jsonl" in error and named in error and "RELEASELENS_DB" in error
+
+
+def test_run_arms_refuses_an_index_that_does_not_hold_the_corpus_before_paying(tmp_path, monkeypatch, capsys):
+    # A re-applied stack is a new, empty service; scored, its empty replies would be S2's and
+    # S3's misses, and C2 and C3 a confident difference made by the setup.
+    argv, calls, saved = _measurement(tmp_path, monkeypatch, indexed=0)
+
+    assert cli.main(argv) == 1
+
+    assert [kind for kind, *_ in calls] == ["count"]
+    assert not saved.exists()
+    error = capsys.readouterr().err
+    assert "holds 0 documents, not 4" in error and "build-index" in error
+
+
+@pytest.mark.parametrize("progress", ["missing", "unfinished"])
+def test_run_arms_refuses_a_corpus_embedding_with_no_finished_record_before_paying(tmp_path, monkeypatch, capsys,
+                                                                                    progress):
+    argv, calls, saved = _measurement(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    if progress == "missing":
+        (data / "releaselens-embed-large.progress.json").unlink()
+    else:
+        # Two batches of two, and only the first recorded.
+        _progress(data, "releaselens-embed-large", {"0": 10}, chunks=4, batch_size=2)
+
+    assert cli.main(argv) == 1
+
+    assert calls == []
+    assert not saved.exists()
+    error = capsys.readouterr().err
+    assert "releaselens-embed-large.progress.json" in error and "run embed" in error
+
+
+# --- build-index ---------------------------------------------------------------------------
+
+
+class _Index:
+    """A fake search service for build-index: it accepts the index and every upload, and counts
+    the documents as `counts` says, one reading per request, the last one repeated."""
+
+    def __init__(self, counts: list[int]) -> None:
+        self.counts, self.requests = list(counts), []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        if request.method == "PUT":
+            return httpx.Response(201, json={"name": "releaselens-chunks"})
+        if request.url.path.endswith("/docs/index"):
+            keys = [document["chunk_id"] for document in json.loads(request.content)["value"]]
+            return httpx.Response(200, json={"value": [{"key": key, "status": True} for key in keys]})
+        count = self.counts.pop(0) if len(self.counts) > 1 else self.counts[0]
+        # The service answers $count as plain text, which may begin with a byte-order mark.
+        return httpx.Response(200, content=("\ufeff" + str(count)).encode("utf-8"),
+                              headers={"Content-Type": "text/plain"})
+
+    def counted(self) -> list:
+        return [request for request in self.requests if request.url.path.endswith("/docs/$count")]
+
+
+def _build_index(tmp_path, monkeypatch, counts: list[int]):
+    data = tmp_path / "data"
+    _export(data, _CORPUS)
+    np.save(data / "releaselens-embed-small.npy", np.ones((4, 1536), dtype=np.float32))
+    (data / "releaselens-embed-small.ids.json").write_text("[1, 2, 3, 4]", encoding="utf-8")
+    index, slept = _Index(counts), []
+    monkeypatch.setattr(cli, "new_client", lambda: httpx.Client(transport=httpx.MockTransport(index)))
+    monkeypatch.setattr(cli, "TokenSource", _Tokens)
+    monkeypatch.setattr(cli, "_sleep", slept.append)
+    _Tokens.made, _Tokens.fetched, _Tokens.failing = [], [], None
+    argv = ["build-index", "--endpoint", "https://search-not-real.search.windows.net",
+            "--tenant", "tenant-not-real", "--data", str(data)]
+    return argv, index, slept
+
+
+def test_build_index_waits_until_the_index_counts_every_chunk(tmp_path, monkeypatch, capsys):
+    argv, index, slept = _build_index(tmp_path, monkeypatch, [0, 3, 4])
+
+    assert cli.main(argv) == 0
+
+    counted = index.counted()
+    assert len(counted) == 3 and slept == [5.0, 5.0]
+    assert counted[0].method == "GET" and counted[0].headers["Authorization"] == "Bearer fake-token"
+    assert counted[0].url.params["api-version"] == "2026-04-01"
+    assert "the index holds 4 documents" in capsys.readouterr().out
+
+
+def test_build_index_fails_when_the_index_never_counts_every_chunk(tmp_path, monkeypatch, capsys):
+    argv, index, slept = _build_index(tmp_path, monkeypatch, [3])
+
+    assert cli.main(argv) == 1
+
+    # A bounded wait: 12 readings, 5 seconds apart.
+    assert len(index.counted()) == 12 and slept == [5.0] * 11
+    assert "holds 3 documents, not 4" in capsys.readouterr().err

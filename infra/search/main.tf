@@ -23,8 +23,10 @@ resource "azurerm_search_service" "search" {
   replica_count       = 1
   partition_count     = 1
 
-  # With key authentication off, every call has to be authorised through Entra ID, so the admin
-  # and query keys are useless and none is ever read. azurerm defaults this to true.
+  # With key authentication off, every call has to be authorised through Entra ID. The provider
+  # stores the service's keys in state, as it does for every search service; they authenticate
+  # nothing, because key authentication is off, and none is output or used. azurerm defaults
+  # this to true.
   local_authentication_enabled = false
 
   # The free plan refuses ranked queries past its monthly allowance instead of billing for them

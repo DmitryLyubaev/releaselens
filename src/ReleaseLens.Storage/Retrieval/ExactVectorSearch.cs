@@ -11,11 +11,14 @@ namespace ReleaseLens.Storage.Retrieval;
 /// </summary>
 public sealed class ExactVectorSearch
 {
+    /// <summary>The stored BGE-small vectors' length, which a query vector must match.</summary>
+    public const int Dimensions = 384;
+
     /// <summary>
-    /// A cost penalty rather than a ban, but at 1e10 against a sequential scan of the corpus
-    /// it is decisive. SET LOCAL confines it to this transaction, and it stays in force for
-    /// the rest of that transaction: a <see cref="HybridRetriever"/> call made later in the
-    /// same scope would lose its index too.
+    /// A cost penalty rather than a ban, but a large fixed cost penalty against a sequential
+    /// scan of the corpus, so it is decisive. SET LOCAL confines it to this transaction, and it
+    /// stays in force for the rest of that transaction: a <see cref="HybridRetriever"/> call
+    /// made later in the same scope would lose its index too.
     /// </summary>
     internal const string DisableIndexScanSql = "set local enable_indexscan = off";
 
@@ -31,9 +34,22 @@ public sealed class ExactVectorSearch
         limit @k
         """;
 
+    /// <summary>
+    /// The <paramref name="k"/> chunks nearest <paramref name="queryVector"/> by cosine, best
+    /// first. <paramref name="k"/> must be positive, and the vector must have
+    /// <see cref="Dimensions"/> values; both are checked before the database is touched.
+    /// </summary>
     public async Task<IReadOnlyList<(long ChunkId, string Artefact, double Score)>> SearchAsync(
         TenantScope scope, float[] queryVector, int k, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(k);
+        ArgumentNullException.ThrowIfNull(queryVector);
+        if (queryVector.Length != Dimensions)
+        {
+            throw new ArgumentOutOfRangeException(nameof(queryVector), queryVector.Length,
+                $"The query vector has {queryVector.Length} dimensions; the stored vectors have {Dimensions}.");
+        }
+
         await scope.Connection.ExecuteAsync(new CommandDefinition(
             DisableIndexScanSql, transaction: scope.Transaction, cancellationToken: cancellationToken));
 

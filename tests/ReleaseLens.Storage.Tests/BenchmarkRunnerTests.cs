@@ -79,6 +79,26 @@ public class BenchmarkRunnerTests
         Assert.Equal(50, lines[2].GetProperty("hits").GetArrayLength());
     }
 
+    /// <summary>
+    /// JSON has no form for NaN, so a hit scored NaN (say, from a zero query vector) cannot be
+    /// written. That is the question's error, and the run moves on to the next one.
+    /// </summary>
+    [Fact]
+    public async Task Retrieve_AHitThatCannotBeWrittenIsThatQuestionsError()
+    {
+        var lines = await RunAsync("bge-exact", (question, _) =>
+            Task.FromResult<IReadOnlyList<(long ChunkId, string Artefact, double Score)>>(
+                question.Contains("Python", StringComparison.Ordinal)
+                    ? [(1L, "commit:sha1", double.NaN)]
+                    : SixtyHits()));
+
+        Assert.Equal(["q1", "q2", "q3"], lines.Select(l => l.GetProperty("qid").GetString()));
+        Assert.False(string.IsNullOrEmpty(lines[1].GetProperty("error").GetString()));
+        Assert.Empty(lines[1].GetProperty("hits").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, lines[2].GetProperty("error").ValueKind);
+        Assert.Equal(50, lines[2].GetProperty("hits").GetArrayLength());
+    }
+
     [Fact]
     public async Task Retrieve_RejectsAnUnknownMode()
     {

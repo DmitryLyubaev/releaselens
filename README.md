@@ -285,7 +285,7 @@ See [docs/architecture.md](docs/architecture.md).
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
 | Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
-| Infrastructure | Terraform in two stacks: a long-lived bootstrap stack, and an app stack (Container Apps scale-to-zero, Postgres Flexible Server). A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
+| Infrastructure | Terraform in three stacks: a long-lived bootstrap stack, an app stack (Container Apps scale-to-zero, Postgres Flexible Server), and a short-lived search stack for the retrieval benchmark. A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it

@@ -9,7 +9,9 @@ Every figure is the run's own, from the analysis `run-arms` saved, and only form
 applied: accuracies, means and bounds to 3 places (or more, where 3 would put a mean or a bound
 on one of the rule's boundaries without its being there), margins to 4, cost per 1,000 queries
 to 6, latency in whole milliseconds. Nothing is recomputed, so the page cannot disagree with the
-record of the run. A run that did not finish is refused, never rendered in part.
+record of the run; the one figure it works out is what embedding the corpus cost, the run's
+recorded tokens at the analysis's own rates. A run that did not finish is refused, never
+rendered in part.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ def render(run: dict) -> str:
         *_method(analysis),
         *_comparisons(analysis),
         *_per_arm(analysis),
-        *_latency_and_cost(analysis),
+        *_latency_and_cost(run, analysis),
         *_by_type(analysis),
         *_caveats(run, analysis),
         *_appendix(analysis),
@@ -175,7 +177,7 @@ def _per_arm(analysis: dict) -> list[str]:
     ]
 
 
-def _latency_and_cost(analysis: dict) -> list[str]:
+def _latency_and_cost(run: dict, analysis: dict) -> list[str]:
     rates = analysis["rates"]
     per_million = rates["per_million_tokens"]
     local = " and ".join(LOCAL_ARMS)
@@ -205,6 +207,8 @@ def _latency_and_cost(analysis: dict) -> list[str]:
         "embedding that a failure followed was still billed. For S2 and S3 it is per search sent, "
         "leaving out any question E2 gave no vector for, which was never searched.",
         "- S2 and S3 include E2's tokens for embedding the question.",
+        f"- Embedding the corpus is a one-time cost, not a cost per query, billed at the rates above: "
+        f"{_corpus_cost(run['corpus_tokens'], per_million)}.",
         f"- S3 adds the semantic ranker at ${rates['ranker_per_request']:g} per request, on "
         f"{rates['ranker_plan']}.",
         f"- {local} run locally, with no per-query charge.",
@@ -284,6 +288,13 @@ def _appendix(analysis: dict) -> list[str]:
         *(f"| {e['x']} − {e['y']} | {e['n']} | {_signed(e['difference'])} |" for e in analysis["exploratory"]),
         "",
     ]
+
+
+def _corpus_cost(corpus_tokens: Mapping, per_million: Mapping) -> str:
+    return "; ".join(
+        f"`{model}` {figures['tokens']:,} tokens, ${figures['tokens'] * per_million[model] / 1_000_000:.6f}"
+        for model, figures in corpus_tokens.items()
+    )
 
 
 def _verdict(comparison: Mapping) -> str:

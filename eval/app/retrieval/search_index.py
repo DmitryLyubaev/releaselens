@@ -86,15 +86,15 @@ def _compact(vector: np.ndarray) -> list[float]:
     return [float(text) for text in np.asarray(vector, dtype=np.float32).astype(str)]
 
 
-def _send(client: httpx.Client, method: str, endpoint: str, path: str, body: dict,
+def _send(client: httpx.Client, method: str, endpoint: str, path: str, body: dict | None,
           tokens: TokenSource) -> httpx.Response:
-    response = client.request(
-        method,
-        f"{endpoint.rstrip('/')}/{path}",
-        params={"api-version": API_VERSION},
-        headers={"Authorization": f"Bearer {tokens.token()}", "Content-Type": "application/json"},
-        content=json.dumps(body, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"),
-    )
+    headers = {"Authorization": f"Bearer {tokens.token()}"}
+    content = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        content = json.dumps(body, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    response = client.request(method, f"{endpoint.rstrip('/')}/{path}", params={"api-version": API_VERSION},
+                              headers=headers, content=content)
     if not response.is_success:
         raise SearchError(f"HTTP {response.status_code}: {response.text}")
     return response
@@ -149,6 +149,18 @@ def upload(
                 raise SearchError(f"HTTP {response.status_code}: {len(failed)} of {len(documents)} documents "
                                   f"refused, the first {failed[0]['key']}: {failed[0].get('errorMessage')}")
     return len(ids)
+
+
+def document_count(endpoint: str, tokens: TokenSource, client: httpx.Client | None = None) -> int:
+    """How many documents the index holds, as the service counts them now. Free to ask.
+
+    A document the upload sent is counted only once the service has indexed it, a moment after
+    the upload was accepted, so a count read straight after an upload can be short.
+    """
+    with _client(client) as http:
+        response = _send(http, "GET", endpoint, f"indexes/{INDEX_NAME}/docs/$count", None, tokens)
+    # Plain text, which the service may start with a byte-order mark.
+    return int(response.text.lstrip("\ufeff").strip())
 
 
 def search(

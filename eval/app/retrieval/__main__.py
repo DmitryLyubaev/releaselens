@@ -16,10 +16,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import sys
+import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,8 +52,8 @@ from .questions import (
     spot_check_sheet,
 )
 from .report import render
-from .score import analyse
-from .search_index import API_VERSION, INDEX_NAME, create_index, new_client, upload
+from .score import ARM_MODELS, analyse
+from .search_index import API_VERSION, INDEX_NAME, create_index, document_count, new_client, upload
 from .search_index import SCOPE as SEARCH_SCOPE
 
 EVAL = Path(__file__).resolve().parents[2]
@@ -63,6 +66,11 @@ SMALL = "releaselens-embed-small"
 LARGE = "releaselens-embed-large"
 CHECKPOINT = "questions.checkpoint.jsonl"
 REPEAT_FIRST = 30
+# The index counts an uploaded document only once it has indexed it, so build-index reads the
+# count up to this many times, this many seconds apart, before it gives up.
+COUNT_READINGS = 12
+COUNT_WAIT_SECONDS = 5.0
+_sleep = time.sleep
 
 
 class Refused(Exception):
@@ -119,13 +127,13 @@ def write_questions(args) -> int:
 
 def spot_check(args) -> int:
     """Write round N's sheet of 30 for the owner to mark, from the finished checkpoint."""
-    out = args.data / f"spot-check-round-{args.round}.json"
+    out = args.data / f"spot-check-round-{args.round_}.json"
     if out.exists():
         raise Refused(f"{out} exists, and may already hold marks; move it aside to draw it again")
     _, built = _built(args, _CheckpointOnly(_checkpoint(args)))
-    sheet = spot_check_sheet(built.questions, built.artefacts, round=args.round, why_unique=built.why_unique)
+    sheet = spot_check_sheet(built.questions, built.artefacts, round_=args.round_, why_unique=built.why_unique)
     # The generation's spend goes on its sheet, so a set later regenerated keeps it on record.
-    _write_json(out, {"round": args.round, "seed": SEED + args.round, "spend": _spend(built), "rows": sheet})
+    _write_json(out, {"round": args.round_, "seed": SEED + args.round_, "spend": _spend(built), "rows": sheet})
     print(f"{len(sheet)} questions to mark in {out}: set each mark to fine, ambiguous or wrong")
     return 0
 
@@ -144,16 +152,24 @@ def _round(path: Path) -> dict:
 def freeze_set(args) -> int:
     """Freeze the set with its manifest, only if the last spot-check passed on this very set.
 
-    Each sheet given is one round, oldest first; the earlier ones are the rounds that failed and
-    sent the set back to be regenerated, and are frozen with it as the record. Each round is one
-    generation, and carries what writing it cost, so `spend_all_rounds` is every question-writing
-    call the set took, the generations thrown away included.
+    Each sheet given is one round, every round from 0, oldest first; the earlier ones are the
+    rounds that failed and sent the set back to be regenerated, and are frozen with it as the
+    record. Each round is one generation, and carries what writing it cost, so
+    `spend_all_rounds` is every question-writing call the set took, the generations thrown away
+    included. So a round left out is refused, as is an earlier round's sheet in --data that was
+    not the one given.
     """
     stream, built = _built(args, _CheckpointOnly(_checkpoint(args)))
     rounds = [_round(path) for path in args.sheet]
     numbers = [checked["round"] for checked in rounds]
-    if numbers != sorted(set(numbers)):
-        raise Refused(f"the sheets are rounds {numbers}; give each round once, oldest first")
+    if numbers != list(range(len(numbers))):
+        raise Refused(f"the sheets are rounds {numbers}; give every round from 0, oldest first")
+    given = {path.resolve() for path in args.sheet}
+    for path in sorted(args.data.glob("spot-check-round-*.json")):
+        number = re.fullmatch(r"spot-check-round-(\d+)\.json", path.name)
+        if number and int(number[1]) < numbers[-1] and path.resolve() not in given:
+            raise Refused(f"{path} is round {number[1]}'s sheet, and was not given; give every round "
+                          "from 0, oldest first")
 
     last = rounds[-1]
     by_qid = {question.qid: question for question in built.questions}
@@ -209,30 +225,73 @@ def embed(args) -> int:
     return 0
 
 
+def _settled_count(endpoint: str, tokens: TokenSource, client, expected: int) -> int:
+    """The index's document count once it is `expected`, or else the last one read, after
+    COUNT_READINGS readings COUNT_WAIT_SECONDS apart."""
+    for reading in range(COUNT_READINGS):
+        if reading:
+            _sleep(COUNT_WAIT_SECONDS)
+        indexed = document_count(endpoint, tokens, client)
+        if indexed == expected:
+            break
+    return indexed
+
+
 def build_index(args) -> int:
-    """Create the index and upload every chunk with its saved `-small` vector."""
+    """Create the index, upload every chunk with its saved `-small` vector, and wait until the
+    index counts every chunk."""
     tokens = TokenSource(SEARCH_SCOPE, args.tenant)
     chunks = load_chunks(args.data / "chunks.jsonl")
     with new_client() as client:
         create_index(args.endpoint, tokens, client)
         sent = upload(chunks, args.data / f"{args.deployment}.npy", args.data / f"{args.deployment}.ids.json",
                       args.endpoint, tokens, client)
+        indexed = _settled_count(args.endpoint, tokens, client, len(chunks))
+    if indexed != len(chunks):
+        raise Refused(f"the index at {args.endpoint} holds {indexed:,} documents, not {len(chunks):,}, after "
+                      f"{COUNT_READINGS} readings {COUNT_WAIT_SECONDS:g} s apart; run build-index again")
     # upload raises on any document the service refused, so every one sent was accepted.
-    print(f"index {INDEX_NAME}: {sent:,} documents uploaded and accepted")
+    print(f"index {INDEX_NAME}: {sent:,} documents uploaded and accepted; the index holds {indexed:,} documents")
     return 0
 
 
-def _worker(path: Path, arm: str, qids: list[str]) -> list[ArmResult]:
-    """The Worker's output, only if it is one arm's answer to every frozen question, in order."""
+def _worker(path: Path, arm: str, qids: list[str], artefacts: Mapping[int, str]) -> list[ArmResult]:
+    """The Worker's output, only if it is one arm's answer to every frozen question, in order,
+    over the exported corpus: every hit a chunk in `artefacts`, with that chunk's artefact.
+
+    Scoring reads the Worker's own artefacts, so hits from another database would otherwise be
+    scored as if E1 and S1 had searched the same chunks as the other arms.
+    """
     rows = read_worker_output(path)
     if any(row.arm != arm for row in rows):
         raise Refused(f"{path} is not {arm}'s output")
     if [row.qid for row in rows] != qids:
         raise Refused(f"{path} answers {len(rows)} questions, not the {len(qids)} of the frozen file in "
                       "order; run the Worker on the frozen file")
+    for row in rows:
+        for hit in row.hits:
+            if artefacts.get(hit.chunk_id) != hit.artefact:
+                corpus = f"is {artefacts[hit.chunk_id]} in" if hit.chunk_id in artefacts else "is not in"
+                raise Refused(f"{path} gives {row.qid} chunk {hit.chunk_id} as {hit.artefact}, but that chunk "
+                              f"{corpus} the exported corpus; run the Worker with RELEASELENS_DB set to the "
+                              "database the corpus was exported from, releaselens_eval")
     if all(row.error is not None for row in rows):
         raise Refused(f"every question errored in {path}; fix the Worker run first")
     return rows
+
+
+def _corpus_tokens(data: Path, deployment: str, chunks: int) -> int:
+    """The tokens embedding the corpus with `deployment` was billed, from its progress record,
+    which must record every batch over these chunks as saved."""
+    path = data / f"{deployment}.progress.json"
+    if not path.exists():
+        raise Refused(f"no {path}: the corpus has not been embedded with {deployment}; run embed first")
+    progress = json.loads(path.read_text(encoding="utf-8"))
+    batches = math.ceil(chunks / progress["batch_size"])
+    if progress["chunks"] != chunks or len(progress["done"]) != batches:
+        raise Refused(f"{path} records {len(progress['done'])} saved batches over {progress['chunks']:,} chunks, "
+                      f"not all {batches} over these {chunks:,}; run embed to finish it")
+    return sum(progress["done"].values())
 
 
 def _shown(path: Path) -> str:
@@ -246,12 +305,16 @@ def _shown(path: Path) -> str:
 def run_arms(args) -> int:
     """All six arms over the frozen set, then the determinism repeat, saved after each arm.
 
-    Everything free is checked before anything is paid for: the frozen file, the Worker's four
-    files, the saved vectors, and a token for each scope, so a sign-in failure costs nothing. E2
-    runs before S2 and S3, which search with its vectors, on both passes, so the repeat embeds
-    nothing for them. An arm that raises (say, a token that lapses and cannot be renewed) is the
-    run's arm failure: the run stops there, so no ranker request is spent on a run that cannot
-    be published, and is saved with what it had. A run has no resume: run it again in full.
+    Everything free is checked before anything is paid for: the frozen file; the Worker's four
+    files, down to each hit being a chunk of the exported corpus; the saved vectors, and the
+    record that each corpus embedding finished; a token for each scope, so a sign-in failure
+    costs nothing; and the index's document count, so an empty or wrong index is refused rather
+    than scored as S2's and S3's misses. E2 runs before S2 and S3, which search with its vectors,
+    on both passes, so the repeat embeds nothing for them. An arm that raises (say, a token that
+    lapses and cannot be renewed, or a search arm stopped by the same error again and again) is
+    the run's arm failure: the run stops there, so no ranker request is spent on a run that
+    cannot be published, and is saved with what it had. A run has no resume: run it again in
+    full.
     """
     questions = load_frozen(args.questions)
     qids = [question.qid for question in questions]
@@ -262,14 +325,19 @@ def run_arms(args) -> int:
     artefacts = {chunk.chunk_id: chunk.artefact for chunk in chunks}
 
     first_qids = set(qids[:args.repeat_first])
-    worker_first = _worker(args.worker_bge, "E1", qids) + _worker(args.worker_hybrid, "S1", qids)
-    worker_repeat = [row for row in _worker(args.worker_bge_repeat, "E1", qids)
-                     + _worker(args.worker_hybrid_repeat, "S1", qids) if row.qid in first_qids]
+    worker_first = (_worker(args.worker_bge, "E1", qids, artefacts)
+                    + _worker(args.worker_hybrid, "S1", qids, artefacts))
+    worker_repeat = [row for row in _worker(args.worker_bge_repeat, "E1", qids, artefacts)
+                     + _worker(args.worker_hybrid_repeat, "S1", qids, artefacts) if row.qid in first_qids]
     saved = {deployment: (args.data / f"{deployment}.npy", args.data / f"{deployment}.ids.json")
              for deployment in (args.small_deployment, args.large_deployment)}
     missing = [str(path) for paths in saved.values() for path in paths if not path.exists()]
     if missing:
         raise Refused(f"no saved vectors at {', '.join(missing)}; run embed first")
+    corpus_tokens = {
+        ARM_MODELS[arm]: {"deployment": deployment, "tokens": _corpus_tokens(args.data, deployment, len(chunks))}
+        for arm, deployment in (("E2", args.small_deployment), ("E3", args.large_deployment))
+    }
 
     run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = REPORTS / f"retrieval-{run_id}.json"
@@ -284,6 +352,15 @@ def run_arms(args) -> int:
         except Exception as error:
             raise Refused(f"no token for {scope}, so nothing was spent: {type(error).__name__}: {error}. "
                           "Check az account show, and REQUESTS_CA_BUNDLE behind TLS inspection") from error
+    with new_client() as http:
+        try:
+            indexed = document_count(args.endpoint, search_tokens, http)
+        except Exception as error:
+            raise Refused(f"could not count the index's documents at {args.endpoint}, so nothing was spent: "
+                          f"{type(error).__name__}: {error}. Run build-index against this endpoint") from error
+    if indexed != len(chunks):
+        raise Refused(f"the index at {args.endpoint} holds {indexed:,} documents, not {len(chunks):,}, so "
+                      "nothing was spent; run build-index against this endpoint")
 
     run = {
         "run_id": run_id,
@@ -292,6 +369,8 @@ def run_arms(args) -> int:
         "questions": {"file": _shown(args.questions),
                       "sha256": hashlib.sha256(args.questions.read_bytes()).hexdigest(), "count": len(questions)},
         "chunks": len(chunks),
+        # One-time costs, not per query: the tokens embedding the corpus was billed, per model.
+        "corpus_tokens": corpus_tokens,
         "deployments": {"E2": args.small_deployment, "E3": args.large_deployment,
                         "S2": args.small_deployment, "S3": args.small_deployment},
         "search": {"index": INDEX_NAME, "api_version": API_VERSION, "endpoint": args.endpoint},
@@ -391,7 +470,8 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--checkpoint", type=Path, default=None,
                          help=f"the checkpoint file (default: <data>/{CHECKPOINT})")
         if name == "spot-check":
-            sub.add_argument("--round", type=int, default=0, help="0 first, then 1, 2... after regenerating")
+            sub.add_argument("--round", dest="round_", type=int, default=0,
+                             help="0 first, then 1, 2... after regenerating")
         if name == "freeze":
             sub.add_argument("--sheet", type=Path, action="append", required=True,
                              help="a marked sheet; repeat it for each round, oldest first")

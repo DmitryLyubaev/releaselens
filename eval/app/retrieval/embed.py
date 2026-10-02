@@ -30,6 +30,8 @@ MAX_RETRIES = 5
 _RETRIED_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_BACKOFF_SECONDS = 60.0
 _TIMEOUT_SECONDS = 120.0
+_REPLACE_RETRIES = 5
+_REPLACE_WAIT_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -38,8 +40,8 @@ class EmbeddingRun:
 
     `tokens_billed` and `batches` count the batches recorded as saved in `out_dir`, across the
     calls it took to finish, each batch once. They are what the saved vectors cost, not
-    everything Azure billed: a batch paid for but lost in a crash before its record is not
-    included, and neither is the call that later embeds it again.
+    everything Azure billed: a batch paid for but lost in a crash before its record is counted
+    once, for the call that later embeds it again; the lost first payment is not included.
     """
 
     deployment: str
@@ -107,11 +109,23 @@ def _parse(body: dict, expected: int) -> tuple[np.ndarray, int]:
     return vectors, int(body["usage"]["prompt_tokens"])
 
 
-def _write_json(path: Path, value) -> None:
-    # Written whole and then swapped in, so a crash never leaves half a progress file.
+def _write_json(path: Path, value, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    # Written whole, synced to disk and then swapped in, so a crash never leaves half a progress
+    # file, and a file swapped in is already on disk.
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value), encoding="utf-8")
-    os.replace(temporary, path)
+    with temporary.open("wb") as file:
+        file.write(json.dumps(value).encode("utf-8"))
+        file.flush()
+        os.fsync(file.fileno())
+    for attempt in range(_REPLACE_RETRIES + 1):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            # On Windows a scanner can hold the new file open for a moment after it is written.
+            if attempt == _REPLACE_RETRIES:
+                raise
+            sleep(_REPLACE_WAIT_SECONDS)
 
 
 def _resume(progress_path: Path, ids_path: Path, vectors_path: Path, *, deployment: str,
@@ -119,7 +133,7 @@ def _resume(progress_path: Path, ids_path: Path, vectors_path: Path, *, deployme
     """The saved progress, or None when there is none. Refuses progress made for another run.
 
     A run is only resumed into the same deployment, chunk order and batch size, because a batch
-    number means nothing otherwise; the files are never overwritten to start again.
+    number means nothing otherwise; a file with any saved batch is never overwritten.
     """
     if not progress_path.exists():
         return None
@@ -174,10 +188,10 @@ def embed_corpus(
     progress = _resume(progress_path, ids_path, vectors_path, deployment=deployment, ids=ids,
                        batch_size=batch_size)
     if progress is None:
-        _write_json(ids_path, ids)
+        _write_json(ids_path, ids, sleep=sleep)
         progress = {"deployment": deployment, "batch_size": batch_size, "chunks": len(chunks),
                     "dimensions": None, "done": {}}
-        _write_json(progress_path, progress)
+        _write_json(progress_path, progress, sleep=sleep)
 
     done: dict[str, int] = progress["done"]
     batch_count = math.ceil(len(chunks) / batch_size)
@@ -209,7 +223,7 @@ def embed_corpus(
             vectors[start:start + len(members)] = rows
             vectors.flush()
             done[str(batch)] = used
-            _write_json(progress_path, progress)
+            _write_json(progress_path, progress, sleep=sleep)
     finally:
         # Drops the mapping, so the file can be opened again, on Windows too, even while a
         # caller still holds the traceback of a failure.
@@ -227,13 +241,14 @@ def embed_query(
     deployment: str,
     tokens: TokenSource,
     client: httpx.Client | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[np.ndarray, int]:
     """One text's float32 vector, and the prompt tokens it was billed. Retried as a batch is."""
     owned = client is None
     client = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
         rows, used = _post_embeddings(client, base_url=base_url, deployment=deployment,
-                                      inputs=[text], tokens=tokens, sleep=time.sleep)
+                                      inputs=[text], tokens=tokens, sleep=sleep)
     finally:
         if owned:
             client.close()

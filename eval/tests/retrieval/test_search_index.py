@@ -21,6 +21,7 @@ from app.retrieval.search_index import (
     SCOPE,
     SearchError,
     create_index,
+    document_count,
     search,
     upload,
 )
@@ -299,3 +300,27 @@ def test_upload_refuses_a_document_the_service_rejected(tmp_path):
 
     with pytest.raises(SearchError, match="Document is too large"):
         upload(chunks, vectors_path, ids_path, _ENDPOINT, _tokens(), client=_Recorder(one_failed).client())
+
+
+def test_document_count_asks_the_index_keyless_and_reads_the_number():
+    # The service answers $count as plain text, which may begin with a byte-order mark.
+    recorder = _Recorder(lambda request: httpx.Response(
+        200, content="\ufeff41825".encode("utf-8"), headers={"Content-Type": "text/plain"}))
+
+    assert document_count(_ENDPOINT + "/", _tokens(), recorder.client()) == 41_825
+
+    [request] = recorder.requests
+    assert request.method == "GET"
+    assert str(request.url) == f"{_ENDPOINT}/indexes/{INDEX_NAME}/docs/$count?api-version={API_VERSION}"
+    assert request.headers["Authorization"] == "Bearer fake-token-1"
+    assert "api-key" not in request.headers
+
+
+def test_document_count_of_a_missing_index_is_an_error():
+    body = '{"error":{"code":"","message":"The index \'releaselens-chunks\' was not found (not real)."}}'
+    recorder = _Recorder(lambda request: httpx.Response(404, text=body))
+
+    with pytest.raises(SearchError) as raised:
+        document_count(_ENDPOINT, _tokens(), recorder.client())
+
+    assert str(raised.value) == f"HTTP 404: {body}"
