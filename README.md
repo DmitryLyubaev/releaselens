@@ -24,6 +24,11 @@ Measured 12 August 2026, against a corpus of 41,825 chunks. Full
 write-up, including method, caveats and the previous run for comparison:
 **[eval/baseline.md](eval/baseline.md)**.
 
+A pre-registered three-arm study, putting the same queries to Anthropic, to Azure OpenAI
+through the owner's Entra identity and to OpenAI with a key, has not been run yet, so nothing in
+this section comes from it; [eval/baseline.md](eval/baseline.md#running-the-three-arm-study)
+says how to run it.
+
 | Metric | 11 Aug | 12 Aug |
 |---|---|---|
 | Golden query set | 43 queries | 43 queries · 5 categories |

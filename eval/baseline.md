@@ -136,11 +136,15 @@ perfect on those queries.
 With Postgres up, the API running, and `ANTHROPIC_API_KEY` set:
 
 ```bash
-curl -sS -X POST http://localhost:8000/eval/run -H "Content-Type: application/json" -d '{"api_base_url":"http://127.0.0.1:5274","api_key":"<key>","per_category":1}'
+curl -sS -X POST http://localhost:8000/eval/run -H "Content-Type: application/json" -d '{"arms":[{"name":"A","base_url":"http://127.0.0.1:5274","expected_provider":"anthropic"}],"api_key":"<key>","per_category":1}'
 ```
 
-Raise `per_category`, or omit it for all 43. Add `"dry_run":true` to price a sweep from one
-query per category before committing to it.
+The harness now takes a list of arms, one API process each, in place of the single API URL
+this run was made with. One arm answered by Anthropic is this run's configuration; a reply from
+any other provider is recorded as an error, not scored. Raise `per_category`, or omit it for
+all 43. Add `"dry_run":true` to price a sweep from one query per category before committing
+to it. The three-arm study is under
+[Running the three-arm study](#running-the-three-arm-study).
 
 ---
 
@@ -170,3 +174,187 @@ carelessness.
 Corpus at the time: 22,288 chunks, with issues and commits covering only a June 2026 window.
 The 12 August run is against 41,825 chunks with commits back to January 2024, so the two runs
 are not measuring retrieval over the same corpus.
+
+---
+
+# Running the three-arm study
+
+How to run the study pre-registered in spec §8
+(`docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md`). This is the method only.
+The study has not been run, and nothing in this section is a result.
+
+The same ten golden queries (`per_category=2`) go to three arms on each of three passes, and one
+judge scores every answer without being told which arm wrote it. Each arm is a separate local
+API process started with a single provider, and all three read the same restored corpus.
+
+| Arm | Port | Provider (`expected_provider`) | Model | Auth |
+|---|---|---|---|---|
+| A | 8081 | `anthropic` | Claude Sonnet 5 | key |
+| Z | 8082 | `azure-openai` | gpt-4.1-mini 2025-04-14 (Global Standard) | the owner's Entra identity, through the Azure CLI |
+| O | 8083 | `openai` | gpt-4.1-mini | key |
+
+Z against O is the comparison that tests the claim: the same model through two auth paths. Z
+against A is reported as well, but it compares two different models.
+
+The commands are PowerShell, run from the repository root unless a step says otherwise. Docker
+runs inside WSL (Ubuntu) on this machine and is not on the Windows path, so each `docker`
+command goes through `wsl.exe`, which starts in the same folder as
+`/mnt/e/Projects/ReleaseLens`. Keys are read from the git-ignored `.env` straight into the
+environment of the process that needs them, so none is typed, printed or written to a file.
+
+## 1. Restore the corpus
+
+The corpus is the one every published figure was measured against: the owner's local backup
+`releaselens-corpus-2026-08-12.dump`, kept outside the repository in the sibling folder
+`ReleaseLens-backup`, beside its `RESTORE.md`. It goes into a database of its own,
+`releaselens_eval`, which leaves the working database alone.
+
+```powershell
+wsl.exe -d Ubuntu --exec docker compose up -d postgres
+wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres psql -U releaselens -d postgres -c "create database releaselens_eval"
+wsl.exe -d Ubuntu --exec docker cp ../ReleaseLens-backup/releaselens-corpus-2026-08-12.dump releaselens-postgres:/tmp/corpus.dump
+wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres pg_restore -U releaselens -d releaselens_eval --no-owner /tmp/corpus.dump
+```
+
+`pg_dump` carries no roles. On a fresh volume the role `releaselens_app` does not exist, and
+`pg_restore` reports errors on the grants to it. If it does, create the role and re-apply the
+grants by running migration 007 by hand, which is idempotent:
+
+```powershell
+wsl.exe -d Ubuntu --exec docker cp src/ReleaseLens.Storage/Migrations/007_app_role.sql releaselens-postgres:/tmp/007_app_role.sql
+wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres psql -U releaselens -d releaselens_eval -f /tmp/007_app_role.sql
+```
+
+Point the Worker at the restored database, bring its schema up to date, and issue the harness a
+key. The key goes straight into this window's environment and is never shown. It is stored only
+as a hash, so it cannot be recovered, only reissued. The check prints `True` or `False`, never
+the key; go on only on `True`.
+
+```powershell
+$env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
+dotnet run --project src/ReleaseLens.Worker -- migrate
+$env:EVAL_API_KEY = (dotnet run --project src/ReleaseLens.Worker -- issue-key semantic-kernel eval)
+$env:EVAL_API_KEY -cmatch '^rl_[0-9a-f]{48}$'
+```
+
+Keep this window open: it holds `EVAL_API_KEY`, and the study's request is sent from it.
+
+Check the row counts against `RESTORE.md`:
+
+```powershell
+wsl.exe -d Ubuntu --exec docker exec -e PGPASSWORD=releaselens_dev_only releaselens-postgres psql -U releaselens -d releaselens_eval -c "select 'evidence_chunks' as table_name, count(*) from evidence_chunks union all select 'embeddings', count(*) from embeddings union all select 'files_changed', count(*) from files_changed union all select 'pull_requests', count(*) from pull_requests union all select 'issues', count(*) from issues union all select 'commits', count(*) from commits union all select 'releases', count(*) from releases"
+```
+
+| Table | Rows |
+|---|---:|
+| evidence_chunks | 41,825 |
+| embeddings | 41,825 |
+| files_changed | 34,561 |
+| pull_requests | 7,121 |
+| issues | 3,805 |
+| commits | 2,921 |
+| releases | 276 |
+
+## 2. Start the three arms
+
+Build once:
+
+```powershell
+dotnet build -c Release
+```
+
+Then start each arm in a window of its own, from the repository root. Each window sets
+`RELEASELENS_DB` as in step 1, and only its own arm's settings. Each process must start: one
+that stops at startup says why, and a model with no price is one such reason.
+
+**A, on port 8081:**
+
+```powershell
+$env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
+$env:Chat__Providers__0 = "anthropic"
+$env:ANTHROPIC_API_KEY = (Select-String -Path .env -Pattern '^ANTHROPIC_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+dotnet run --project src/ReleaseLens.Api -c Release --no-build --no-launch-profile --urls http://localhost:8081
+```
+
+**Z, on port 8082.** Sign in first with `az login`, as the owner's personal account, the one
+holding the Cognitive Services OpenAI User role on the Azure OpenAI account. Stop if a work
+account is signed in. Behind a TLS-inspecting proxy that breaks `az`, give this window alone a
+CA bundle that includes the proxy's root: the API calls `az` whenever it needs a token, and `az`
+inherits the window's environment.
+
+```powershell
+$env:REQUESTS_CA_BUNDLE = "<path to a CA bundle that includes the proxy's root>"   # only behind TLS inspection
+az login
+az account show --query user.name -o tsv
+```
+
+```powershell
+$env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
+$env:Chat__Providers__0 = "azure-openai"
+$env:AzureOpenAi__BaseUrl = "<the bootstrap stack's azure_openai_base_url output>"
+$env:AzureOpenAi__Deployment = "releaselens-chat"
+$env:AzureOpenAi__Credential = "AzureCli"
+$env:AzureOpenAi__TenantId = "<the bootstrap stack's tenant_id output>"
+dotnet run --project src/ReleaseLens.Api -c Release --no-build --no-launch-profile --urls http://localhost:8082
+```
+
+Z holds no key. It authenticates as the owner through the Azure CLI, not as the managed identity
+the deployed app uses. `releaselens-chat` is the bootstrap stack's `azure_openai_deployment`
+output.
+
+**O, on port 8083:**
+
+```powershell
+$env:RELEASELENS_DB = "Host=127.0.0.1;Port=5433;Database=releaselens_eval;Username=releaselens;Password=releaselens_dev_only"
+$env:Chat__Providers__0 = "openai"
+$env:OpenAi__Model = "gpt-4.1-mini"
+$env:OPENAI_API_KEY = (Select-String -Path .env -Pattern '^OPENAI_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+dotnet run --project src/ReleaseLens.Api -c Release --no-build --no-launch-profile --urls http://localhost:8083
+```
+
+Each arm must answer `/health`:
+
+```powershell
+8081, 8082, 8083 | ForEach-Object { "$_ " + (Invoke-RestMethod "http://localhost:$_/health").status }
+```
+
+## 3. Start the harness
+
+In a fourth window, from `eval/`. The judge needs `ANTHROPIC_API_KEY`, for its token counts and
+its scoring:
+
+```powershell
+$env:ANTHROPIC_API_KEY = (Select-String -Path ..\.env -Pattern '^ANTHROPIC_API_KEY=(.*)$').Matches[0].Groups[1].Value.Trim().Trim('"')
+.venv/Scripts/fastapi run app/main.py --port 8000
+```
+
+## 4. Price it, then run it
+
+Both spend money, and each needs the owner's approval first. The dry run answers one query per
+category on each arm, once, and prices the whole run. Spec §8 estimates the dry run at about
+$0.55, and the run at about $5, which could be half or double that. From the window that holds
+`EVAL_API_KEY`:
+
+```powershell
+$study = @{
+    arms = @(
+        @{ name = "A"; base_url = "http://localhost:8081"; expected_provider = "anthropic" }
+        @{ name = "Z"; base_url = "http://localhost:8082"; expected_provider = "azure-openai" }
+        @{ name = "O"; base_url = "http://localhost:8083"; expected_provider = "openai" }
+    )
+    comparisons = @(@("Z", "O"), @("Z", "A"))
+    per_category = 2; passes = 3; judge = $true; dry_run = $true
+    api_key = $env:EVAL_API_KEY
+}
+$report = Invoke-RestMethod -Method Post -Uri http://localhost:8000/eval/run -ContentType application/json -Body ($study | ConvertTo-Json -Depth 4)
+$report | Select-Object run_id, estimated_cost_usd_before_run, estimate_note
+```
+
+For the run itself, set `$study.dry_run = $false` and send it again. Each report is also saved
+as `eval/reports/<run_id>.json`, which is git-ignored. From `eval/`, this prints a run's
+write-up exactly as it is published. It refuses a dry run, which prices the study and carries
+no verdicts:
+
+```powershell
+.venv/Scripts/python -m app.study_report <run_id>
+```
