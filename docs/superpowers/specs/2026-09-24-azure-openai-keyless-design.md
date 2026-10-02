@@ -88,9 +88,9 @@ permanent versions are in §7.
 |---|---|---|---|
 | F1 | A fall-through to OpenAI sends `"model":"claude-sonnet-5"` | **Confirmed by test** | Anthropic stub returns 503; the captured OpenAI body was `{"model":"claude-sonnet-5","max_tokens":2048,...}` |
 | F1a | …and real OpenAI then returns 404, which ReleaseLens classes as its own bug, so an Anthropic outage produces HTTP 500 instead of the degraded answer | Confirmed by reading; the 404 itself is *unverified* (needs a paid call) | `ProviderHttp` classes 404 as `InvalidOperationException`, which `FallbackChatProvider` does not catch |
-| F2 | A versioned model name in a response prices at $0 | **Code path confirmed by test**; whether real responses carry versioned names is *unverified* | `gpt-4o` → $12.50 for 1M+1M tokens; `gpt-4o-2024-08-06` → $0. Microsoft's documented example responses disagree with each other on the `model` field |
+| F2 | A versioned model name in a response prices at $0 | **Code path confirmed by test**; that real responses carry versioned names was settled 2026-10-01 by both smoke tests, in which Azure returned `gpt-4.1-mini-2025-04-14` (§11) | `gpt-4o` → $12.50 for 1M+1M tokens; `gpt-4o-2024-08-06` → $0. Microsoft's documented example responses disagree with each other on the `model` field |
 | F3 | On the OpenAI wire path, a filtered completion becomes a silent empty answer and a filtered prompt becomes HTTP 500 | Confirmed by reading | `finish_reason` is never read; a 400 is `InvalidOperationException` |
-| F4 | On the OpenAI wire path, cached tokens are billed twice and Anthropic's cache multipliers are applied | Confirmed by reading, **on the premise** that OpenAI's `prompt_tokens` already includes cached tokens, which is from recall and *unverified* against current docs (§11) | `ModelPricing` bills `InputTokens` and `CacheReadInputTokens` separately, and applies 0.1× read / 1.25× write to every model |
+| F4 | On the OpenAI wire path, cached tokens are billed twice and Anthropic's cache multipliers are applied | Confirmed by reading, **on the premise** that OpenAI's `prompt_tokens` already includes cached tokens. That premise is an inference from OpenAI's and Azure's documented examples, read 2026-10-02, which both show cached tokens inside `prompt_tokens`; neither page states it outright (§11) | `ModelPricing` bills `InputTokens` and `CacheReadInputTokens` separately, and applies 0.1× read / 1.25× write to every model |
 | F5 | The chain restarts at the top on every agent iteration, so one answer can mix providers, and the whole query is priced at the last provider's rates | Confirmed by reading | `QueryAgent` overwrites `modelName` each iteration |
 | F6 | A failed tool call loses its error flag on the OpenAI wire path | Confirmed by reading | `ToolResult.IsError` is dropped when building the `tool` message |
 | F7 | `eval/app/judge.py` says large sweeps use the Batch API; nothing implements it | Confirmed by reading | An aspirational claim in a repository whose rule is that there are none |
@@ -268,7 +268,9 @@ around the filter.
   (local runtimes such as Ollama).
 - **Cached tokens.** On the OpenAI wire, cached tokens are treated as a subset of input tokens
   and priced at the model's own cached rate, with no cache-write charge. The subset premise is
-  *unverified* (§11). If it proves wrong, only this line changes.
+  an inference from OpenAI's and Azure's documented examples, which both show cached tokens
+  inside `prompt_tokens`, and neither page states it outright (§11). If it proves wrong, only
+  this line changes.
 
 **Rates**, from the Azure Retail Prices API for `australiaeast`, read 2026-09-24, USD per 1M
 tokens. The Global Standard row was read again on 2026-09-27 and had not changed; it is the
@@ -280,8 +282,10 @@ code change.
 | gpt-4.1-mini 2025-04-14 | Global Standard (used) | 0.40 | 0.10 | 1.60 |
 | gpt-4.1-mini 2025-04-14 | Standard (regional) | 0.44 | 0.11 | 1.76 |
 
-OpenAI's pricing page could not be read in this session, so OpenAI's own rate for
-`gpt-4.1-mini` is *unverified*. It is read and dated before it goes into `ModelPricing`.
+OpenAI's own rate for `gpt-4.1-mini` was read on 2026-10-02 from OpenAI's pricing page
+(https://developers.openai.com/api/docs/pricing; the page shows no date): Standard tier, USD per
+1M tokens, input 0.40, cached input 0.10, output 1.60. `ModelPricing` prices `openai
+gpt-4.1-mini` at these rates (§11).
 
 ### 4.7 Identity and credentials in code
 
