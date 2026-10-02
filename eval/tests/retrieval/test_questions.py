@@ -13,6 +13,8 @@ import pytest
 from app.retrieval.corpus import Chunk
 from app.retrieval.questions import (
     MODEL,
+    PROMPT,
+    REWRITE,
     Artefact,
     Question,
     SpotCheck,
@@ -133,6 +135,15 @@ def test_artefact_text_is_its_chunks_in_order_up_to_1500_tokens():
     assert target.url_hints == ("issues/7", "pull/7")
 
 
+def test_a_first_chunk_over_1500_tokens_is_cut_not_dropped():
+    target = sample_artefacts([_chunk("release:big", tokens=2_000, content="x" * 4_000)],
+                              n=1).draw("release")
+
+    # 1,500 of its 2,000 tokens' worth, in proportion: three quarters of its characters.
+    assert target.text == "x" * 3_000
+    assert target.token_count == 2_000
+
+
 # --- the checks ---------------------------------------------------------------------------
 
 
@@ -167,7 +178,13 @@ def test_check_rejects_keys():
         ("What did commit 1a2b3c4 change in the orchestration code?", commit),
         ("What did commit 1A2B3C4D5E change in the orchestration code?", commit),
         ("Who reported #14111 about the connectors timing out?", issue),
+        ("Who reported issue 14111 about the connectors timing out?", issue),
+        ("Which adapters stalled according to issue 14111.", issue),
+        ("Does PR 14111 move the connectors elsewhere?", pull),
+        ("What did pull request number 14111 move?", pull),
         ("What shipped in dotnet-1.79.0 for the agent framework?", release),
+        ("What shipped in version 1.79.0 for the agent framework?", release),
+        ("What shipped in v1.79.0 for the agent framework?", release),
         ("Is https://github.com/example-owner/example-repo/pull/14111 the change that moved them?",
          pull),
     ]
@@ -179,7 +196,11 @@ def test_check_rejects_keys():
         ("What did commit 1a2b3c5 change in the orchestration code?", commit),
         ("Who reported #141110 about the connectors timing out?", issue),
         ("Who reported #1411 about the connectors timing out?", issue),
+        ("Who reported issue 141110 about the connectors timing out?", issue),
+        ("Who reported version 1.14111 about the connectors timing out?", issue),
+        ("Who reported version 14111.2 about the connectors timing out?", issue),
         ("What shipped in dotnet-1.79.01 for the agent framework?", release),
+        ("What shipped in version 1.79.01 for the agent framework?", release),
     ]
     for question, target in near_misses:
         assert check(question, target) == [], question
@@ -208,6 +229,8 @@ def test_write_question_asks_sonnet_5_once_with_the_artefact():
     assert (draft.input_tokens, draft.output_tokens) == (1_000, 40)
     [call] = client.messages.created
     assert (call["model"], call["max_tokens"]) == (MODEL, 300) == ("claude-sonnet-5", 300)
+    assert call["system"] == PROMPT
+    assert call["thinking"] == {"type": "disabled"}
     assert "[pull request #12 merged] adds retries" in _sent(call)
 
 
@@ -229,7 +252,10 @@ def test_rejected_artefact_is_rewritten_once_then_replaced():
     first_header = f"[{expected[0].replace(':', ' ')}]"
     assert first_header in _sent(calls[0]) and first_header in _sent(calls[1])
     assert "rejected" not in _sent(calls[0])
-    assert "copies its target: 0.71 of content words" in _sent(calls[1])
+    assert calls[1]["system"] == PROMPT
+    assert calls[1]["thinking"] == {"type": "disabled"}
+    assert _sent(calls[1]).endswith(REWRITE.format(
+        reasons="copies its target: 0.71 of content words", raw=copied))
     # Then the next seeded draw of the same type takes its place, under the same qid.
     assert f"[{expected[1].replace(':', ' ')}]" in _sent(calls[2])
     assert [question.target for question in built.questions] == expected[1:]
@@ -240,6 +266,8 @@ def test_rejected_artefact_is_rewritten_once_then_replaced():
     assert built.rejections == {"copies its target": 2}
     assert (built.rewrites, built.replacements) == (1, 1)
     assert (built.input_tokens, built.output_tokens) == (4_000, 160)
+    assert built.why_unique == {"q001": "only this artefact says so",
+                                "q002": "only this artefact says so"}
 
 
 def test_invalid_json_counts_as_a_rejection():
@@ -295,11 +323,14 @@ def test_spot_check_stop_rule():
     artefacts = {question.target: _artefact(question.target, f"text {question.target}")
                  for question in questions}
 
-    sheet = spot_check_sheet(questions, artefacts)
+    why_unique = {question.qid: f"why {question.qid}" for question in questions}
+
+    sheet = spot_check_sheet(questions, artefacts, why_unique=why_unique)
 
     assert len(sheet) == 30
-    assert sheet == spot_check_sheet(questions, artefacts)
+    assert sheet == spot_check_sheet(questions, artefacts, why_unique=why_unique)
     assert all(row["text"] == f"text {row['target']}" for row in sheet)
+    assert all(row["why_unique"] == f"why {row['qid']}" for row in sheet)
 
     qids = [row["qid"] for row in sheet]
     three = {qid: "fine" for qid in qids} | {qids[0]: "ambiguous", qids[1]: "wrong", qids[2]: "wrong"}
@@ -307,6 +338,19 @@ def test_spot_check_stop_rule():
 
     assert apply_marks(sheet, three) == SpotCheck(fine=27, not_fine=3, passes=True)
     assert apply_marks(sheet, four) == SpotCheck(fine=26, not_fine=4, passes=False)
+
+
+def test_each_spot_check_round_draws_a_fresh_reproducible_sample():
+    questions = _questions(300)
+    artefacts = {question.target: _artefact(question.target) for question in questions}
+
+    def qids(**round_):
+        return [row["qid"] for row in spot_check_sheet(questions, artefacts, **round_)]
+
+    assert qids() == qids(round=0) == qids(round=0)
+    assert qids(round=1) == qids(round=1)
+    assert set(qids(round=0)) != set(qids(round=1))
+    assert qids(round=1) == qids(seed=20261003)
 
 
 def test_spot_check_refuses_incomplete_or_unknown_marks():

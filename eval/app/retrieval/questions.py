@@ -88,9 +88,10 @@ class Artefact:
 
     `text` is its chunks in `chunk_index` order, joined by a blank line, keeping whole chunks
     while their `token_count` totals at most 1,500 (no chunk exceeds 320, so a longer artefact
-    shows more than 1,180). `token_count` is the total over all its chunks, the figure the
-    40-token floor is judged on. `url_hints` are the repo-relative URLs a question must not
-    contain.
+    shows more than 1,180). A first chunk that alone exceeds 1,500 is never left out, which would
+    show nothing: it is cut by characters, in proportion, to about 1,500 tokens' worth.
+    `token_count` is the total over all its chunks, the figure the 40-token floor is judged on.
+    `url_hints` are the repo-relative URLs a question must not contain.
     """
 
     artefact: str
@@ -126,11 +127,14 @@ class BuiltSet:
 
     `rejections` counts each failed check by its reason, without the copy ratio, so a reply that
     is both too short and copied counts once under each. `rewrites` is how many artefacts were
-    rejected once, and `replacements` how many were rejected twice and replaced.
+    rejected once, and `replacements` how many were rejected twice and replaced. `why_unique`
+    is, by qid, the writer's reason that only its target answers the question, for the
+    spot-check sheet; it is not part of the frozen question.
     """
 
     questions: list[Question]
     artefacts: dict[str, Artefact]
+    why_unique: dict[str, str]
     rejections: dict[str, int]
     rewrites: int
     replacements: int
@@ -169,6 +173,9 @@ def _artefact(artefact: str, chunks: list[Chunk]) -> Artefact:
     shown, tokens = [], 0
     for chunk in ordered:
         if tokens + chunk.token_count > MAX_TEXT_TOKENS:
+            if not shown:
+                keep = len(chunk.content) * MAX_TEXT_TOKENS // chunk.token_count
+                shown.append(chunk.content[:keep])
             break
         shown.append(chunk.content)
         tokens += chunk.token_count
@@ -253,6 +260,12 @@ def content_words(text: str) -> set[str]:
     }
 
 
+def _standalone(token: str, *, prefix: str = "") -> re.Pattern[str]:
+    """`token` not inside a longer word, number or version: "14111" is not found in "141110",
+    "1.14111" or "14111.2", but is in "issue 14111." and "#14111"."""
+    return re.compile(rf"(?<!\w)(?<!\d\.){prefix}{re.escape(token)}(?!\w)(?!\.\d)")
+
+
 def _contains_key(question: str, target: Artefact) -> bool:
     lowered = question.lower()
     key = target.artefact.split(":", 1)[1].lower()
@@ -260,10 +273,13 @@ def _contains_key(question: str, target: Artefact) -> bool:
         if any(key.startswith(run) for run in _HEX_RUNS.findall(lowered)):
             return True
     elif target.entity_type in ("issue", "pull_request"):
-        if re.search(rf"#{re.escape(key)}(?!\d)", lowered):
+        if re.search(rf"#{re.escape(key)}(?!\d)", lowered) or _standalone(key).search(lowered):
             return True
     elif target.entity_type == "release":
         if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", lowered):
+            return True
+        version = key.rsplit("-", 1)[-1]
+        if version[:1].isdigit() and _standalone(version, prefix="v?").search(lowered):
             return True
     return any(
         re.search(rf"{re.escape(hint.lower())}(?!\w)", lowered) for hint in target.url_hints
@@ -274,11 +290,14 @@ def check(question: str, target: Artefact) -> list[str]:
     """Why spec §3.4's checks reject this question; empty when it passes.
 
     - copying: more than half of its content words appear among the target's text's words
-    - the key: a SHA prefix of 7 or more hex characters, `#<number>`, the tag, or the URL
+    - the key: a SHA prefix of 7 or more hex characters; an issue's or pull request's number,
+      as `#<number>` or standing alone ("issue 14111"); a release's tag, or its version (the
+      tag after its last `-`, when that starts with a digit: `1.79.0` or `v1.79.0` for
+      `dotnet-1.79.0`); or the URL
     - length: fewer than 6 or more than 40 whitespace-separated words
 
-    A question with no content words copies nothing. The key is looked for only in the forms
-    the spec names, so "issue 14111" without the `#` passes.
+    A question with no content words copies nothing. A number or version is the key only when
+    it stands alone: `141110` and `1.14111` are not `14111`, and `1.79.01` is not `1.79.0`.
     """
     reasons = []
     words = content_words(question)
@@ -351,6 +370,7 @@ def build_set(stream: SampleStream, client) -> BuiltSet:
     """
     questions: list[Question] = []
     artefacts: dict[str, Artefact] = {}
+    why_unique: dict[str, str] = {}
     rejections: Counter[str] = Counter()
     rewrites = replacements = input_tokens = output_tokens = 0
 
@@ -375,23 +395,33 @@ def build_set(stream: SampleStream, client) -> BuiltSet:
             rejections.update(reason.split(":", 1)[0] for reason in reasons)
             replacements += 1
 
-        questions.append(Question(f"q{slot:03d}", draft.question, target.artefact, entity_type))
+        qid = f"q{slot:03d}"
+        questions.append(Question(qid, draft.question, target.artefact, entity_type))
         artefacts[target.artefact] = target
+        why_unique[qid] = draft.why_unique
 
-    return BuiltSet(questions, artefacts, dict(rejections), rewrites, replacements,
+    return BuiltSet(questions, artefacts, why_unique, dict(rejections), rewrites, replacements,
                     input_tokens, output_tokens)
 
 
 def spot_check_sheet(
     questions: list[Question], artefacts: Mapping[str, Artefact], *, seed: int = SEED,
-    n: int = SPOT_CHECK_SIZE,
+    n: int = SPOT_CHECK_SIZE, round: int = 0, why_unique: Mapping[str, str] | None = None,
 ) -> list[dict]:
-    """n questions drawn with `random.Random(seed)`, in qid order, each with its target's text
-    and an empty `mark` for the owner to fill in as fine, ambiguous or wrong."""
-    drawn = sorted(random.Random(seed).sample(questions, n), key=lambda question: question.qid)
+    """n questions drawn with `random.Random(seed + round)`, in qid order, each with the
+    writer's `why_unique`, its target's text, and an empty `mark` for the owner to fill in as
+    fine, ambiguous or wrong.
+
+    Round 0 is the first check. A set regenerated after a failed check is checked with the next
+    round, so the owner sees a fresh 30 rather than the same positions again (spec §3.5).
+    """
+    reasons = why_unique or {}
+    drawn = random.Random(seed + round).sample(questions, n)
     return [
-        asdict(question) | {"text": artefacts[question.target].text, "mark": ""}
-        for question in drawn
+        asdict(question)
+        | {"why_unique": reasons.get(question.qid, ""), "text": artefacts[question.target].text,
+           "mark": ""}
+        for question in sorted(drawn, key=lambda question: question.qid)
     ]
 
 
