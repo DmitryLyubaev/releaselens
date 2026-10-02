@@ -224,7 +224,9 @@ dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/q
    pays again for everything it had done. The scarce part is the semantic ranker's free
    allowance of 1,000 requests a month. A failure after S3's first pass has already spent about
    300 of them, and the rerun spends about 330 more, so a month has room for about two failed
-   attempts and a successful one.
+   attempts and a successful one. Running out of the allowance part-way through S3 returns the
+   same error for every remaining question, so it also stops the run: wait for the next month
+   rather than running again.
 
 5. **Whatever happened above, even if a step failed,** destroy `infra/search` from WSL, as its
    README says, then confirm that the same `az group exists` check prints `false`. A forgotten
