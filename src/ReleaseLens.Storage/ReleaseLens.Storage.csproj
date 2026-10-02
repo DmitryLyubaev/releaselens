@@ -11,4 +11,12 @@
   <ItemGroup>
     <EmbeddedResource Include="Migrations\*.sql" />
   </ItemGroup>
+
+  <!--
+    ExactVectorSearch keeps its SQL internal. The test runs EXPLAIN on that exact text to
+    prove the HNSW index is bypassed, which no public result can show.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="ReleaseLens.Storage.Tests" />
+  </ItemGroup>
 </Project>
