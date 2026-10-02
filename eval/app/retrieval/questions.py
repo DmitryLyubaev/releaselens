@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .corpus import Chunk
@@ -129,7 +131,8 @@ class BuiltSet:
     is both too short and copied counts once under each. `rewrites` is how many artefacts were
     rejected once, and `replacements` how many were rejected twice and replaced. `why_unique`
     is, by qid, the writer's reason that only its target answers the question, for the
-    spot-check sheet; it is not part of the frozen question.
+    spot-check sheet; it is not part of the frozen question. `written_on` is the distinct UTC
+    dates the questions were written on, a checkpoint's included, for the manifest.
     """
 
     questions: list[Question]
@@ -140,6 +143,7 @@ class BuiltSet:
     replacements: int
     input_tokens: int
     output_tokens: int
+    written_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -360,48 +364,156 @@ def _rejections(draft: Draft, target: Artefact) -> list[str]:
     return check(draft.question, target)
 
 
-def build_set(stream: SampleStream, client) -> BuiltSet:
+@dataclass
+class _Slot:
+    """One slot as filled: the accepted target and draft, and what filling it took."""
+
+    target: Artefact
+    draft: Draft
+    rejections: Counter[str] = field(default_factory=Counter)
+    rewrites: int = 0
+    replacements: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    written_on: str = ""
+
+
+def _fill(stream: SampleStream, entity_type: str, client) -> _Slot:
+    """Draw and write until a question of this type passes, rewriting each rejection once."""
+    rejections: Counter[str] = Counter()
+    rewrites = replacements = input_tokens = output_tokens = 0
+    while True:
+        target = stream.draw(entity_type)
+        draft = write_question(target, client)
+        input_tokens, output_tokens = input_tokens + draft.input_tokens, output_tokens + draft.output_tokens
+        reasons = _rejections(draft, target)
+        if reasons:
+            rejections.update(reason.split(":", 1)[0] for reason in reasons)
+            rewrites += 1
+            draft = write_question(
+                target, client, feedback=REWRITE.format(reasons="; ".join(reasons), raw=draft.raw)
+            )
+            input_tokens, output_tokens = input_tokens + draft.input_tokens, output_tokens + draft.output_tokens
+            reasons = _rejections(draft, target)
+        if not reasons:
+            return _Slot(target, draft, rejections, rewrites, replacements, input_tokens, output_tokens,
+                         datetime.now(UTC).date().isoformat())
+        rejections.update(reason.split(":", 1)[0] for reason in reasons)
+        replacements += 1
+
+
+# A checkpoint is replayed only under the prompts it was written with.
+_PROMPTS_SHA256 = hashlib.sha256(f"{PROMPT}\n{REWRITE}".encode("utf-8")).hexdigest()
+
+
+def _record(qid: str, slot: _Slot) -> dict:
+    return {
+        "question": asdict(Question(qid, slot.draft.question, slot.target.artefact, slot.target.entity_type)),
+        "draft": asdict(slot.draft),
+        "rejections": dict(slot.rejections),
+        "rewrites": slot.rewrites,
+        "replacements": slot.replacements,
+        "input_tokens": slot.input_tokens,
+        "output_tokens": slot.output_tokens,
+        "written_on": slot.written_on,
+        "prompts_sha256": _PROMPTS_SHA256,
+    }
+
+
+def _read_checkpoint(path: Path) -> dict[str, dict]:
+    """The checkpoint's records by qid. A last line that a crash cut off is cut from the file
+    too, so its slot is written again and the next record starts on a line of its own."""
+    if not path.exists():
+        return {}
+    text = path.read_bytes().decode("utf-8")
+    whole = text[: text.rfind("\n") + 1]
+    if whole != text:
+        path.write_bytes(whole.encode("utf-8"))
+    records = [json.loads(line) for line in whole.splitlines() if line]
+    return {record["question"]["qid"]: record for record in records}
+
+
+def _append(path: Path, record: dict) -> None:
+    with path.open("ab") as checkpoint:
+        checkpoint.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        checkpoint.flush()
+        os.fsync(checkpoint.fileno())
+
+
+def _replay(stream: SampleStream, entity_type: str, record: dict, path: Path) -> _Slot:
+    """A checkpointed slot, with the stream moved past every draw that slot made.
+
+    The draws of a type are seeded and in order, so drawing until the recorded target comes up
+    passes over exactly the artefacts the slot rejected, as the first run did. The record is
+    refused if it was written under another PROMPT or REWRITE, for another type, from another
+    corpus or seed, or if its question no longer passes the checks, since the set would then mix
+    two generations.
+    """
+    question = Question(**record["question"])
+    if record.get("prompts_sha256") != _PROMPTS_SHA256:
+        raise ValueError(f"{path} holds {question.qid} written under another PROMPT or REWRITE; "
+                         "move it aside to write the set afresh")
+    if question.entity_type != entity_type:
+        raise ValueError(f"{path} holds {question.qid} as a {question.entity_type}, but this seed "
+                         f"schedules a {entity_type} there")
+    while True:
+        try:
+            target = stream.draw(entity_type)
+        except LookupError:
+            raise ValueError(f"{path} holds {question.qid} for {question.target}, which this corpus "
+                             "and seed never draw there") from None
+        if target.artefact == question.target:
+            break
+    draft = Draft(**record["draft"])
+    if draft.question != question.question or _rejections(draft, target):
+        raise ValueError(f"{path} holds {question.qid}, whose question does not pass today's checks")
+    return _Slot(target, draft, Counter(record["rejections"]), record["rewrites"], record["replacements"],
+                 record["input_tokens"], record["output_tokens"], record["written_on"])
+
+
+def build_set(stream: SampleStream, client, *, checkpoint: Path | None = None) -> BuiltSet:
     """Fill every slot of `stream.schedule` with a question that passes the checks.
 
     A rejected artefact is asked once more, told why; rejected again, it is replaced by the
     next seeded draw of the same type, which starts afresh. So the set has exactly the quotas'
     counts, or the stream runs dry and LookupError is raised. Questions are numbered q001
     onwards in slot order.
+
+    With `checkpoint`, each accepted Question is appended to that JSON lines file as soon as it
+    passes, with its Draft and what its slot cost, and a slot already there is replayed instead
+    of written: a run that fails at question 250 is run again, and pays only for the slots not
+    yet saved. The slot that failed is written again from its first draw, so whatever it had
+    spent is paid twice, and is missing from the token totals.
     """
+    done = _read_checkpoint(checkpoint) if checkpoint is not None else {}
     questions: list[Question] = []
     artefacts: dict[str, Artefact] = {}
     why_unique: dict[str, str] = {}
     rejections: Counter[str] = Counter()
+    written_on: set[str] = set()
     rewrites = replacements = input_tokens = output_tokens = 0
 
-    for slot, entity_type in enumerate(stream.schedule, start=1):
-        while True:
-            target = stream.draw(entity_type)
-            draft = write_question(target, client)
-            input_tokens, output_tokens = (input_tokens + draft.input_tokens,
-                                           output_tokens + draft.output_tokens)
-            reasons = _rejections(draft, target)
-            if reasons:
-                rejections.update(reason.split(":", 1)[0] for reason in reasons)
-                rewrites += 1
-                draft = write_question(
-                    target, client, feedback=REWRITE.format(reasons="; ".join(reasons), raw=draft.raw)
-                )
-                input_tokens, output_tokens = (input_tokens + draft.input_tokens,
-                                               output_tokens + draft.output_tokens)
-                reasons = _rejections(draft, target)
-            if not reasons:
-                break
-            rejections.update(reason.split(":", 1)[0] for reason in reasons)
-            replacements += 1
+    for number, entity_type in enumerate(stream.schedule, start=1):
+        qid = f"q{number:03d}"
+        if qid in done:
+            slot = _replay(stream, entity_type, done[qid], checkpoint)
+        else:
+            slot = _fill(stream, entity_type, client)
+            if checkpoint is not None:
+                _append(checkpoint, _record(qid, slot))
 
-        qid = f"q{slot:03d}"
-        questions.append(Question(qid, draft.question, target.artefact, entity_type))
-        artefacts[target.artefact] = target
-        why_unique[qid] = draft.why_unique
+        rejections.update(slot.rejections)
+        rewrites += slot.rewrites
+        replacements += slot.replacements
+        input_tokens += slot.input_tokens
+        output_tokens += slot.output_tokens
+        written_on.add(slot.written_on)
+        questions.append(Question(qid, slot.draft.question, slot.target.artefact, entity_type))
+        artefacts[slot.target.artefact] = slot.target
+        why_unique[qid] = slot.draft.why_unique
 
     return BuiltSet(questions, artefacts, why_unique, dict(rejections), rewrites, replacements,
-                    input_tokens, output_tokens)
+                    input_tokens, output_tokens, tuple(sorted(written_on)))
 
 
 def spot_check_sheet(

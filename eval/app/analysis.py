@@ -239,7 +239,7 @@ def _nearest_rank_index(p: Fraction, n: int) -> int:
     return min(n - 1, max(0, math.ceil(p * n) - 1))
 
 
-def _settled(value: float) -> float:
+def settled(value: float) -> float:
     """`value` without the residue float arithmetic leaves, so the rule reads the number itself.
 
     The scores are ratios of small counts (citations found over citations expected, cited over
@@ -256,6 +256,11 @@ def _settled(value: float) -> float:
     return round(value, _SETTLED_DECIMALS) + 0.0
 
 
+# The name plan 3 used. This module calls it by this name, so a test that replaces `_settled`
+# still takes the settling out of every figure the rule reads.
+_settled = settled
+
+
 def bootstrap_ci(
     deltas: list[float], resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
 ) -> tuple[float, float]:
@@ -267,7 +272,7 @@ def bootstrap_ci(
 
     The bounds are the 2.5th and 97.5th percentiles of the sorted resampled means, by nearest
     rank: for fraction p of n means, the index ceil(p × n) − 1, clamped to [0, n − 1]. With
-    10,000 resamples that is index 249 and index 9749. Each bound is settled (see _settled), so
+    10,000 resamples that is index 249 and index 9749. Each bound is settled (see settled), so
     constant deltas d give (d, d) to 12 places, and exactly (d, d) for a d such as 0.1 that
     float arithmetic would otherwise return as 0.10000000000000002.
 
@@ -286,14 +291,16 @@ def bootstrap_ci(
     )
 
 
-def verdict(mean_delta: float, ci: tuple[float, float]) -> str:
+def verdict(mean_delta: float, ci: tuple[float, float], *, threshold: float = DIFFERENCE_THRESHOLD) -> str:
     """The pre-registered decision rule (spec §8).
 
-    A difference is declared only when the mean paired delta is at least 0.10 either way AND the
-    95% interval excludes zero. An interval that touches zero does not exclude it. Anything else
-    is inconclusive, which the write-up words as "inconclusive at k queries × passes".
+    A difference is declared only when the mean paired delta is at least `threshold` either way
+    AND the 95% interval excludes zero. An interval that touches zero does not exclude it.
+    Anything else is inconclusive, which the write-up words as "inconclusive at k queries ×
+    passes". The threshold is plan 3's 0.10 unless a study pre-registered its own: the retrieval
+    benchmark's is 0.05 (its spec §5.4).
     """
-    if abs(mean_delta) >= DIFFERENCE_THRESHOLD and (ci[0] > 0 or ci[1] < 0):
+    if abs(mean_delta) >= threshold and (ci[0] > 0 or ci[1] < 0):
         return "difference"
     return "inconclusive"
 

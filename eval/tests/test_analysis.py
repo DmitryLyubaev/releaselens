@@ -258,6 +258,18 @@ def test_verdict_rule(mean_delta, ci, expected):
     assert verdict(mean_delta, ci) == expected
 
 
+def test_verdict_default_threshold_unchanged():
+    """Plan 2 passes its own 0.05 threshold; plan 3's callers, which pass none, keep 0.10."""
+    assert analysis.DIFFERENCE_THRESHOLD == 0.10
+    assert verdict(0.09, (0.01, 0.2)) == "inconclusive"
+    assert verdict(0.10, (0.01, 0.2)) == "difference"
+    assert verdict(0.09, (0.01, 0.2), threshold=0.05) == "difference"
+    assert verdict(0.049, (0.01, 0.2), threshold=0.05) == "inconclusive"
+    # The settling is public now, and the old private name is the same function.
+    assert analysis.settled(0.1 + 0.2) == 0.3
+    assert analysis._settled is analysis.settled
+
+
 def _sixths(m: int) -> tuple[list[float], list[float]]:
     """Z's and O's groundedness over three passes, scored 0, 0.5 or 1, for a query delta of m/6."""
     z, o = [], []

@@ -1,0 +1,417 @@
+"""`python -m app.retrieval <command>`, run from eval/: the benchmark runbook's steps.
+
+Each command is a thin wrapper over the package's functions, in the runbook's order:
+`write-questions`, `spot-check` and `freeze` make the frozen set; `embed` embeds the corpus with
+one deployment; `build-index` loads the AI Search index; `run-arms` runs all six arms and the
+determinism repeat, and saves the run as reports/retrieval-<run_id>.json; `report` prints that
+run's write-up.
+
+Azure is called as the owner, through the Azure CLI, with no key; Claude is called with
+ANTHROPIC_API_KEY. Nothing here decides whether a step should be paid for: that is the owner's
+call at each step of the runbook.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from collections.abc import Callable
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+import anthropic
+import truststore
+
+from .arms import ArmResult, QueryVector, read_worker_output, run_embedding_arm, run_search_arm
+from .azure_auth import TokenSource
+from .corpus import load_chunks, load_links
+from .embed import embed_corpus, embed_query
+from .questions import (
+    MAX_TEXT_TOKENS,
+    MAX_TOKENS,
+    MIN_TOKENS,
+    MODEL,
+    PROMPT,
+    REWRITE,
+    SEED,
+    BuiltSet,
+    SampleStream,
+    apply_marks,
+    build_set,
+    freeze,
+    load_frozen,
+    sample_artefacts,
+    spot_check_sheet,
+)
+from .report import render
+from .score import analyse
+from .search_index import API_VERSION, INDEX_NAME, create_index, new_client, upload
+from .search_index import SCOPE as SEARCH_SCOPE
+
+EVAL = Path(__file__).resolve().parents[2]
+DATA = EVAL / "retrieval-data"
+QUESTIONS = EVAL / "retrieval" / "questions.jsonl"
+REPORTS = EVAL / "reports"
+
+EMBEDDING_SCOPE = "https://ai.azure.com/.default"
+SMALL = "releaselens-embed-small"
+LARGE = "releaselens-embed-large"
+CHECKPOINT = "questions.checkpoint.jsonl"
+REPEAT_FIRST = 30
+
+
+class Refused(Exception):
+    """A step that will not run as asked. Its message says why, and what to do instead."""
+
+
+class _CheckpointOnly:
+    """Stands in for the writer when the set is read back from its checkpoint, and refuses to
+    write: a set with questions still to write is not spot-checked or frozen."""
+
+    def __init__(self, checkpoint: Path) -> None:
+        self.messages = self
+        self._checkpoint = checkpoint
+
+    def create(self, **_):
+        raise Refused(f"{self._checkpoint} does not hold every question yet; run write-questions to finish it")
+
+
+def _writer() -> anthropic.Anthropic:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise Refused("ANTHROPIC_API_KEY is not set, so the questions cannot be written")
+    return anthropic.Anthropic()
+
+
+def _write_json(path: Path, value, *, indent: int | None = 2) -> None:
+    # Written whole and then swapped in, so a crash never leaves half a file.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes((json.dumps(value, ensure_ascii=False, indent=indent) + "\n").encode("utf-8"))
+    os.replace(temporary, path)
+
+
+def _checkpoint(args) -> Path:
+    return args.checkpoint or args.data / CHECKPOINT
+
+
+def _built(args, client) -> tuple[SampleStream, BuiltSet]:
+    stream = sample_artefacts(load_chunks(args.data / "chunks.jsonl"))
+    return stream, build_set(stream, client, checkpoint=_checkpoint(args))
+
+
+def write_questions(args) -> int:
+    """Write the 300 questions, checkpointing each, so a rerun pays only for those not saved."""
+    _, built = _built(args, _writer())
+    print(f"{len(built.questions)} questions in {_checkpoint(args)}: {built.rewrites} rewritten, "
+          f"{built.replacements} replaced, rejections {built.rejections}; "
+          f"{built.input_tokens:,} input and {built.output_tokens:,} output tokens")
+    return 0
+
+
+def spot_check(args) -> int:
+    """Write round N's sheet of 30 for the owner to mark, from the finished checkpoint."""
+    out = args.data / f"spot-check-round-{args.round}.json"
+    if out.exists():
+        raise Refused(f"{out} exists, and may already hold marks; move it aside to draw it again")
+    _, built = _built(args, _CheckpointOnly(_checkpoint(args)))
+    sheet = spot_check_sheet(built.questions, built.artefacts, round=args.round, why_unique=built.why_unique)
+    _write_json(out, {"round": args.round, "seed": SEED + args.round, "rows": sheet})
+    print(f"{len(sheet)} questions to mark in {out}: set each mark to fine, ambiguous or wrong")
+    return 0
+
+
+def _round(path: Path) -> dict:
+    sheet = json.loads(path.read_text(encoding="utf-8"))
+    marks = {row["qid"]: row["mark"] for row in sheet["rows"]}
+    result = apply_marks(sheet["rows"], marks)
+    return {"round": sheet["round"], "seed": sheet["seed"], "sheet": sheet["rows"], "marks": marks,
+            "fine": result.fine, "not_fine": result.not_fine, "passes": result.passes}
+
+
+def freeze_set(args) -> int:
+    """Freeze the set with its manifest, only if the last spot-check passed on this very set.
+
+    Each sheet given is one round, oldest first; the earlier ones are the rounds that failed and
+    sent the set back to be regenerated, and are frozen with it as the record.
+    """
+    stream, built = _built(args, _CheckpointOnly(_checkpoint(args)))
+    rounds = [_round(path) for path in args.sheet]
+    numbers = [checked["round"] for checked in rounds]
+    if numbers != sorted(set(numbers)):
+        raise Refused(f"the sheets are rounds {numbers}; give each round once, oldest first")
+
+    last = rounds[-1]
+    by_qid = {question.qid: question for question in built.questions}
+    for row in last["sheet"]:
+        question = by_qid.get(row["qid"])
+        if question is None or (question.question, question.target) != (row["question"], row["target"]):
+            raise Refused(f"round {last['round']}'s sheet shows {row['qid']} as it is not in this set; "
+                          "the last sheet must be of the set being frozen")
+    if not last["passes"]:
+        raise Refused(f"round {last['round']}'s spot-check failed: {last['not_fine']} of {len(last['marks'])} "
+                      "are not fine, more than 3, so the set is regenerated, not frozen (spec §3.5)")
+
+    manifest = {
+        "seed": SEED,
+        "model": MODEL,
+        "max_tokens": MAX_TOKENS,
+        "thinking": "disabled",
+        "prompt": PROMPT,
+        "rewrite": REWRITE,
+        "generated_on": list(built.written_on),
+        "frozen_on": datetime.now(UTC).date().isoformat(),
+        "sample_size": len(built.questions),
+        "min_tokens": MIN_TOKENS,
+        "max_text_tokens": MAX_TEXT_TOKENS,
+        "quotas": stream.quotas,
+        "rejections": built.rejections,
+        "rewrites": built.rewrites,
+        "replacements": built.replacements,
+        "input_tokens": built.input_tokens,
+        "output_tokens": built.output_tokens,
+        "spot_check": [{key: value for key, value in checked.items() if key != "sheet"} for checked in rounds],
+        "why_unique": built.why_unique,
+    }
+    args.questions.parent.mkdir(parents=True, exist_ok=True)
+    digest = freeze(built.questions, manifest, args.questions)
+    print(f"froze {len(built.questions)} questions in {args.questions}, SHA-256 {digest}")
+    return 0
+
+
+def embed(args) -> int:
+    """Embed the whole corpus with one deployment, resuming any earlier run into the same files."""
+    run = embed_corpus(load_chunks(args.data / "chunks.jsonl"), base_url=args.base_url,
+                       deployment=args.deployment, tokens=TokenSource(EMBEDDING_SCOPE, args.tenant),
+                       out_dir=args.data)
+    print(f"{run.deployment}: {run.batches} batches saved in {run.vectors_path}; "
+          f"tokens_billed {run.tokens_billed:,}")
+    return 0
+
+
+def build_index(args) -> int:
+    """Create the index and upload every chunk with its saved `-small` vector."""
+    tokens = TokenSource(SEARCH_SCOPE, args.tenant)
+    chunks = load_chunks(args.data / "chunks.jsonl")
+    with new_client() as client:
+        create_index(args.endpoint, tokens, client)
+        sent = upload(chunks, args.data / f"{args.deployment}.npy", args.data / f"{args.deployment}.ids.json",
+                      args.endpoint, tokens, client)
+    # upload raises on any document the service refused, so every one sent was accepted.
+    print(f"index {INDEX_NAME}: {sent:,} documents uploaded and accepted")
+    return 0
+
+
+def _worker(path: Path, arm: str, qids: list[str]) -> list[ArmResult]:
+    """The Worker's output, only if it is one arm's answer to every frozen question, in order."""
+    rows = read_worker_output(path)
+    if any(row.arm != arm for row in rows):
+        raise Refused(f"{path} is not {arm}'s output")
+    if [row.qid for row in rows] != qids:
+        raise Refused(f"{path} answers {len(rows)} questions, not the {len(qids)} of the frozen file in "
+                      "order; run the Worker on the frozen file")
+    if all(row.error is not None for row in rows):
+        raise Refused(f"every question errored in {path}; fix the Worker run first")
+    return rows
+
+
+def _shown(path: Path) -> str:
+    """The path as the write-up names it: relative to eval/ when it is under it."""
+    try:
+        return path.resolve().relative_to(EVAL).as_posix()
+    except ValueError:
+        return path.name
+
+
+def run_arms(args) -> int:
+    """All six arms over the frozen set, then the determinism repeat, saved after each arm.
+
+    Everything free is checked before anything is paid for: the frozen file, the Worker's four
+    files and the saved vectors. E2 runs before S2 and S3, which search with its vectors, on both
+    passes, so the repeat embeds nothing for them. An arm that raises (a token failure before its
+    first question, say) is the run's arm failure: the run stops there, so no ranker request is
+    spent on a run that cannot be published, and is saved with what it had.
+    """
+    questions = load_frozen(args.questions)
+    qids = [question.qid for question in questions]
+    if not 1 <= args.repeat_first <= len(questions):
+        raise Refused(f"--repeat-first must be between 1 and {len(questions)}")
+    chunks = load_chunks(args.data / "chunks.jsonl")
+    links = load_links(args.data / "links.jsonl")
+    artefacts = {chunk.chunk_id: chunk.artefact for chunk in chunks}
+
+    first_qids = set(qids[:args.repeat_first])
+    worker_first = _worker(args.worker_bge, "E1", qids) + _worker(args.worker_hybrid, "S1", qids)
+    worker_repeat = [row for row in _worker(args.worker_bge_repeat, "E1", qids)
+                     + _worker(args.worker_hybrid_repeat, "S1", qids) if row.qid in first_qids]
+    saved = {deployment: (args.data / f"{deployment}.npy", args.data / f"{deployment}.ids.json")
+             for deployment in (args.small_deployment, args.large_deployment)}
+    missing = [str(path) for paths in saved.values() for path in paths if not path.exists()]
+    if missing:
+        raise Refused(f"no saved vectors at {', '.join(missing)}; run embed first")
+
+    run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = REPORTS / f"retrieval-{run_id}.json"
+    if out.exists():
+        raise Refused(f"{out} exists; a run is never overwritten")
+
+    run = {
+        "run_id": run_id,
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "finished_at": None,
+        "questions": {"file": _shown(args.questions),
+                      "sha256": hashlib.sha256(args.questions.read_bytes()).hexdigest(), "count": len(questions)},
+        "chunks": len(chunks),
+        "deployments": {"E2": args.small_deployment, "E3": args.large_deployment,
+                        "S2": args.small_deployment, "S3": args.small_deployment},
+        "search": {"index": INDEX_NAME, "api_version": API_VERSION, "endpoint": args.endpoint},
+        "repeat_first": args.repeat_first,
+        "results": [asdict(row) for row in worker_first],
+        "repeat": [asdict(row) for row in worker_repeat],
+        "arm_failure": None,
+        "analysis": None,
+    }
+    results, repeat = list(worker_first), list(worker_repeat)
+    _write_json(out, run, indent=None)
+
+    embed_tokens = TokenSource(EMBEDDING_SCOPE, args.tenant)
+    search_tokens = TokenSource(SEARCH_SCOPE, args.tenant)
+    repeated = questions[:args.repeat_first]
+    # E2's own vectors, for S2 and S3. Never E3's: run_embedding_arm fills any dict it is given.
+    e2_vectors: dict[str, QueryVector] = {}
+
+    with new_client() as http:
+        def embedding(arm: str, deployment: str, asked, vectors: dict | None) -> Callable[[], list[ArmResult]]:
+            vectors_path, ids_path = saved[deployment]
+            return lambda: run_embedding_arm(
+                arm, asked, vectors_path=vectors_path, ids_path=ids_path, artefacts=artefacts,
+                embed=lambda text: embed_query(text, base_url=args.base_url, deployment=deployment,
+                                               tokens=embed_tokens, client=http),
+                query_vectors=vectors, tokens=embed_tokens)
+
+        def searching(arm: str, asked) -> Callable[[], list[ArmResult]]:
+            return lambda: run_search_arm(arm, asked, query_vectors=e2_vectors, endpoint=args.endpoint,
+                                          tokens=search_tokens, client=http)
+
+        steps = [
+            ("E2", "first", embedding("E2", args.small_deployment, questions, e2_vectors)),
+            ("E3", "first", embedding("E3", args.large_deployment, questions, None)),
+            ("S2", "first", searching("S2", questions)),
+            ("S3", "first", searching("S3", questions)),
+            ("E2", "repeat", embedding("E2", args.small_deployment, repeated, None)),
+            ("E3", "repeat", embedding("E3", args.large_deployment, repeated, None)),
+            ("S2", "repeat", searching("S2", repeated)),
+            ("S3", "repeat", searching("S3", repeated)),
+        ]
+        for arm, which, step in steps:
+            try:
+                rows = step()
+            except Exception as error:
+                run["arm_failure"] = {"arm": arm, "pass": which, "error": f"{type(error).__name__}: {error}"}
+                _write_json(out, run, indent=None)
+                raise Refused(f"{arm} failed on its {which} pass, so the run stopped and is not analysed: "
+                              f"{run['arm_failure']['error']}. Saved what it had in {out}") from error
+            (results if which == "first" else repeat).extend(rows)
+            run["results" if which == "first" else "repeat"].extend(asdict(row) for row in rows)
+            _write_json(out, run, indent=None)
+            errors = sum(1 for row in rows if row.error is not None)
+            print(f"{arm} {which} pass: {len(rows)} questions, {errors} errored")
+
+    run["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        run["analysis"] = analyse(questions, results, repeat, links)
+    except ValueError as error:
+        run["analysis_error"] = str(error)
+        _write_json(out, run, indent=None)
+        raise Refused(f"the run finished but could not be analysed: {error}. Saved in {out}") from error
+    _write_json(out, run, indent=None)
+    print(f"saved {out}; render it with: python -m app.retrieval report {run_id}")
+    return 0
+
+
+def report(args) -> int:
+    """Print a saved run's write-up."""
+    path = REPORTS / f"retrieval-{args.run_id}.json"
+    if not path.exists():
+        raise Refused(f"no run {args.run_id}: {path} does not exist")
+    sys.stdout.write(render(json.loads(path.read_text(encoding="utf-8"))))
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m app.retrieval", description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    def command(name: str, handler, help_: str, *, data: bool = True, tenant: bool = False):
+        sub = commands.add_parser(name, help=help_)
+        sub.set_defaults(handler=handler)
+        if data:
+            sub.add_argument("--data", type=Path, default=DATA,
+                             help="the export-corpus directory, which also holds vectors and sheets")
+        if tenant:
+            sub.add_argument("--tenant", required=True, help="the Entra tenant to take tokens from")
+        return sub
+
+    for name, handler, help_ in (
+        ("write-questions", write_questions, "write the questions, checkpointing each one"),
+        ("spot-check", spot_check, "write a spot-check sheet for the owner to mark"),
+        ("freeze", freeze_set, "freeze the set and its manifest, if the last spot-check passed"),
+    ):
+        sub = command(name, handler, help_)
+        sub.add_argument("--checkpoint", type=Path, default=None,
+                         help=f"the checkpoint file (default: <data>/{CHECKPOINT})")
+        if name == "spot-check":
+            sub.add_argument("--round", type=int, default=0, help="0 first, then 1, 2... after regenerating")
+        if name == "freeze":
+            sub.add_argument("--sheet", type=Path, action="append", required=True,
+                             help="a marked sheet; repeat it for each round, oldest first")
+            sub.add_argument("--questions", type=Path, default=QUESTIONS, help="where to freeze the set")
+
+    sub = command("embed", embed, "embed the corpus with one deployment, resumably", tenant=True)
+    sub.add_argument("--deployment", required=True)
+    sub.add_argument("--base-url", required=True, help="the account's OpenAI v1 URL, ending in /openai/v1/")
+
+    sub = command("build-index", build_index, "create the AI Search index and upload the corpus", tenant=True)
+    sub.add_argument("--endpoint", required=True, help="the search service's URL")
+    sub.add_argument("--deployment", default=SMALL, help="whose saved vectors to upload")
+
+    sub = command("run-arms", run_arms, "run the six arms and the determinism repeat", tenant=True)
+    sub.add_argument("--base-url", required=True)
+    sub.add_argument("--endpoint", required=True)
+    sub.add_argument("--questions", type=Path, default=QUESTIONS)
+    sub.add_argument("--small-deployment", default=SMALL)
+    sub.add_argument("--large-deployment", default=LARGE)
+    sub.add_argument("--repeat-first", type=int, default=REPEAT_FIRST)
+    sub.add_argument("--run-id", default=None, help="default: the UTC start time")
+    for mode in ("hybrid", "bge"):
+        sub.add_argument(f"--worker-{mode}", type=Path, required=True,
+                         help=f"the Worker's retrieve {'hybrid' if mode == 'hybrid' else 'bge-exact'} output")
+        sub.add_argument(f"--worker-{mode}-repeat", type=Path, required=True,
+                         help="the second, separate run of the same mode")
+
+    sub = command("report", report, "print a saved run's write-up", data=False)
+    sub.add_argument("run_id")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Before any HTTPS client exists: Python verifies TLS against certifi's bundle, which a
+    # TLS-inspecting proxy's certificate is not in, so every call to Azure would fail
+    # verification. As app/main.py does; a no-op on a machine that does not intercept TLS.
+    truststore.inject_into_ssl()
+    args = _parser().parse_args(argv)
+    try:
+        return args.handler(args)
+    except (Refused, ValueError, FileNotFoundError) as error:
+        print(error, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    # The write-up goes into UTF-8 markdown. Redirected on Windows, stdout would otherwise use
+    # the ANSI code page, which cannot encode the − and ≤ it contains.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.exit(main())

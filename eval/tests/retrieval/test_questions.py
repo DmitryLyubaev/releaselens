@@ -311,6 +311,99 @@ def test_build_set_interleaves_types_in_a_seeded_schedule():
     assert list(stream.schedule) != sorted(stream.schedule)
 
 
+class _FailingAnthropic(_FakeAnthropic):
+    """Answers from its queue, then fails as a dropped connection would."""
+
+    def __init__(self, replies: list[str]) -> None:
+        super().__init__(replies)
+        create = self.messages.create
+
+        def create_or_fail(**kwargs):
+            if not self.messages._replies:
+                raise ConnectionError("connection dropped (not real)")
+            return create(**kwargs)
+
+        self.messages.create = create_or_fail
+
+
+def _resumable_corpus() -> list[Chunk]:
+    return [_chunk(f"commit:{sha}", content=f"[commit {sha}] {_PLANNER}")
+            for sha in ("aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff")]
+
+
+_COPIED = _reply("Which change guarded the planner against a null step when the goal was empty?")
+_GOOD = _reply("Which change stopped the orchestrator crashing when it was asked to do nothing?")
+
+
+def test_build_set_checkpoints_and_a_rerun_pays_for_nothing_twice(tmp_path):
+    checkpoint = tmp_path / "questions.checkpoint.jsonl"
+    reference = build_set(sample_artefacts(_resumable_corpus(), n=4),
+                          _FakeAnthropic([_COPIED, _GOOD, _GOOD, _GOOD, _GOOD]))
+
+    # q001 needs a rewrite, q002 is accepted, and the connection drops while q003 is written.
+    failing = _FailingAnthropic([_COPIED, _GOOD, _GOOD])
+    with pytest.raises(ConnectionError):
+        build_set(sample_artefacts(_resumable_corpus(), n=4), failing, checkpoint=checkpoint)
+
+    records = [json.loads(line) for line in checkpoint.read_text(encoding="utf-8").splitlines()]
+    assert [record["question"]["qid"] for record in records] == ["q001", "q002"]
+    assert records[0]["draft"]["raw"] == _GOOD
+    assert records[0]["draft"]["why_unique"] == "only this artefact says so"
+    assert records[0]["rejections"] == {"copies its target": 1}
+
+    resumed_client = _FakeAnthropic([_GOOD, _GOOD])
+    resumed = build_set(sample_artefacts(_resumable_corpus(), n=4), resumed_client, checkpoint=checkpoint)
+
+    # Only q003 and q004 are written; q001 and q002 come from the checkpoint.
+    assert len(resumed_client.messages.created) == 2
+    assert resumed.questions == reference.questions
+    assert resumed.why_unique == reference.why_unique
+    assert sorted(resumed.artefacts) == sorted(reference.artefacts)
+    assert resumed.rejections == reference.rejections == {"copies its target": 1}
+    assert (resumed.rewrites, resumed.replacements) == (reference.rewrites, reference.replacements)
+    assert (resumed.input_tokens, resumed.output_tokens) == (reference.input_tokens, reference.output_tokens)
+    assert len(resumed.written_on) == 1
+
+    # A finished checkpoint replays the whole set without a single call.
+    replayed_client = _FakeAnthropic([])
+    replayed = build_set(sample_artefacts(_resumable_corpus(), n=4), replayed_client, checkpoint=checkpoint)
+    assert replayed.questions == reference.questions
+    assert replayed_client.messages.created == []
+
+
+def test_a_checkpoint_line_cut_off_by_a_crash_is_written_again(tmp_path):
+    checkpoint = tmp_path / "questions.checkpoint.jsonl"
+    build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([_GOOD, _GOOD]), checkpoint=checkpoint)
+    whole = checkpoint.read_text(encoding="utf-8")
+    checkpoint.write_text(whole[: whole.index("\n") + 20], encoding="utf-8")
+
+    client = _FakeAnthropic([_GOOD])
+    built = build_set(sample_artefacts(_resumable_corpus(), n=2), client, checkpoint=checkpoint)
+
+    assert len(client.messages.created) == 1
+    assert [question.qid for question in built.questions] == ["q001", "q002"]
+    assert checkpoint.read_text(encoding="utf-8") == whole
+
+
+def test_a_checkpoint_from_another_prompt_or_corpus_is_refused(tmp_path):
+    checkpoint = tmp_path / "questions.checkpoint.jsonl"
+    build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([_GOOD, _GOOD]), checkpoint=checkpoint)
+    lines = checkpoint.read_text(encoding="utf-8").splitlines()
+
+    other_prompt = json.loads(lines[0]) | {"prompts_sha256": "0" * 64}
+    stale = tmp_path / "stale.jsonl"
+    stale.write_text(json.dumps(other_prompt) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="another PROMPT or REWRITE"):
+        build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([]), checkpoint=stale)
+
+    record = json.loads(lines[0])
+    record["question"]["target"] = "commit:zzzz"
+    foreign = tmp_path / "foreign.jsonl"
+    foreign.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="commit:zzzz"):
+        build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([]), checkpoint=foreign)
+
+
 # --- the spot-check -----------------------------------------------------------------------
 
 
