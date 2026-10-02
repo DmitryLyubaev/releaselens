@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -14,6 +17,7 @@ using ReleaseLens.Ingestion.GitHub;
 using ReleaseLens.Llm.Providers;
 using ReleaseLens.Storage;
 using ReleaseLens.Storage.Repositories;
+using ReleaseLens.Storage.Retrieval;
 
 // Dispatched before RELEASELENS_DB is read, so the deploy smoke test can price a call on a
 // runner with no database: pricing needs nothing beyond ModelPricing's own rates.
@@ -271,11 +275,131 @@ switch (command)
         break;
     }
 
+    // The retrieval benchmark's corpus, for the Python side to embed and upload (plan 2).
+    case "export-corpus":
+    {
+        if (args.ElementAtOrDefault(1) is not { } directory)
+        {
+            logger.LogError("Usage: export-corpus <dir>");
+            return 1;
+        }
+
+        var tenantId = await ResolveTenantAsync();
+        Directory.CreateDirectory(directory);
+
+        var exporter = new CorpusExporter();
+        var factory = host.Services.GetRequiredService<TenantConnectionFactory>();
+
+        var chunkCount = 0;
+        int linkCount;
+        await using (var scope = await factory.OpenAsync(tenantId, cancellation.Token))
+        {
+            await using (var chunks = OpenJsonLines(Path.Combine(directory, "chunks.jsonl")))
+            {
+                await foreach (var chunk in exporter.ExportChunksAsync(scope, cancellation.Token))
+                {
+                    await chunks.WriteLineAsync(JsonSerializer.Serialize(chunk, BenchmarkRunner.Json));
+                    chunkCount++;
+                }
+            }
+
+            // Only after the chunk stream has ended: it holds the scope's connection until then.
+            var links = await exporter.ExportLinksAsync(scope, cancellation.Token);
+            await using (var linksFile = OpenJsonLines(Path.Combine(directory, "links.jsonl")))
+            {
+                foreach (var link in links)
+                {
+                    await linksFile.WriteLineAsync(JsonSerializer.Serialize(link, BenchmarkRunner.Json));
+                }
+            }
+
+            linkCount = links.Count;
+        }
+
+        logger.LogInformation(
+            "Exported {Chunks} chunk(s) and {Links} pull request link(s) to {Directory}",
+            chunkCount, linkCount, Path.GetFullPath(directory));
+        break;
+    }
+
+    // The benchmark's two in-app arms: S1 (hybrid) and E1 (bge-exact).
+    case "retrieve":
+    {
+        if (args.Length < 4)
+        {
+            logger.LogError(
+                "Usage: retrieve <{Hybrid}|{BgeExact}> <questions.jsonl> <out.jsonl>",
+                BenchmarkRunner.HybridMode, BenchmarkRunner.BgeExactMode);
+            return 1;
+        }
+
+        var (mode, questionsPath, outputPath) = (args[1], args[2], args[3]);
+        if (mode is not (BenchmarkRunner.HybridMode or BenchmarkRunner.BgeExactMode))
+        {
+            logger.LogError(
+                "Unknown retrieve mode '{Mode}'. Use {Hybrid} or {BgeExact}.",
+                mode, BenchmarkRunner.HybridMode, BenchmarkRunner.BgeExactMode);
+            return 1;
+        }
+
+        var tenantId = await ResolveTenantAsync();
+        var factory = host.Services.GetRequiredService<TenantConnectionFactory>();
+        var embedder = host.Services.GetRequiredService<IEmbedder>();
+        Func<CancellationToken, Task<TenantScope>> openScope = token => factory.OpenAsync(tenantId, token);
+
+        // Each question opens its own scope (see PerQuestionScope), and the query is embedded
+        // inside the delegate, so the runner's timing covers the embedding as well as the search.
+        Func<string, CancellationToken, Task<IReadOnlyList<(long ChunkId, string Artefact, double Score)>>> search =
+            mode switch
+            {
+                BenchmarkRunner.HybridMode => BenchmarkRunner.PerQuestionScope(openScope, async (scope, question, token) =>
+                {
+                    var vector = await embedder.EmbedQueryAsync(question, token);
+                    var result = await new HybridRetriever().RetrieveAsync(
+                        scope, new RetrievalRequest(question, vector, BenchmarkRunner.K), token);
+                    return BenchmarkRunner.HybridHits(result);
+                }),
+                BenchmarkRunner.BgeExactMode => BenchmarkRunner.PerQuestionScope(openScope, async (scope, question, token) =>
+                {
+                    var vector = await embedder.EmbedQueryAsync(question, token);
+                    return await new ExactVectorSearch().SearchAsync(scope, vector, BenchmarkRunner.K, token);
+                }),
+                _ => throw new UnreachableException($"The mode '{mode}' was checked above.")
+            };
+
+        (int Questions, int Errors) summary;
+        using (var questions = new StreamReader(questionsPath))
+        await using (var output = OpenJsonLines(outputPath))
+        {
+            summary = await BenchmarkRunner.RunRetrieveAsync(mode, questions, output, search, cancellation.Token);
+        }
+
+        logger.LogInformation(
+            "Retrieved {Questions} question(s) with {Mode}, {Errors} of them with an error, into {Output}",
+            summary.Questions, mode, summary.Errors, Path.GetFullPath(outputPath));
+        break;
+    }
+
     default:
         logger.LogError(
-            "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints | price",
+            "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints | " +
+            "export-corpus | retrieve | price",
             command);
         return 1;
 }
 
 return 0;
+
+// The benchmark's tenant, resolved the way create-tenant names it.
+async Task<Guid> ResolveTenantAsync()
+{
+    var slug = builder.Configuration["Tenant:Slug"] ?? "semantic-kernel";
+    var tenant = await host.Services.GetRequiredService<TenantRepository>()
+        .FindBySlugAsync(slug, cancellation.Token)
+        ?? throw new InvalidOperationException($"No tenant with slug '{slug}'. Run 'ingest' first.");
+    return tenant.TenantId;
+}
+
+// UTF-8 without a BOM and LF line ends, so the Python reader sees the same bytes on any OS.
+static StreamWriter OpenJsonLines(string path) =>
+    new(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)) { NewLine = "\n" };
