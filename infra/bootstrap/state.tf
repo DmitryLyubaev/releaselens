@@ -47,6 +47,14 @@ resource "azurerm_storage_container" "app" {
   container_access_type = "private"
 }
 
+# The short-lived search stack's state (infra/search). Only the owner applies that stack, so
+# only the owner has a role here.
+resource "azurerm_storage_container" "search" {
+  name                  = "tfstate-search"
+  storage_account_id    = azurerm_storage_account.state.id
+  container_access_type = "private"
+}
+
 # Every version is a full copy of a state file, and state can hold secrets, so old versions
 # are not kept indefinitely. Version actions never touch the current blob.
 resource "azurerm_storage_management_policy" "state" {

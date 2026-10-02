@@ -1,4 +1,4 @@
-"""Static guards over both Terraform stacks' source.
+"""Static guards over the Terraform stacks' source.
 
 CI runs `terraform fmt -check`, so blocks open as `<kind> "<type>" "<name>" {` at the start of a
 line and close with `}` in column 0, and attributes sit one to a line. Plain regular expressions
@@ -19,6 +19,7 @@ BOOTSTRAP_PROVIDERS = [
     "Microsoft.DBforPostgreSQL",
     "Microsoft.Consumption",
     "Microsoft.Insights",
+    "Microsoft.Search",
 ]
 
 # Bootstrap owns every one of these; the app stack may neither create nor read them.
@@ -51,13 +52,18 @@ def _setting(body: str, name: str) -> re.Match | None:
     return re.search(rf"^\s*{name}\s*=\s*(.*?)\s*$", body, re.MULTILINE)
 
 
+def _code_lines(text: str) -> list[str]:
+    """Every line that is not a comment, so a comment that names something does not count."""
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
 def _declarations(files: dict[str, str], kind: str, type_: str) -> list[str]:
     """The file name of each `<kind> "<type_>"` declaration, once per declaration."""
     pattern = re.compile(rf'^{kind} "{re.escape(type_)}" "', re.MULTILINE)
     return [name for name, text in files.items() for _ in pattern.finditer(text)]
 
 
-def test_bootstrap_registers_exactly_the_seven_providers(repo_root):
+def test_bootstrap_registers_exactly_the_eight_providers(repo_root):
     provider = _block(_stack(repo_root, "bootstrap")["versions.tf"], 'provider "azurerm"')
 
     registrations = _setting(provider, "resource_provider_registrations")
@@ -70,9 +76,11 @@ def test_bootstrap_registers_exactly_the_seven_providers(repo_root):
     assert sorted(entries) == sorted(f'"{name}"' for name in BOOTSTRAP_PROVIDERS)
 
 
-def test_app_stack_registers_no_providers(repo_root):
-    # CI may not register resource providers; bootstrap registers the ones this stack uses.
-    provider = _block(_stack(repo_root, "terraform")["versions.tf"], 'provider "azurerm"')
+# The app stack runs as CI, which may not register resource providers. The search stack runs as
+# the owner, who may, but bootstrap is the one place registration happens.
+@pytest.mark.parametrize("stack", ["terraform", "search"])
+def test_stack_registers_no_providers(repo_root, stack):
+    provider = _block(_stack(repo_root, stack)["versions.tf"], 'provider "azurerm"')
 
     registrations = _setting(provider, "resource_provider_registrations")
     assert registrations and registrations.group(1) == '"none"'
@@ -88,8 +96,8 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_seven_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 7
+def test_bootstrap_has_the_eight_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 8
 
 
 def test_bootstrap_has_one_federated_credential(repo_root):
@@ -102,3 +110,30 @@ def test_bootstrap_has_one_federated_credential(repo_root):
 @pytest.mark.parametrize("kind", ["resource", "data"])
 def test_app_stack_holds_none_of_bootstraps_types(repo_root, kind, type_):
     assert _declarations(_stack(repo_root, "terraform"), kind, type_) == []
+
+
+def test_search_stack_keeps_keys_off(repo_root):
+    files = _stack(repo_root, "search")
+    service = _block(files["main.tf"], 'resource "azurerm_search_service" "search"')
+
+    local_auth = _setting(service, "local_authentication_enabled")
+    assert local_auth and local_auth.group(1) == "false"
+    # No output, and no other line of code, may carry the service's admin or query keys out.
+    keys = re.compile(r"api_key|primary_key|secondary_key|query_keys")
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if keys.search(line)], name
+
+
+def test_search_stack_has_only_the_owners_two_role_assignments(repo_root):
+    assert len(_declarations(_stack(repo_root, "search"), "resource", "azurerm_role_assignment")) == 2
+
+
+def test_search_stack_is_not_in_the_app_group(repo_root):
+    # In rg-releaselens, the nightly destroy's empty-group check would find the service and fail.
+    app_group = re.compile(r"rg-releaselens(?![-\w])")
+    for name, text in _stack(repo_root, "search").items():
+        assert not [line for line in _code_lines(text) if app_group.search(line)], name
+
+    group = _block(_stack(repo_root, "search")["main.tf"], 'resource "azurerm_resource_group" "search"')
+    group_name = _setting(group, "name")
+    assert group_name and group_name.group(1) == '"rg-releaselens-search"'

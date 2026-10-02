@@ -15,16 +15,18 @@ stack as built, and that runbook. The design and its reasons are in the
 |---|---|---|
 | Resource group | `rg-releaselens-bootstrap` | holds everything below except the budget, `rg-releaselens`, and the deploy identity's Contributor assignment, which is scoped to `rg-releaselens` |
 | Management lock | `lock-releaselens-bootstrap` | `CanNotDelete` on that group; see [the standing rules](#standing-rules-after-r8) |
-| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only) and `tfstate-app`; shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
+| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only), `tfstate-app` and `tfstate-search` (owner only); shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
 | Deploy identity | `id-releaselens-deploy` | user-assigned; the identity the workflows sign in as |
 | Federated credential | `github-environment-azure` | on the deploy identity, with one subject, for the GitHub environment `azure`; it does not exist while `github_oidc_subject` is unset |
 | App identity | `id-releaselens-app` | user-assigned; the identity the Container App runs as |
 | Azure OpenAI account | `aoai-releaselens-<suffix>` | kind `AIServices`, SKU `S0`, `local_auth_enabled = false`, `project_management_enabled = false`, custom subdomain equal to its name |
 | Model deployment | `releaselens-chat` | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `300`, `version_upgrade_option = "NoAutoUpgrade"` |
+| Model deployment | `releaselens-embed-small` | `text-embedding-3-small` version `1`, format `OpenAI`, SKU `GlobalStandard`, capacity `350`, `version_upgrade_option = "NoAutoUpgrade"`; for the retrieval benchmark |
+| Model deployment | `releaselens-embed-large` | `text-embedding-3-large` version `1`, format `OpenAI`, SKU `GlobalStandard`, capacity `350`, `version_upgrade_option = "NoAutoUpgrade"`; for the retrieval benchmark |
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | seven, in `roles.tf` | see [Roles](#roles) |
+| Role assignments | eight, in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -32,10 +34,11 @@ Both identities stay in the bootstrap group and must never move into `rg-release
 Contributor on that group, which includes writing federated credentials. An identity there would
 let CI add a trust for itself outside the environment gate.
 
-The provider registers the seven resource providers that both stacks use: `Microsoft.Storage`,
+The provider registers the eight resource providers that the stacks use: `Microsoft.Storage`,
 `Microsoft.ManagedIdentity`, `Microsoft.CognitiveServices`, `Microsoft.App`,
-`Microsoft.DBforPostgreSQL`, `Microsoft.Consumption` and `Microsoft.Insights`. The owner is
-allowed to register them and CI is not, so it happens here. The provider also sets:
+`Microsoft.DBforPostgreSQL`, `Microsoft.Consumption`, `Microsoft.Insights` and
+`Microsoft.Search`, which the [search stack](../search/README.md) uses. The owner is allowed to
+register them and CI is not, so it happens here. The provider also sets:
 - `storage_use_azuread = true`, so storage data-plane calls authenticate through Entra ID, which
   an account with shared keys off requires
 - `purge_soft_delete_on_destroy` for the Azure OpenAI account, which matters only if this stack
@@ -49,6 +52,7 @@ allowed to register them and CI is not, so it happens here. The provider also se
 | `owner_openai_user` | the owner | Cognitive Services OpenAI User | the Azure OpenAI account |
 | `owner_state_bootstrap` | the owner | Storage Blob Data Contributor | `tfstate-bootstrap` |
 | `owner_state_app` | the owner | Storage Blob Data Contributor | `tfstate-app` |
+| `owner_state_search` | the owner | Storage Blob Data Contributor | `tfstate-search` |
 | `deploy_contributor` | deploy identity | Contributor | `rg-releaselens` |
 | `deploy_identity_operator` | deploy identity | Managed Identity Operator | the app identity |
 | `deploy_state_app` | deploy identity | Storage Blob Data Contributor | `tfstate-app` |
@@ -60,7 +64,7 @@ runs as, has:
 - no access to the bootstrap state
 - no role on the Azure OpenAI account
 
-**Whoever applies this stack is treated as the owner.** The owner's three assignments use the
+**Whoever applies this stack is treated as the owner.** The owner's four assignments use the
 object ID of the principal that is signed in (`data.azurerm_client_config.current`). A plan run
 by anyone else would move those assignments to that principal. After R8, the lock would also
 block the deletes that move requires.
@@ -198,7 +202,7 @@ All four paths must be listed.
 
 ### R5. The budget first
 
-*Changes the subscription; bills nothing.* Even the plan registers the seven resource providers,
+*Changes the subscription; bills nothing.* Even the plan registers the eight resource providers,
 because the provider registers them when it is configured. Registration is free.
 
 1. Create the git-ignored variables file. The budget's start date must be the first of the

@@ -1,5 +1,5 @@
-"""Both Terraform stacks' local state, plans, tfvars, overrides and crash logs must
-never reach git, whichever stack they live under."""
+"""The Terraform stacks' local state, plans, tfvars, overrides and crash logs must never
+reach git, whichever stack they live under."""
 
 import subprocess
 
@@ -21,6 +21,8 @@ IGNORED = [
     "infra/bootstrap/terraform.tfvars.json",
     "infra/terraform/crash.log",
     "infra/bootstrap/crash.1790000000.log",
+    "infra/search/terraform.tfvars",
+    "infra/search/terraform.tfstate",
 ]
 
 NOT_IGNORED = [
@@ -28,6 +30,7 @@ NOT_IGNORED = [
     "infra/bootstrap/.terraform.lock.hcl",
     "infra/bootstrap/tests/state.tftest.hcl",
     "infra/terraform/main.tf",
+    "infra/search/.terraform.lock.hcl",
 ]
 
 

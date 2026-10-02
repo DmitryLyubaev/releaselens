@@ -18,7 +18,7 @@ appsettings.Local.json
 # ONNX model weights (~130 MB) — fetched by scripts/fetch-model.*
 models/
 
-# Terraform — both stacks (infra/bootstrap, infra/terraform)
+# Terraform — every stack (infra/bootstrap, infra/terraform, infra/search)
 infra/**/.terraform/
 infra/**/*.tfstate
 infra/**/*.tfstate.*

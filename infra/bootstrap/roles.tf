@@ -1,4 +1,6 @@
-# Every role assignment in the design lives here (spec §4.10). The app stack writes none.
+# Every role assignment in the design lives here (spec §4.10). The app stack writes none. The one
+# exception is the search stack, which only the owner applies, and which gives the owner two
+# roles on its own search service (spec §6.2 of the AI Search benchmark).
 
 # The owner is whoever applies this stack, so the owner's principal is the signed-in one.
 # Applied by anyone else, these assignments would move to that principal.
@@ -18,7 +20,7 @@ resource "azurerm_role_assignment" "owner_openai_user" {
 }
 
 # The Owner role has no data actions, so without these the owner could not migrate state or
-# run the app stack locally.
+# run the app or search stack locally.
 #
 # In azurerm 5.x a container created with storage_account_id has its Resource Manager ID in
 # id (.../blobServices/default/containers/<name>); 5.0 removed resource_manager_id. url is
@@ -31,6 +33,12 @@ resource "azurerm_role_assignment" "owner_state_bootstrap" {
 
 resource "azurerm_role_assignment" "owner_state_app" {
   scope                = azurerm_storage_container.app.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_role_assignment" "owner_state_search" {
+  scope                = azurerm_storage_container.search.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = data.azurerm_client_config.current.object_id
 }

@@ -371,18 +371,19 @@ nothing is deployed. The rest of this section is about what the code configures,
 Azure fact carries its source and date. The
 detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
-There are two Terraform stacks:
+There are two Terraform stacks for the app, and a third for the retrieval benchmark:
 
 | Stack | Applied by | Holds |
 |---|---|---|
-| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its deployment; the budget; the empty app resource group; every role assignment |
+| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its three deployments, the chat model and two embedding models; the budget; the empty app resource group; every role assignment except the search stack's two |
 | [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
+| [`infra/search`](infra/search/README.md) | the owner, locally, for one benchmark session, then destroyed | its own resource group, one keyless AI Search service on Basic, and the owner's two roles on it |
 
 **Bootstrap once.** The owner follows the runbook in
 [infra/bootstrap/README.md](infra/bootstrap/README.md). The budget comes first: the first apply
 creates only the budget, its action group and the resource group that holds the action group.
 So the budget exists before anything that can bill. Bootstrap also registers the resource
-providers both stacks use. One of them is `Microsoft.App`, which the 12 August apply below found
+providers every stack uses. One of them is `Microsoft.App`, which the 12 August apply below found
 missing on a fresh subscription.
 
 **Then deploy and destroy through the workflows**,

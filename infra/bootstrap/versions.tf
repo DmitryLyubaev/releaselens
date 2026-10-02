@@ -16,7 +16,7 @@ terraform {
 provider "azurerm" {
   subscription_id = var.subscription_id
 
-  # Registration happens here, for both stacks: this stack runs as the owner, who may
+  # Registration happens here, for every stack: this stack runs as the owner, who may
   # register resource providers, and the app stack's CI identity may not. "none" is
   # written out so that only this list is registered, whatever the provider's default.
   resource_provider_registrations = "none"
@@ -28,6 +28,7 @@ provider "azurerm" {
     "Microsoft.DBforPostgreSQL",
     "Microsoft.Consumption",
     "Microsoft.Insights",
+    "Microsoft.Search",
   ]
 
   # Storage data-plane calls authenticate with Entra ID instead of account keys, so they

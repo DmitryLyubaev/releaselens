@@ -26,6 +26,18 @@ output "azure_openai_deployment" {
   value       = azurerm_cognitive_deployment.chat.name
 }
 
+# The benchmark passes these as --deployment. They are not in github_environment_variables: no
+# workflow uses them.
+output "embedding_small_deployment" {
+  description = "Name of the text-embedding-3-small deployment, used by the retrieval benchmark."
+  value       = azurerm_cognitive_deployment.embedding_small.name
+}
+
+output "embedding_large_deployment" {
+  description = "Name of the text-embedding-3-large deployment, used by the retrieval benchmark."
+  value       = azurerm_cognitive_deployment.embedding_large.name
+}
+
 output "deploy_identity_client_id" {
   description = "Client ID of the deploy identity, which the workflows sign in as. It is the GitHub environment's AZURE_CLIENT_ID."
   value       = azurerm_user_assigned_identity.deploy.client_id
@@ -42,7 +54,7 @@ output "subscription_id" {
 }
 
 output "tfstate_storage_account" {
-  description = "Name of the storage account that holds both stacks' state."
+  description = "Name of the storage account that holds every stack's state."
   value       = azurerm_storage_account.state.name
 }
 

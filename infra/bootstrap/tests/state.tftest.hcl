@@ -94,6 +94,11 @@ run "state_storage" {
   }
 
   assert {
+    condition     = azurerm_storage_container.search.name == "tfstate-search" && azurerm_storage_container.search.container_access_type == "private"
+    error_message = "The search state container must be tfstate-search, and private."
+  }
+
+  assert {
     condition     = azurerm_storage_container.bootstrap.storage_account_id == azurerm_storage_account.state.id
     error_message = "The bootstrap state container must be in the state account."
   }
@@ -101,6 +106,11 @@ run "state_storage" {
   assert {
     condition     = azurerm_storage_container.app.storage_account_id == azurerm_storage_account.state.id
     error_message = "The app state container must be in the state account."
+  }
+
+  assert {
+    condition     = azurerm_storage_container.search.storage_account_id == azurerm_storage_account.state.id
+    error_message = "The search state container must be in the state account."
   }
 
   assert {
@@ -125,6 +135,6 @@ run "state_storage" {
 
   assert {
     condition     = azurerm_storage_management_policy.state.rule[0].filters[0].prefix_match == null
-    error_message = "The lifecycle rule must cover both state containers, with no prefix filter."
+    error_message = "The lifecycle rule must cover every state container, with no prefix filter."
   }
 }

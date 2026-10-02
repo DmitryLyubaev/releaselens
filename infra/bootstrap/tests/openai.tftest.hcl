@@ -112,3 +112,74 @@ run "capacity_from_variable" {
     error_message = "The deployment's capacity must come from azure_openai_capacity."
   }
 }
+
+run "embedding_deployments" {
+  command = plan
+
+  assert {
+    condition     = azurerm_cognitive_deployment.embedding_small.name == "releaselens-embed-small" && azurerm_cognitive_deployment.embedding_large.name == "releaselens-embed-large"
+    error_message = "The embedding deployments must be named releaselens-embed-small and releaselens-embed-large."
+  }
+
+  assert {
+    condition = alltrue([
+      for d in [azurerm_cognitive_deployment.embedding_small, azurerm_cognitive_deployment.embedding_large] :
+      d.cognitive_account_id == azurerm_cognitive_account.openai.id
+    ])
+    error_message = "Both embedding deployments must be on the account."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_deployment.embedding_small.model[0].format == "OpenAI" && azurerm_cognitive_deployment.embedding_small.model[0].name == "text-embedding-3-small" && azurerm_cognitive_deployment.embedding_small.model[0].version == "1"
+    error_message = "releaselens-embed-small must be OpenAI text-embedding-3-small, version 1."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_deployment.embedding_large.model[0].format == "OpenAI" && azurerm_cognitive_deployment.embedding_large.model[0].name == "text-embedding-3-large" && azurerm_cognitive_deployment.embedding_large.model[0].version == "1"
+    error_message = "releaselens-embed-large must be OpenAI text-embedding-3-large, version 1."
+  }
+
+  assert {
+    condition = alltrue([
+      for d in [azurerm_cognitive_deployment.embedding_small, azurerm_cognitive_deployment.embedding_large] :
+      d.sku[0].name == "GlobalStandard" && d.sku[0].capacity == 350 && d.version_upgrade_option == "NoAutoUpgrade"
+    ])
+    error_message = "Both embedding deployments must be GlobalStandard, capacity 350, pinned with NoAutoUpgrade."
+  }
+
+  assert {
+    condition     = output.embedding_small_deployment == "releaselens-embed-small" && output.embedding_large_deployment == "releaselens-embed-large"
+    error_message = "The outputs embedding_small_deployment and embedding_large_deployment must name the two embedding deployments."
+  }
+}
+
+# Review focus 5: adding the embedding deployments must leave the deployed chat model exactly as
+# it was, so the bootstrap plan changes nothing on it.
+run "chat_deployment_unchanged" {
+  command = plan
+
+  assert {
+    condition     = azurerm_cognitive_deployment.chat.name == "releaselens-chat" && azurerm_cognitive_deployment.chat.cognitive_account_id == azurerm_cognitive_account.openai.id
+    error_message = "The chat deployment must still be releaselens-chat, on the account."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_deployment.chat.model[0].format == "OpenAI" && azurerm_cognitive_deployment.chat.model[0].name == "gpt-4.1-mini" && azurerm_cognitive_deployment.chat.model[0].version == "2025-04-14"
+    error_message = "The chat deployment's model must still be OpenAI gpt-4.1-mini, version 2025-04-14."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_deployment.chat.sku[0].name == "GlobalStandard" && azurerm_cognitive_deployment.chat.sku[0].capacity == 300
+    error_message = "The chat deployment must still be GlobalStandard, capacity 300."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_deployment.chat.version_upgrade_option == "NoAutoUpgrade"
+    error_message = "The chat deployment must still be pinned with NoAutoUpgrade."
+  }
+
+  assert {
+    condition     = output.azure_openai_deployment == "releaselens-chat" && output.github_environment_variables["AZURE_OPENAI_DEPLOYMENT"] == "releaselens-chat"
+    error_message = "The app stack's handoff must still name the chat deployment, never an embedding one."
+  }
+}

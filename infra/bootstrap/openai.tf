@@ -47,3 +47,43 @@ resource "azurerm_cognitive_deployment" "chat" {
   # 2025-04-14 retires (spec §4.8).
   version_upgrade_option = "NoAutoUpgrade"
 }
+
+# The retrieval benchmark's two embedding models (spec §6.1). Like the chat deployment, they
+# bill per token and cost nothing idle, and their versions are pinned so a run is repeatable.
+# Capacity 350 is 350,000 tokens a minute, within the subscription's Global Standard quota of
+# 1,000 for each model.
+resource "azurerm_cognitive_deployment" "embedding_small" {
+  name                 = "releaselens-embed-small"
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = "text-embedding-3-small"
+    version = "1"
+  }
+
+  sku {
+    name     = "GlobalStandard"
+    capacity = 350
+  }
+
+  version_upgrade_option = "NoAutoUpgrade"
+}
+
+resource "azurerm_cognitive_deployment" "embedding_large" {
+  name                 = "releaselens-embed-large"
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = "text-embedding-3-large"
+    version = "1"
+  }
+
+  sku {
+    name     = "GlobalStandard"
+    capacity = 350
+  }
+
+  version_upgrade_option = "NoAutoUpgrade"
+}

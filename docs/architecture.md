@@ -217,7 +217,7 @@ commit message.
 
 ## Azure deployment
 
-Both Terraform stacks are built and tested with mocked plans, and the deploy and destroy
+All three Terraform stacks are built and tested with mocked plans, and the deploy and destroy
 workflows are built. **The app stack was deployed and destroyed twice on 1 October 2026**; the
 [README's record](../README.md#two-stack-deployment-1-october-2026) has the runs. Apart from
 the verified items below, this section describes what the code configures. What the checks after the bootstrap apply showed is under
@@ -234,10 +234,13 @@ GitHub Actions: environment "azure", whose only branch rule is main
   ▼
 ┌─ rg-releaselens-bootstrap · long-lived · applied by the owner · lock CanNotDelete ──────────┐
 │  strlstate<suffix>           shared keys off · tfstate-bootstrap (owner) · tfstate-app      │
+│                              · tfstate-search (owner)                                       │
 │  id-releaselens-deploy       federated credential github-environment-azure (env azure)      │
 │  id-releaselens-app          the identity the Container App runs as                         │
 │  aoai-releaselens-<suffix>   kind AIServices · key authentication disabled                  │
-│    └ releaselens-chat        gpt-4.1-mini 2025-04-14 · GlobalStandard · capacity 300        │
+│    ├ releaselens-chat        gpt-4.1-mini 2025-04-14 · GlobalStandard · capacity 300        │
+│    ├ releaselens-embed-small text-embedding-3-small 1 · GlobalStandard · capacity 350       │
+│    └ releaselens-embed-large text-embedding-3-large 1 · GlobalStandard · capacity 350       │
 │  ag-releaselens-budget       emails for budget-releaselens-monthly (subscription scope)     │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ rg-releaselens · created empty by bootstrap · contents deployed and destroyed by CI ───────┐
@@ -251,7 +254,10 @@ environment, entered at a masked prompt, or in the git-ignored .env, never in a 
 ```
 
 The bootstrap stack is applied once by the owner, locally, and never destroyed. The app stack
-holds only the Container App and Postgres. The app stack reads nothing from bootstrap. The owner
+holds only the Container App and Postgres. The embedding deployments serve only the retrieval
+benchmark, whose AI Search service is in a third stack, [`infra/search`](../infra/search/README.md):
+the owner applies it in its own group, `rg-releaselens-search`, for one measurement session, and
+destroys it at the end. The app stack reads nothing from bootstrap. The owner
 copies four bootstrap outputs into the GitHub environment once, and the workflows pass them to
 Terraform as `TF_VAR_*`:
 - `APP_IDENTITY_ID`, a variable
@@ -331,19 +337,24 @@ Both live in the bootstrap group. Contributor on `rg-releaselens` includes writi
 credentials, so an identity in that group would let CI add a trust for itself outside the
 environment gate.
 
-The bootstrap stack makes every role assignment, and looks each role up by name:
+The bootstrap stack makes every role assignment but two, and looks each role up by name:
 
 | Identity | Role | Scope | Why |
 |---|---|---|---|
 | App identity | Cognitive Services OpenAI User | the Azure OpenAI account | inference. The role also grants the account's assistants, responses and file-read data plane |
 | Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
-| Owner | Storage Blob Data Contributor | `tfstate-bootstrap` and `tfstate-app` (two assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app stack locally |
+| Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app` and `tfstate-search` (three assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
 | Deploy identity | Managed Identity Operator | the app identity only | attach an identity from another resource group to the Container App |
 | Deploy identity | Storage Blob Data Contributor | `tfstate-app` only | read and write the app stack's state, including its lock |
 
 The owner is whoever applies bootstrap. The owner's assignments use the object ID of the
 principal that is signed in.
+
+The other two are in the search stack, which only the owner applies, and which gives the owner
+`Search Service Contributor` and `Search Index Data Contributor` on its search service, and on
+nothing else. The rule that bootstrap holds every assignment keeps role-assignment rights away
+from CI, and CI never runs that stack.
 
 The app identity, not a system-assigned one, holds the role on the account. A system-assigned
 identity would not exist until CI created the app, so CI would need the right to write role
@@ -458,6 +469,8 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | Postgres Flexible Server `B_Standard_B1ms` | app | by the hour while it exists |
 | Container Apps (consumption, scales to zero) | app | per use |
 | Azure OpenAI Global Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24 and 2026-09-27). The first invoice will confirm whether it charges anything while idle |
+| Two embedding deployments, Global Standard | bootstrap | per token, and nothing idle (benchmark spec §6.1) |
+| AI Search service, Basic | search | by the hour while it exists, US$3.19 a day; destroyed after each benchmark session (benchmark spec §6.4, §8) |
 | State storage account | bootstrap | a few cents a month (an estimate) |
 | Managed identities, resource groups, budget | bootstrap | nothing |
 
@@ -476,7 +489,7 @@ after 60 days without activity, and scheduled runs can be delayed or dropped.
 
 ### Terraform state
 
-Both stacks keep their state in one storage account, one container each:
+Every stack keeps its state in one storage account, one container each:
 - the account has shared keys off, local users off, OAuth by default, public access to nested
   items off, and TLS 1.2
 - the backend authenticates through Entra ID

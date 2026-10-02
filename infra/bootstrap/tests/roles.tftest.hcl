@@ -77,6 +77,15 @@ override_resource {
 }
 
 override_resource {
+  target          = azurerm_storage_container.search
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlstatea1b2c3/blobServices/default/containers/tfstate-search"
+    url = "https://strlstatea1b2c3.blob.core.windows.net/tfstate-search"
+  }
+}
+
+override_resource {
   target          = azurerm_user_assigned_identity.app
   override_during = plan
   values = {
@@ -119,6 +128,11 @@ run "role_assignments" {
   }
 
   assert {
+    condition     = azurerm_role_assignment.owner_state_search.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_state_search.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlstatea1b2c3/blobServices/default/containers/tfstate-search" && azurerm_role_assignment.owner_state_search.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_state_search must give the owner Storage Blob Data Contributor on the tfstate-search container's Resource Manager ID."
+  }
+
+  assert {
     condition     = azurerm_role_assignment.deploy_contributor.role_definition_name == "Contributor" && azurerm_role_assignment.deploy_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens" && azurerm_role_assignment.deploy_contributor.principal_id == "33333333-3333-3333-3333-333333333333"
     error_message = "deploy_contributor must give the deploy identity Contributor on rg-releaselens only."
   }
@@ -140,6 +154,7 @@ run "role_assignments" {
         azurerm_role_assignment.owner_openai_user,
         azurerm_role_assignment.owner_state_bootstrap,
         azurerm_role_assignment.owner_state_app,
+        azurerm_role_assignment.owner_state_search,
         azurerm_role_assignment.deploy_contributor,
         azurerm_role_assignment.deploy_identity_operator,
         azurerm_role_assignment.deploy_state_app,
@@ -156,6 +171,7 @@ run "role_assignments" {
         azurerm_role_assignment.owner_openai_user,
         azurerm_role_assignment.owner_state_bootstrap,
         azurerm_role_assignment.owner_state_app,
+        azurerm_role_assignment.owner_state_search,
         azurerm_role_assignment.deploy_contributor,
         azurerm_role_assignment.deploy_identity_operator,
         azurerm_role_assignment.deploy_state_app,
@@ -174,6 +190,7 @@ run "role_assignments" {
         azurerm_role_assignment.owner_openai_user,
         azurerm_role_assignment.owner_state_bootstrap,
         azurerm_role_assignment.owner_state_app,
+        azurerm_role_assignment.owner_state_search,
         azurerm_role_assignment.deploy_contributor,
         azurerm_role_assignment.deploy_identity_operator,
         azurerm_role_assignment.deploy_state_app,
