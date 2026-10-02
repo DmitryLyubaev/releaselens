@@ -21,7 +21,9 @@ public sealed class CorpusExporter
 {
     /// <summary>
     /// Every chunk of the tenant, embedded or not, in <c>chunk_id</c> order. Streamed rather
-    /// than buffered, because the full corpus is tens of thousands of chunks.
+    /// than buffered, because the full corpus is tens of thousands of chunks. The open reader
+    /// holds the scope's connection until enumeration ends, so no other query can run on the
+    /// scope until then.
     /// </summary>
     public async IAsyncEnumerable<ExportedChunk> ExportChunksAsync(
         TenantScope scope, [EnumeratorCancellation] CancellationToken cancellationToken)

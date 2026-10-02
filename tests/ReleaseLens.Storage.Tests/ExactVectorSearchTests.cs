@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Dapper;
+using Npgsql;
 using Pgvector;
 using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
@@ -119,21 +120,83 @@ public class ExactVectorSearchTests(PostgresFixture fixture)
     public async Task ExactSearch_DoesNotUseTheHnswIndex()
     {
         var (factory, tenantId, _) = await SeedAsync("exact-search-plan");
-        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        await SeedBulkVectorsAsync(factory, tenantId, BulkRows);
+
+        // Control: the same SQL, without the class's setting, and with the scans that compete
+        // with the index priced out. The planner must choose the HNSW index here. Otherwise a
+        // plan without the index below could simply mean the table was too small to bother with
+        // an index, and would show nothing about the setting.
+        await using (var control = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await control.Connection.ExecuteAsync(new CommandDefinition(
+                "set local enable_seqscan = off; set local enable_bitmapscan = off",
+                transaction: control.Transaction, cancellationToken: TestContext.Current.CancellationToken));
+
+            Assert.Contains("embeddings_hnsw_idx", await ExplainAsync(control), StringComparison.Ordinal);
+        }
 
         // The same two statements SearchAsync sends, in the same transaction. enable_seqscan
         // stays at its default: enable_indexscan = off is a cost penalty, not a ban, and
         // turning sequential scans off too would set the two penalties against each other.
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
         await scope.Connection.ExecuteAsync(new CommandDefinition(
             ExactVectorSearch.DisableIndexScanSql,
             transaction: scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
 
+        var plan = await ExplainAsync(scope);
+        Assert.NotEmpty(plan);
+        Assert.DoesNotContain("embeddings_hnsw_idx", plan, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Enough rows, with statistics, that an ordered HNSW walk is cheaper than reading the
+    /// tenant's rows through <c>embeddings_tenant_idx</c> and sorting them. On a few unanalysed
+    /// rows that btree path is estimated as almost free, and the control could choose it.
+    /// </summary>
+    private const int BulkRows = 5_000;
+
+    private async Task SeedBulkVectorsAsync(TenantConnectionFactory factory, Guid tenantId, int count)
+    {
+        await using (var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            // Seeded, so the same vectors go in on every run. The vector subquery refers to the
+            // outer row only so that it is re-evaluated per row instead of once for them all.
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
+                "select setseed(0.42)",
+                transaction: scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
+
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
+                """
+                with chunks as (
+                    insert into evidence_chunks (tenant_id, entity_type, entity_key, chunk_index, content, token_count)
+                    select @tenantId, 'commit', 'bulk_' || g, 0, 'bulk chunk ' || g, 3
+                    from generate_series(1, @count) g
+                    returning chunk_id
+                )
+                insert into embeddings (chunk_id, tenant_id, model, dim, embedding)
+                select chunk_id, @tenantId, 'test-model', 384,
+                       (select array_agg(random()::real) from generate_series(1, 384) where chunk_id > 0)::vector
+                from chunks
+                """,
+                new { tenantId, count },
+                scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
+
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        // ANALYZE needs the table owner, so it runs as the container's bootstrap role rather
+        // than inside a tenant scope, where releaselens_app would skip it with a warning.
+        await using var owner = new NpgsqlConnection(fixture.ConnectionString);
+        await owner.OpenAsync(TestContext.Current.CancellationToken);
+        await owner.ExecuteAsync(new CommandDefinition(
+            "analyze embeddings, evidence_chunks", cancellationToken: TestContext.Current.CancellationToken));
+    }
+
+    private static async Task<string> ExplainAsync(TenantScope scope)
+    {
         var lines = await scope.Connection.QueryAsync<string>(new CommandDefinition(
             "explain " + ExactVectorSearch.SearchSql, new { q = new Vector(Query), k = 4 },
             scope.Transaction, cancellationToken: TestContext.Current.CancellationToken));
-        var plan = string.Join('\n', lines);
-
-        Assert.NotEmpty(plan);
-        Assert.DoesNotContain("embeddings_hnsw_idx", plan, StringComparison.Ordinal);
+        return string.Join('\n', lines);
     }
 }
