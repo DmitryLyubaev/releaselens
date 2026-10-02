@@ -146,8 +146,10 @@ class ArmSummary(BaseModel):
     whether or not it counts, so it is money spent."""
 
     models_seen: list[str]
-    """Each `model` the outcomes without errors name, sorted. A rejected reply's model belongs to
-    the provider that answered instead, which its error already names."""
+    """Each `model` the outcomes without errors or filter events name, sorted. A rejected reply's
+    model belongs to the provider that answered instead, which its error already names. A
+    filtered answer had no response to name one, so its model is the arm's configured model and
+    not one the provider returned."""
 
 
 def metric_value(outcome: QueryOutcome, query: GoldenQuery, metric: str) -> float | None:
@@ -339,8 +341,9 @@ def summarise(
 ) -> ArmSummary:
     """One arm's descriptive figures, each over the outcomes its field says.
 
-    Each quality metric is scoped as metric_value scopes it. Latency, cost per query and the
-    models seen are over the outcomes without errors; the total cost is over every outcome.
+    Each quality metric is scoped as metric_value scopes it. Latency and cost per query are over
+    the outcomes without errors, and the models seen over those without filter events as well;
+    the total cost is over every outcome.
     """
     own = [o for o in outcomes if o.arm == arm.name]
     answered = [o for o in own if o.error is None]
@@ -374,5 +377,7 @@ def summarise(
         p95_latency_ms=latencies["p95"] if latencies else None,
         mean_cost_usd_per_query=_mean_or_none([o.cost_usd for o in answered]),
         total_cost_usd=math.fsum(o.cost_usd for o in own),
-        models_seen=sorted({o.model for o in answered if o.model is not None}),
+        models_seen=sorted({
+            o.model for o in answered if o.model is not None and o.filtered_stage is None
+        }),
     )

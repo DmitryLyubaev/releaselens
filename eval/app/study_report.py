@@ -194,7 +194,8 @@ def _outcomes(summaries: list[ArmSummary]) -> list[str]:
         "",
         "Recorded as legitimate differences between the arms, not explained away. Filtered counts "
         "the outcomes on which a content filter blocked the request, errors included. Models seen "
-        "is each `model` the arm's outcomes without errors name, as the replies' metadata gives it.",
+        "is each `model` the arm's outcomes without errors or filter events name, as the replies' "
+        "metadata gives it. A filtered answer is left out because no response named its model.",
         "",
         "| Arm | Outcomes | Errors | Filtered | Models seen |",
         "|---|---:|---:|---:|---|",

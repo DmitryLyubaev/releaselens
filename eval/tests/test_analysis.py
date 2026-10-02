@@ -439,6 +439,22 @@ def test_arm_summary_scopes_each_figure():
     assert summary.models_seen == ["gpt-4.1-mini", gpt]
 
 
+def test_models_seen_leaves_out_filtered_answers():
+    """A filtered answer had no response to name a model, so the model it records is the arm's
+    configured fallback, and listing it would read as the provider having served a second one."""
+    gpt = "gpt-4.1-mini-2025-04-14"
+    outcomes = [
+        _outcome("q-ans", "Z", 0, model=gpt),
+        _outcome("q-temporal", "Z", 0, filtered_stage="completion", model="gpt-4.1-mini"),
+        _outcome("q-unans", "Z", 0, filtered_stage="prompt", model="gpt-4.1-mini"),
+    ]
+
+    summary = summarise(outcomes, _QUERIES, _Z)
+
+    assert summary.models_seen == [gpt]
+    assert summary.filtered_count == 2
+
+
 def test_arm_summary_counts_failed_judgements():
     """An answer put to the judge that came back with no score is a failed judgement. One never
     put to it, on an unjudged run or because it was an error, is not."""
