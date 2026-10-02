@@ -38,6 +38,13 @@ def test_latency_percentiles():
     assert p["p95"] == 1000
 
 
+def test_p95_is_nearest_rank_and_not_the_maximum():
+    """Nearest rank is the value at index ceil(0.95 × n) − 1. At n = 20 that is the 19th value;
+    int(0.95 × n) gave the 20th, which publishes the slowest answer as the p95."""
+    assert latency_percentiles([float(v) for v in range(1, 21)])["p95"] == 19.0
+    assert latency_percentiles([float(v) for v in range(1, 31)])["p95"] == 29.0
+
+
 def test_latency_percentiles_empty():
     p = latency_percentiles([])
     assert p == {"p50": 0, "p95": 0}

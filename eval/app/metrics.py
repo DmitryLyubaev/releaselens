@@ -71,7 +71,7 @@ def latency_percentiles(latencies_ms: list[float]) -> dict[str, float]:
     n = len(ordered)
     return {
         "p50": ordered[min(n - 1, max(0, math.ceil(n * 0.50) - 1))],
-        "p95": ordered[min(n - 1, int(n * 0.95))],
+        "p95": ordered[min(n - 1, max(0, math.ceil(n * 0.95) - 1))],
     }
 
 
