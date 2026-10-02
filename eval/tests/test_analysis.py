@@ -437,3 +437,26 @@ def test_arm_summary_scopes_each_figure():
     assert summary.total_cost_usd == pytest.approx(0.12)
 
     assert summary.models_seen == ["gpt-4.1-mini", gpt]
+
+
+def test_arm_summary_counts_failed_judgements():
+    """An answer put to the judge that came back with no score is a failed judgement. One never
+    put to it, on an unjudged run or because it was an error, is not."""
+    outcomes = [
+        _outcome("q-ans", "Z", 0),
+        _outcome(
+            "q-ans", "Z", 1, groundedness=None,
+            groundedness_reason="judge failed: APIConnectionError: Connection error.",
+        ),
+        _outcome("q-ans", "Z", 2, groundedness=None, groundedness_reason="judge output unparseable: 'score'"),
+        _outcome("q-temporal", "Z", 0, groundedness=None, groundedness_reason=None),
+        _outcome(
+            "q-unans", "Z", 0, error="ConnectError: connection refused",
+            groundedness=None, groundedness_reason=None,
+        ),
+        _outcome("q-ans", "O", 0, groundedness=None, groundedness_reason="judge failed: TypeError: x"),
+    ]
+
+    summary = summarise(outcomes, _QUERIES, _Z)
+
+    assert (summary.groundedness_count, summary.judge_failure_count) == (1, 2)

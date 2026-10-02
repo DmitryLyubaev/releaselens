@@ -126,9 +126,11 @@ def _arms(run: RunReport) -> list[str]:
 
 
 def _method(run: RunReport) -> list[str]:
+    # A judgement that raised has no usage to price, so a run whose every judgement failed paid
+    # nothing for judging and still put its answers to the judge.
     judged = (
         "Groundedness is scored by a Claude Sonnet 5 judge, blinded to the arm."
-        if run.judge_cost_usd > 0
+        if run.judge_cost_usd > 0 or any(s.judge_failure_count for s in run.arm_summaries)
         else "Nothing was judged in this run, so groundedness has no data."
     )
     threshold = f"{DIFFERENCE_THRESHOLD:.2f}"
@@ -166,13 +168,16 @@ def _quality(summaries: list[ArmSummary]) -> list[str]:
         "Descriptive. Each mean is over the arm's outcomes without errors, on the queries the "
         "metric applies to, where the outcome has a value for it; n is how many outcomes that is. "
         "The difference between two arms' means is not a comparison's delta, which is over the "
-        "paired outcomes only. Unanswerable handled is reported only, since two queries cannot "
-        "support a conclusion.",
+        "paired outcomes only. Judgements failed counts the answers put to the judge that came "
+        "back with no score, because the judge failed or its reply was not a score in [0, 1]; "
+        "they are left out of groundedness. Unanswerable handled is reported only, since two "
+        "queries cannot support a conclusion.",
         "",
-        "| Arm | Groundedness | Citation recall | Citation precision | must_contain pass rate | Unanswerable handled |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Arm | Groundedness | Judgements failed | Citation recall | Citation precision | must_contain pass rate | Unanswerable handled |",
+        "|---|---:|---:|---:|---:|---:|---:|",
         *(
             f"| {s.arm} | {_mean(s.mean_groundedness, s.groundedness_count)} "
+            f"| {s.judge_failure_count} "
             f"| {_mean(s.mean_citation_recall, s.citation_recall_count)} "
             f"| {_mean(s.mean_citation_precision, s.citation_precision_count)} "
             f"| {_mean(s.mean_must_contain, s.must_contain_count)} "

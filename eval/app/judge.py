@@ -9,6 +9,7 @@ told which arm, provider or model wrote the answer.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 
@@ -39,8 +40,9 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
 class Judgement:
     """One groundedness score, why the judge gave it, and what asking cost.
 
-    `score` is -1.0 when the reply could not be parsed. That reply was billed all the same,
-    so it still carries its cost.
+    `score` is -1.0 when the reply could not be parsed, or gave a score that is not a finite
+    number in [0, 1], and `reason` then says which. That reply was billed all the same, so it
+    still carries its cost.
     """
 
     score: float
@@ -161,8 +163,19 @@ class GroundednessJudge:
 
         try:
             parsed = json.loads(text[text.index("{") : text.rindex("}") + 1])
-            return Judgement(float(parsed["score"]), str(parsed["reason"]), cost_usd)
-        except (ValueError, KeyError) as exc:
+            score, reason = float(parsed["score"]), str(parsed["reason"])
+        except (ValueError, KeyError, TypeError) as exc:
             # A judge that cannot be parsed must not silently score zero — that would
             # look like a groundedness failure in the report when it is a harness bug.
+            # TypeError is a score of null, or a reply that is JSON but not an object.
             return Judgement(-1.0, f"judge output unparseable: {exc}", cost_usd)
+
+        # Python's json reads NaN and Infinity, and a NaN carried into a mean makes it NaN. A score
+        # off the rubric's scale, such as 5, could alone push a groundedness delta past the rule's
+        # 0.10 and publish a difference the rule does not support. Neither is a score.
+        if not math.isfinite(score):
+            return Judgement(-1.0, f"judge score is not a finite number: {score}", cost_usd)
+        if not 0.0 <= score <= 1.0:
+            return Judgement(-1.0, f"judge score is outside [0, 1]: {score}", cost_usd)
+
+        return Judgement(score, reason, cost_usd)

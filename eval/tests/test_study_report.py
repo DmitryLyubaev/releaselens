@@ -40,6 +40,7 @@ def _summary(arm: str, **fields) -> ArmSummary:
         "filtered_count": 0,
         "mean_groundedness": 0.9,
         "groundedness_count": 30,
+        "judge_failure_count": 0,
         "mean_citation_recall": 0.8,
         "citation_recall_count": 24,
         "mean_citation_precision": 0.6,
@@ -250,6 +251,30 @@ def test_models_seen_and_filter_events_are_listed():
         ["Z", "30", "1", "2", "`gpt-4.1-mini-2025-04-14`"],
         ["O", "30", "0", "0", "`gpt-4.1-mini`, `gpt-4.1-mini-2025-04-14`"],
     ]
+
+
+def test_failed_judgements_are_stated_per_arm():
+    summaries = [
+        _summary("A"),
+        _summary("Z", groundedness_count=28, judge_failure_count=2),
+        _summary("O"),
+    ]
+
+    section = _sections(render_markdown(_report(summaries=summaries)))["Quality per arm"]
+
+    assert _row(section, "Arm")[1:3] == ["Groundedness", "Judgements failed"]
+    assert _row(section, "Z")[1:3] == ["0.900 (n = 28)", "2"]
+    assert _row(section, "A")[1:3] == ["0.900 (n = 30)", "0"]
+    assert "came back with no score" in section
+
+
+def test_a_run_whose_every_judgement_failed_does_not_say_nothing_was_judged():
+    summaries = [_summary(arm.name, mean_groundedness=None, groundedness_count=0, judge_failure_count=30) for arm in _ARMS]
+
+    method = _sections(render_markdown(_report(summaries=summaries, judge_cost_usd=0.0, total_cost_usd=1.8)))["Method"]
+
+    assert "blinded to the arm" in method
+    assert "Nothing was judged" not in method
 
 
 def test_a_comparison_short_of_its_nominal_size_says_so():

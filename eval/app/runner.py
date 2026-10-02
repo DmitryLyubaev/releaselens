@@ -197,6 +197,48 @@ async def _ask(
         return _unscored(query, arm, pass_index, latency_ms, f"{type(exc).__name__}: {exc}"), None
 
     latency_ms = (time.perf_counter() - started) * 1000
+
+    try:
+        return _read(body, query, arm, pass_index, latency_ms)
+    except Exception as exc:  # noqa: BLE001 — a malformed reply is a data point, not a crash
+        error = f"arm {arm.name} sent a malformed reply: {type(exc).__name__}: {exc}"
+        outcome = _unscored(query, arm, pass_index, latency_ms, error)
+        return outcome.model_copy(update=_reported_spend(body)), None
+
+
+def _reported_spend(body: object) -> dict:
+    """Each cost figure a malformed reply did report, and zero for any it did not.
+
+    The reply was billed whether or not it can be read, so whatever cost it states is kept.
+    Nothing else is taken from it: a reply that is malformed cannot be relied on to say who
+    answered.
+    """
+    spend = _spend(None)
+    metadata = body.get("metadata") if isinstance(body, dict) else None
+    if not isinstance(metadata, dict):
+        return spend
+
+    for field, key, kind in (
+        ("cost_usd", "costUsd", float),
+        ("tokens_in", "tokensIn", int),
+        ("tokens_out", "tokensOut", int),
+        ("cache_read_input_tokens", "cacheReadInputTokens", int),
+    ):
+        try:
+            spend[field] = kind(metadata[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return spend
+
+
+def _read(
+    body: dict, query: GoldenQuery, arm: Arm, pass_index: int, latency_ms: float,
+) -> tuple[QueryOutcome, list[CitedEvidence] | None]:
+    """The outcome of a reply the API sent, scored if it is the arm's answer.
+
+    Reads every field it needs without a fallback, so a reply missing one raises, and the
+    caller records it as a malformed reply rather than scoring what is left.
+    """
     metadata = body["metadata"]
 
     # A degraded answer is the retrieved evidence handed back verbatim because the provider
@@ -237,6 +279,36 @@ async def _ask(
         **_answered_by(metadata),
     )
     return outcome, cited_evidence(body)
+
+
+async def _judge(
+    judge: GroundednessJudge, outcome: QueryOutcome,
+    evidence_by_answer: dict[tuple[str, str, int], list[CitedEvidence]],
+) -> None:
+    """Score one answer's groundedness onto its outcome, whatever the judge does.
+
+    A judge that raises, whether an Anthropic error left after the SDK's own retries or
+    anything else, leaves the outcome unscored with a reason saying so, and the sweep goes on.
+    Raised out of the sweep, one failure in ninety lost every answer already paid for. A
+    judgement whose score is not in [0, 1] is no score either, as GroundednessJudge reports it.
+    Either way the answer drops out of groundedness alone, and its other metrics stand.
+    """
+    try:
+        judgement = await judge.score(
+            outcome.question, outcome.answer,
+            evidence_by_answer.get((outcome.id, outcome.arm, outcome.pass_index), []))
+    except Exception as exc:  # noqa: BLE001 — a failed judgement is a data point, not a crash
+        # No reply came back, so there is no usage to price.
+        outcome.groundedness = None
+        outcome.groundedness_reason = f"judge failed: {type(exc).__name__}: {exc}"
+        return
+
+    # The judge gives -1.0 for no score. Testing the range rather than the sign also keeps out a
+    # NaN, which fails every comparison.
+    in_range = 0.0 <= judgement.score <= 1.0
+    outcome.groundedness = judgement.score if in_range else None
+    outcome.groundedness_reason = judgement.reason
+    outcome.judge_cost_usd = judgement.cost_usd
 
 
 def _price_of_the_run(
@@ -309,6 +381,10 @@ async def run_eval(request: RunRequest) -> RunReport:
     else:
         queries, passes = selection, request.passes
 
+    # Built before the first query is sent, because building it is what checks the judge's key.
+    # Built after the sweep, a missing key failed the run once every answer had been paid for.
+    judge = GroundednessJudge(request.judge_model) if request.judge else None
+
     outcomes: list[QueryOutcome] = []
 
     # Held beside the outcomes rather than on them. The evidence for one query runs to tens
@@ -331,9 +407,7 @@ async def run_eval(request: RunRequest) -> RunReport:
 
     estimated_judge_cost = 0.0
 
-    if request.judge:
-        judge = GroundednessJudge(request.judge_model)
-
+    if judge is not None:
         # The judge is handed the question, the answer and the evidence that answer cited,
         # and nothing that says which arm, provider or model wrote it. A judge that knew could
         # favour one, and the difference it found would be its own (spec §8).
@@ -350,12 +424,7 @@ async def run_eval(request: RunRequest) -> RunReport:
             for outcome in outcomes:
                 if outcome.error is not None:
                     continue
-                judgement = await judge.score(
-                    outcome.question, outcome.answer,
-                    evidence_by_answer.get((outcome.id, outcome.arm, outcome.pass_index), []))
-                outcome.groundedness = None if judgement.score < 0 else judgement.score
-                outcome.groundedness_reason = judgement.reason
-                outcome.judge_cost_usd = judgement.cost_usd
+                await _judge(judge, outcome, evidence_by_answer)
 
     # On a dry run, the number the operator reads is the price of the run they are about to
     # authorise, not the price of the sample that just ran.

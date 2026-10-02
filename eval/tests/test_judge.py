@@ -180,3 +180,50 @@ async def test_unparseable_judge_output_is_reported_rather_than_scored_zero(fake
 
     # Scoring nothing is not free: the reply was billed whether or not it could be read.
     assert judgement.cost_usd == pytest.approx(10_000 * 3 / 1e6 + 200 * 15 / 1e6)
+
+
+def _replying(text: str):
+    async def _create(**kwargs):
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=text)],
+            usage=SimpleNamespace(input_tokens=10_000, output_tokens=200),
+        )
+    return _create
+
+
+@pytest.mark.parametrize(
+    ("reply", "why"),
+    [
+        # float(None) raised a TypeError nothing caught, which ended the whole run.
+        ('{"score": null, "reason": "no idea"}', "unparseable"),
+        ('{"score": "high", "reason": "no idea"}', "unparseable"),
+        ('[1.0, "supported"]', "unparseable"),
+        # Python's json reads NaN and Infinity, and a NaN poisons every mean it reaches.
+        ('{"score": NaN, "reason": "no idea"}', "not a finite number: nan"),
+        ('{"score": Infinity, "reason": "no idea"}', "not a finite number: inf"),
+        ('{"score": -Infinity, "reason": "no idea"}', "not a finite number: -inf"),
+        # On a 0 to 1 scale, a 5 alone could push a delta past the rule's 0.10.
+        ('{"score": 5, "reason": "very grounded"}', "outside [0, 1]: 5.0"),
+        ('{"score": -0.5, "reason": "very ungrounded"}', "outside [0, 1]: -0.5"),
+        ('{"score": 1.0000001, "reason": "grounded"}', "outside [0, 1]: 1.0000001"),
+    ],
+    ids=["null", "string", "not-an-object", "nan", "infinity", "minus-infinity", "five", "negative", "just-over-one"],
+)
+async def test_a_score_that_is_not_a_number_in_range_is_no_score(fake_judge, monkeypatch, reply, why):
+    monkeypatch.setattr(fake_judge._client.messages, "create", _replying(reply))
+
+    judgement = await fake_judge.score("q", "a", [_evidence()])
+
+    assert judgement.score == -1.0
+    assert why in judgement.reason
+    assert judgement.cost_usd == pytest.approx(10_000 * 3 / 1e6 + 200 * 15 / 1e6)
+
+
+@pytest.mark.parametrize("score", [0.0, 0.5, 1.0])
+async def test_a_score_in_range_is_kept(fake_judge, monkeypatch, score):
+    """The bounds are scores the rubric gives, so they are in range."""
+    monkeypatch.setattr(fake_judge._client.messages, "create", _replying(f'{{"score": {score}, "reason": "ok"}}'))
+
+    judgement = await fake_judge.score("q", "a", [_evidence()])
+
+    assert (judgement.score, judgement.reason) == (score, "ok")

@@ -111,6 +111,11 @@ class ArmSummary(BaseModel):
 
     mean_groundedness: float | None
     groundedness_count: int
+    judge_failure_count: int
+    """Outcomes without errors that were put to the judge and came back with no score: the judge
+    raised, its reply could not be parsed, or its score was not a number in [0, 1]. Each is left
+    out of groundedness_count, and its pairs out of the groundedness comparisons."""
+
     mean_citation_recall: float | None
     citation_recall_count: int
     mean_citation_precision: float | None
@@ -358,6 +363,11 @@ def summarise(
         filtered_count=sum(1 for o in own if o.filtered_stage is not None),
         **{f"mean_{metric}": _mean_or_none(values) for metric, values in scores.items()},
         **{f"{metric}_count": len(values) for metric, values in scores.items()},
+        # The runner gives every answer it judges a reason, so a reason with no score is a judgement
+        # that failed, and no reason is an answer never put to the judge.
+        judge_failure_count=sum(
+            1 for o in answered if o.groundedness is None and o.groundedness_reason is not None
+        ),
         unanswerable_handled=sum(1 for o in unanswerable if o.unanswerable_handled is True),
         unanswerable_total=len(unanswerable),
         p50_latency_ms=latencies["p50"] if latencies else None,

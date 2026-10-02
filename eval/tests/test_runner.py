@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 from types import SimpleNamespace
 
+import anthropic
 import httpx
 import pytest
 
@@ -150,6 +151,7 @@ class _FakeJudge:
     estimated: list[int] = []
     scored: list[tuple[str, list]] = []
     unparseable: set[int] = set()
+    raises: dict[int, Exception] = {}
 
     def __init__(self, model: str) -> None:
         pass
@@ -161,6 +163,8 @@ class _FakeJudge:
     async def score(self, question, answer, evidence) -> Judgement:
         _FakeJudge.scored.append((answer, evidence))
         n = len(_FakeJudge.scored)
+        if n in _FakeJudge.raises:
+            raise _FakeJudge.raises[n]
         if n in _FakeJudge.unparseable:
             return Judgement(score=-1.0, reason="judge output unparseable", cost_usd=0.001 * n)
         return Judgement(score=1.0, reason="supported", cost_usd=0.001 * n)
@@ -171,6 +175,7 @@ def fake_judge(monkeypatch) -> type[_FakeJudge]:
     _FakeJudge.estimated = []
     _FakeJudge.scored = []
     _FakeJudge.unparseable = set()
+    _FakeJudge.raises = {}
     monkeypatch.setattr(runner_module, "GroundednessJudge", _FakeJudge)
     return _FakeJudge
 
@@ -180,6 +185,7 @@ class _RecordingMessages:
     every request the judge sends, the free counts as well as the paid judgements."""
 
     sent: list[dict] = []
+    reply_text = '{"score": 1.0, "reason": "supported"}'
 
     async def count_tokens(self, **kwargs):
         _RecordingMessages.sent.append(kwargs)
@@ -188,7 +194,7 @@ class _RecordingMessages:
     async def create(self, **kwargs):
         _RecordingMessages.sent.append(kwargs)
         return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text='{"score": 1.0, "reason": "supported"}')],
+            content=[SimpleNamespace(type="text", text=_RecordingMessages.reply_text)],
             usage=SimpleNamespace(input_tokens=1_000, output_tokens=50),
         )
 
@@ -202,6 +208,7 @@ class _RecordingAnthropic:
 def recording_anthropic(monkeypatch) -> type[_RecordingMessages]:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
     _RecordingMessages.sent = []
+    _RecordingMessages.reply_text = '{"score": 1.0, "reason": "supported"}'
     monkeypatch.setattr(judge_module, "AsyncAnthropic", _RecordingAnthropic)
     return _RecordingMessages
 
@@ -741,3 +748,164 @@ async def test_started_at_is_read_before_the_first_query_is_sent(fake_api, monke
 
     assert requests_sent_when_read == [0]
     assert report.started_at == "2026-10-02T23:59:00+00:00"
+
+
+# --- A run that has started answering must finish, whatever the replies and the judge do. ---
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
+async def test_a_judged_run_without_a_judge_key_fails_before_any_query_is_sent(fake_api, monkeypatch, dry_run):
+    """Built only after answering, the judge's key check failed once every answer was paid for."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(judge_module, "AsyncAnthropic", _RecordingAnthropic)
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        await run_eval(RunRequest(api_key="rl_test", limit=1, judge=True, dry_run=dry_run, arms=[_ARM]))
+
+    assert fake_api.sent == []
+
+
+def _without(reply: dict, field: str) -> dict:
+    """`reply` with one field the runner reads left out: a top-level field, or a metadata key."""
+    if field in reply:
+        return {k: v for k, v in reply.items() if k != field}
+    return {**reply, "metadata": {k: v for k, v in reply["metadata"].items() if k != field}}
+
+
+_WRONG_PROVIDER = _reply("azure-openai", provider="anthropic", providers=["anthropic"])
+
+
+@pytest.mark.parametrize(
+    ("malformed", "complaint", "spend"),
+    [
+        (_without(_reply("azure-openai"), "answer"), "'answer'", (0.0123, 4000, 300, 0)),
+        (_without(_reply("azure-openai"), "citations"), "'citations'", (0.0123, 4000, 300, 0)),
+        (_without(_reply("azure-openai"), "metadata"), "'metadata'", (0.0, 0, 0, 0)),
+        ({**_reply("azure-openai"), "metadata": None}, "'NoneType'", (0.0, 0, 0, 0)),
+        (_without(_reply("azure-openai"), "degraded"), "'degraded'", (0.0123, 4000, 300, 0)),
+        (
+            _without(_reply("azure-openai"), "unresolvedCitationMarkers"),
+            "'unresolvedCitationMarkers'", (0.0123, 4000, 300, 0),
+        ),
+        (_without(_reply("azure-openai"), "costUsd"), "'costUsd'", (0.0, 4000, 300, 0)),
+        (_without(_reply("azure-openai"), "tokensIn"), "'tokensIn'", (0.0123, 0, 300, 0)),
+        (_without(_reply("azure-openai"), "tokensOut"), "'tokensOut'", (0.0123, 4000, 0, 0)),
+        (
+            _without(_reply("azure-openai", cacheReadInputTokens=7), "cacheReadInputTokens"),
+            "'cacheReadInputTokens'", (0.0123, 4000, 300, 0),
+        ),
+        (
+            {**_reply("azure-openai"), "citations": [{"marker": 1, "key": "1a2b3c4d"}]},
+            "'type'", (0.0123, 4000, 300, 0),
+        ),
+        # A reply already rejected, as another provider's, and missing a cost key besides.
+        (_without(_WRONG_PROVIDER, "costUsd"), "'costUsd'", (0.0, 4000, 300, 0)),
+    ],
+    ids=[
+        "no-answer", "no-citations", "no-metadata", "null-metadata", "no-degraded",
+        "no-unresolved-markers", "no-cost", "no-tokens-in", "no-tokens-out", "no-cache-read",
+        "citation-without-type", "wrong-provider-without-cost",
+    ],
+)
+async def test_a_malformed_reply_is_an_error_and_the_run_goes_on(fake_api, malformed, complaint, spend):
+    """A 200 missing a field the runner reads is that arm's error on that query and pass.
+
+    Raised out of the sweep, it ended the run and lost every answer already paid for. Any cost the
+    reply did report is kept, because it was billed whether or not the reply can be read.
+    """
+    z = _ARMS[1]
+    failing_question = load_golden()[1].question
+    fake_api.replies = {
+        **_each_arm_answers_as_itself(),
+        z.base_url: lambda sent: malformed if sent["question"] == failing_question else _reply("azure-openai"),
+    }
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=2, passes=2, judge=False, arms=_ARMS))
+
+    errored = [o for o in report.outcomes if o.error is not None]
+    assert [(o.id, o.arm, o.pass_index) for o in errored] == [("gq-002", "Z", 0), ("gq-002", "Z", 1)]
+    for outcome in errored:
+        assert outcome.error.startswith("arm Z sent a malformed reply: ")
+        assert complaint in outcome.error
+        assert outcome.citations == []
+        assert outcome.groundedness is None
+        assert (
+            outcome.cost_usd, outcome.tokens_in, outcome.tokens_out, outcome.cache_read_input_tokens,
+        ) == spend
+
+    # Every other answer of the run is untouched, and the money the reply reported is counted.
+    assert len(report.outcomes) - len(errored) == 10
+    assert report.answering_cost_usd == pytest.approx(10 * 0.0123 + 2 * spend[0])
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.invalid")),
+        TypeError("float() argument must be a string or a real number, not 'NoneType'"),
+        RuntimeError("anything at all"),
+    ],
+    ids=["anthropic-api-error", "type-error", "any-exception"],
+)
+async def test_a_judge_that_raises_leaves_that_answer_unjudged_and_the_run_goes_on(
+    fake_api, fake_judge, monkeypatch, failure,
+):
+    """One failed judgement drops that answer from groundedness, and nothing else."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    fake_api.replies = _each_arm_answers_as_itself()
+    fake_judge.raises = {2: failure}
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=2, passes=2, judge=True, arms=_ARMS))
+
+    # Every answer was put to the judge, the one after the failure included.
+    assert len(fake_judge.scored) == len(report.outcomes) == 12
+
+    failed = report.outcomes[1]
+    assert failed.error is None
+    assert failed.groundedness is None
+    assert failed.groundedness_reason.startswith("judge failed: ")
+    assert type(failure).__name__ in failed.groundedness_reason
+
+    # No reply, so no usage to price.
+    assert failed.judge_cost_usd == 0.0
+
+    others = [o for o in report.outcomes if o is not failed]
+    assert all(o.groundedness == 1.0 for o in others)
+    assert all(o.citations == ["commit:1a2b3c4d", "issue:14111"] for o in report.outcomes)
+    assert report.judge_cost_usd == pytest.approx(sum(0.001 * n for n in range(1, 13) if n != 2))
+
+    z = next(s for s in report.arm_summaries if s.arm == "Z")
+    assert (z.groundedness_count, z.judge_failure_count) == (3, 1)
+    assert all(s.judge_failure_count == 0 for s in report.arm_summaries if s.arm != "Z")
+
+
+@pytest.mark.parametrize(
+    ("reply", "why"),
+    [
+        ('{"score": null, "reason": "no idea"}', "unparseable"),
+        ('{"score": NaN, "reason": "no idea"}', "not a finite number"),
+        ('{"score": Infinity, "reason": "no idea"}', "not a finite number"),
+        ('{"score": 5, "reason": "very grounded"}', "outside [0, 1]"),
+        ('{"score": -0.5, "reason": "very ungrounded"}', "outside [0, 1]"),
+    ],
+    ids=["null", "nan", "infinity", "above-one", "below-zero"],
+)
+async def test_a_judge_score_that_is_not_in_range_is_no_score(fake_api, recording_anthropic, reply, why):
+    """A score of 5 could push a groundedness delta past the rule's 0.10, and NaN poisons every mean.
+
+    Each is handled as a reply that cannot be read: no score, a reason saying why, and the cost of
+    the reply kept, since it was billed.
+    """
+    recording_anthropic.reply_text = reply
+    fake_api.replies = {_ARM.base_url: _reply("anthropic")}
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=1, passes=2, judge=True, arms=[_ARM]))
+
+    for outcome in report.outcomes:
+        assert outcome.error is None
+        assert outcome.groundedness is None
+        assert why in outcome.groundedness_reason
+        assert outcome.judge_cost_usd == pytest.approx(1_000 * 3 / 1e6 + 50 * 15 / 1e6)
+
+    (summary,) = report.arm_summaries
+    assert (summary.mean_groundedness, summary.groundedness_count, summary.judge_failure_count) == (None, 0, 2)
