@@ -350,9 +350,16 @@ Standard over asking Microsoft for regional quota.
   Azure's per-request `max_tokens` reservation (2,048), they could pass 100,000 tokens in one
   minute and draw 429s on Z's hardest queries. gq-023 was not in the dry run, so its size is
   not measured
-- a worst case of about 399,000 TPM, if the largest query ran in every A-Z-O round at the
-  fastest round time of 7.0 s (arithmetic, not a measurement: 46,422 × 60,000 / 6,984 ms). It
-  is above 300,000 TPM
+- the capacity check in `eval/baseline.md` pairs each of Z's queries with its own A-Z-O round
+  time. gq-022's round took 28.1 s (A 8,119 + Z 9,049 + O 10,980 ms), which gives about
+  99,000 TPM (46,422 × 60,000 / 28,148 ms), the largest of the five. Azure's `max_tokens`
+  reservation adds at most 2,048 × 6 iterations (`Agent:MaxIterations`) × 8.59 rounds a minute
+  at the fastest round, about 106,000 TPM, an upper bound. Together they are about 205,000 TPM,
+  under 300,000 (arithmetic from the dry run, not a measurement)
+- a pessimistic bound of about 399,000 TPM (398,812), if the largest query ran in every A-Z-O
+  round at the fastest round time of 7.0 s (46,422 × 60,000 / 6,984 ms). That cannot occur: the
+  7.0 s round belonged to the small query gq-036. It is arithmetic, kept for the record, and is
+  not the check
 
 The subscription's Global Standard quota is 5,000, so 300 is within it (§11).
 
@@ -564,9 +571,11 @@ stack's roles.** It is documented and sound (write constrained with `@Request`, 
 
 ### 4.11 Third-party keys
 
-**Decision.** The Anthropic and OpenAI keys never reach Azure or GitHub. They exist only in the
-owner's local `.env` (git-ignored), for local runs and the evaluation. The deployed app uses
-Azure OpenAI only (§4.3).
+**Decision.** The Anthropic and OpenAI keys never reach Azure or GitHub. They exist only on the
+owner's machine, for local runs and the evaluation: in the environment (for example a Windows
+user environment variable), entered at a masked prompt (`Read-Host -MaskInput`), or in the
+owner's git-ignored `.env`. No key is written into a file the repository tracks. The deployed
+app uses Azure OpenAI only (§4.3).
 
 **Reasoning.**
 
@@ -800,7 +809,8 @@ GitHub Actions (main only, environment "azure")
 │  Postgres Flexible Server (password; firewall: allow Azure services)                    │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 Local runs: the API on the owner's machine, Postgres in Docker with the restored corpus,
-Azure OpenAI through the owner's own `az login`; Anthropic and OpenAI keys in `.env`.
+Azure OpenAI through the owner's own `az login`; Anthropic and OpenAI keys from the
+environment, a masked prompt or the git-ignored `.env`, never a tracked file.
 ```
 
 ### What bills
@@ -831,7 +841,8 @@ ReleaseLens needs the owner's approval first**, after checking
 3. **Clean up the local secrets.** Delete `infra/terraform/terraform.tfstate.backup`, `tfplan`,
    and the `anthropic_api_key` line in `terraform.tfvars`. They hold an Anthropic key, possibly
    the current one, and the backup also holds a Log Analytics shared key. Rotate the Anthropic
-   key, and keep the new one only in `.env`.
+   key, and keep the new one only on the owner's machine: in the environment, entered with
+   `Read-Host -MaskInput`, or in the git-ignored `.env`, never in a tracked file.
 4. Commit the widened `.gitignore` (§4.13).
 5. **Ask first.** Bootstrap apply, targeted at the budget and action group only.
 6. **Create the GitHub environment `azure`,** with its branch rule and administrator bypass off,

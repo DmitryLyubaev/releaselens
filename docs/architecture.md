@@ -246,7 +246,8 @@ GitHub Actions: environment "azure", whose only branch rule is main
 │  psql-releaselens-<suffix>   password authentication · firewall rule allow-azure-services   │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 Local runs: the API on the owner's machine, Postgres in Docker, Azure OpenAI through the
-owner's own az login; the Anthropic and OpenAI keys only in the git-ignored .env.
+owner's own az login; the Anthropic and OpenAI keys only on the owner's machine: in the
+environment, entered at a masked prompt, or in the git-ignored .env, never in a tracked file.
 ```
 
 The bootstrap stack is applied once by the owner, locally, and never destroyed. The app stack

@@ -181,7 +181,9 @@ cd ../bootstrap
 ```
 
 Check the list before you delete anything. Then rotate the Anthropic key, and keep the new one
-only in the git-ignored `.env`.
+only on your machine: in the environment (for example a Windows user environment variable),
+entered with `Read-Host -MaskInput`, or in the git-ignored `.env`. Never write it into a file
+the repository tracks.
 
 ### R4. Confirm the ignore rules
 

@@ -420,12 +420,21 @@ $report.outcomes | Group-Object arm | ForEach-Object {
     }
 } | Format-Table
 $report.outcomes | Where-Object { $null -ne $_.error } | Select-Object arm, id, error
-$round_ms = ($report.outcomes | Group-Object arm | ForEach-Object { ($_.Group | Measure-Object latency_ms -Minimum).Minimum } | Measure-Object -Sum).Sum
-$z_max = ($report.outcomes | Where-Object arm -eq "Z" | ForEach-Object { $_.tokens_in + $_.cache_read_input_tokens + $_.tokens_out } | Measure-Object -Maximum).Maximum
+$rounds = $report.outcomes | Group-Object id, pass_index | ForEach-Object {
+    $z = $_.Group | Where-Object arm -eq "Z"
+    $z_tokens = $z.tokens_in + $z.cache_read_input_tokens + $z.tokens_out
+    $round_ms = ($_.Group | Measure-Object latency_ms -Sum).Sum
+    [pscustomobject]@{ id = $z.id; z_tokens = $z_tokens; round_ms = $round_ms; z_tpm = [math]::Round($z_tokens * 60000 / $round_ms) }
+}
+$rounds | Sort-Object z_tpm -Descending | Format-Table id, z_tokens, @{ n = "round_ms"; e = { [math]::Round($_.round_ms) } }, z_tpm
+$fastest_round_ms = ($rounds | Measure-Object round_ms -Minimum).Minimum
+$z_paired_tpm = ($rounds | Measure-Object z_tpm -Maximum).Maximum
+$reservation_bound_tpm = [math]::Round(2048 * 6 * 60000 / $fastest_round_ms)
 [pscustomobject]@{
-    fastest_round_ms = [math]::Round($round_ms)
-    rounds_per_minute = [math]::Round(60000 / $round_ms, 2)
-    z_worst_tpm = [math]::Round($z_max * 60000 / $round_ms)
+    z_paired_tpm = $z_paired_tpm
+    reservation_bound_tpm = $reservation_bound_tpm
+    capacity_check_tpm = $z_paired_tpm + $reservation_bound_tpm
+    unreachable_bound_tpm = [math]::Round(($rounds | Measure-Object z_tokens -Maximum).Maximum * 60000 / $fastest_round_ms)
 }
 ```
 
@@ -433,16 +442,24 @@ $z_max = ($report.outcomes | Where-Object arm -eq "Z" | ForEach-Object { $_.toke
    Every arm must show 0 errors, and in particular no wrong-provider error, which reads
    `arm Z expected azure-openai; answered by …`. A dry run with any error also refuses to
    estimate. Fix the arm and run the dry run again.
-2. **The capacity check (spec §4.8).** Z's largest query, multiplied by the most A-Z-O rounds a
-   minute can hold, must stay under the deployment's 300,000 tokens per minute. Take Z's
-   `max_tokens_with_cached` as the largest query, cached input included. In the study Z answers
-   once in each A-Z-O round, not back to back, so a minute holds at most
-   `60000 / (fastest A + fastest Z + fastest O)` rounds, using each arm's `fastest_ms`. The last
-   block above prints that sum as `fastest_round_ms` and the product as `z_worst_tpm`.
-   Adjacent heavy queries can still peak above the typical rate, all the more because Azure
-   also counts each request's `max_tokens` reservation (2,048) against the minute; spec §4.8 has
-   the dry run's figures. Revise the price estimate if the check fails, and report both numbers
-   to the owner.
+2. **The capacity check (spec §4.8).** Z's tokens a minute, at their highest, must stay under
+   the deployment's 300,000 tokens per minute. In the study Z answers once in each A-Z-O round,
+   not back to back, so each of Z's queries is paired with its own round: the A, Z and O
+   latencies for the same query, summed. The last block above does this:
+   - **`z_tpm`, for each query:** Z's tokens for it, cached input included, × 60000 / its own
+     `round_ms`. `z_paired_tpm` is the largest.
+   - **`reservation_bound_tpm`:** Azure also counts each request's `max_tokens` (2,048) against
+     the minute. Z makes no more requests a minute than the most rounds a minute holds,
+     60000 / the fastest `round_ms`, × the agent's 6 iterations at most (`Agent:MaxIterations`).
+     So this is 2,048 × 6 × 60000 / the fastest `round_ms`, an upper bound, not a measurement.
+   - **`capacity_check_tpm`:** the two added. This is the figure that must stay under 300,000.
+   - **`unreachable_bound_tpm`:** Z's largest query × 60000 / the fastest `round_ms`, as if the
+     largest query ran in every round at the fastest round's pace. A large query does not run
+     that fast, so this cannot occur: it is a pessimistic bound for the record, not the check.
+
+   Adjacent heavy queries can still peak above the typical rate, since two in a row can fall in
+   the same minute; spec §4.8 has the dry run's figures. Revise the price estimate if the check
+   fails, and report both numbers to the owner.
 3. **The tenant budget (step 1).** Read the budget and what today has used, in UTC as `/query`
    counts it. On the dry run's UTC day, `used_today` already holds the dry run's own tokens.
 
