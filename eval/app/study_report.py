@@ -1,7 +1,8 @@
 """The study's write-up: a saved run rendered as exactly the markdown that gets published.
 
 Every figure comes from the stored report, and only formatting is applied: deltas, interval
-bounds and means to 3 decimal places, cost to 4, latency in whole milliseconds. Nothing is
+bounds and means to 3 decimal places, or more where 3 would put a mean delta or a bound on one of
+the rule's boundaries without its being there, cost to 4, latency in whole milliseconds. Nothing is
 recomputed, so the published page cannot disagree with the record of the run it came from, and
 a figure the report does not hold is not published.
 
@@ -21,7 +22,14 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .analysis import BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED, DIFFERENCE_THRESHOLD, ArmSummary, Comparison
+from .analysis import (
+    _SETTLED_DECIMALS,
+    BOOTSTRAP_RESAMPLES,
+    BOOTSTRAP_SEED,
+    DIFFERENCE_THRESHOLD,
+    ArmSummary,
+    Comparison,
+)
 from .models import RunReport
 
 REPORTS = Path(__file__).resolve().parent.parent / "reports"
@@ -164,8 +172,14 @@ def _method(run: RunReport) -> list[str]:
         f"- The rule reads the mean and the interval bounds settled to 12 decimal places, so "
         f"float error cannot flip a verdict at −{threshold}, +{threshold} or 0.",
         f"- {judged}",
+        "- A filtered answer is scored as the fixed filtered reply the API returned in its place, "
+        "on every metric that applies to its query, as any other answer is. Filtered answers are "
+        "counted per arm under \"Outcomes, filter events and models\", so a delta that filter "
+        "events may have driven can be told apart.",
         "- Figures are the report's own, formatted: deltas, intervals and means to 3 decimal "
-        "places, cost to 4, latency in whole milliseconds.",
+        "places, cost to 4, latency in whole milliseconds. A mean delta or an interval bound that "
+        "3 places would show as exactly 0, +0.10 or −0.10 without being it is shown to as many "
+        "places as it takes to say which side it is on.",
         "",
     ]
 
@@ -260,16 +274,25 @@ def _comparison(group: list[Comparison], query_ids: list[str], summaries: dict[s
     x, y = group[0].x, group[0].y
     names = [_METRIC_NAMES.get(c.metric, c.metric) for c in group]
 
+    # Spec §8: Z against A is reported, but it compares two different models. Said wherever the
+    # arms' replies named different models, and only where both named one: an arm that answered
+    # nothing has no model to differ by.
+    x_models, y_models = (summaries[arm].models_seen if arm in summaries else [] for arm in (x, y))
+    two_models = (
+        " It compares two different models, and does not test the keyless claim."
+        if x_models and y_models and x_models != y_models else ""
+    )
+
     lines = [
         f"## {x} against {y}",
         "",
         f"Each delta is {x} − {y}. {x}'s models seen: {_models(summaries.get(x))}. "
-        f"{y}'s: {_models(summaries.get(y))}.",
+        f"{y}'s: {_models(summaries.get(y))}.{two_models}",
         "",
         "| Metric | Sample | Mean delta | 95% CI | Verdict |",
         "|---|---|---:|---|---|",
         *(
-            f"| {name} | {_sample(c.k, c.passes)}, {c.pairs} pairs | {_signed(c.mean_delta)} "
+            f"| {name} | {_sample(c.k, c.passes)}, {c.pairs} pairs | {_ruled(c.mean_delta)} "
             f"| {_interval(c)} | {_verdict(c)} |"
             for name, c in zip(names, group)
         ),
@@ -284,8 +307,7 @@ def _comparison(group: list[Comparison], query_ids: list[str], summaries: dict[s
             "",
             *(
                 f"- **{name}:** k = {c.k} of {c.nominal_k} queries, {c.pairs} of {c.nominal_pairs} "
-                "pairs. The interval is weaker than its nominal 95% at small k: at k ≤ 3 it equals "
-                "the range of the per-query deltas."
+                f"pairs. {_shortfall(c)}"
                 for name, c in short
             ),
             "",
@@ -309,6 +331,19 @@ def _comparison(group: list[Comparison], query_ids: list[str], summaries: dict[s
     return lines
 
 
+def _shortfall(comparison: Comparison) -> str:
+    """What a comparison's shortfall does to it. Small k is blamed only when k is what is short."""
+    if comparison.k < comparison.nominal_k:
+        return (
+            "The interval is weaker than its nominal 95% at small k: at k ≤ 3 it equals the range "
+            "of the per-query deltas."
+        )
+    return (
+        "Every query in scope is compared, so k is at its planned size; the queries that lost a "
+        "pass are averaged over fewer passes."
+    )
+
+
 def _sample(k: int, passes: int) -> str:
     return f"{k} {'query' if k == 1 else 'queries'} × {passes} {'pass' if passes == 1 else 'passes'}"
 
@@ -324,10 +359,27 @@ def _signed(value: float | None) -> str:
     return _NONE if value is None else f"{round(value, 3) + 0.0:+.3f}"
 
 
+def _ruled(value: float | None) -> str:
+    """A mean or an interval bound, as the decision rule reads it.
+
+    To 3 places, unless that lands exactly on one of the rule's boundaries, 0, +0.10 or −0.10,
+    without the value being on it. A bound of 0.0004 would print as +0.000 beside "difference",
+    and a mean of 0.0996 as +0.100 beside "inconclusive", and the page would contradict itself.
+    Such a value is printed at the 12 places it is settled to, trailing zeros trimmed, which is
+    enough to show which side of the boundary it is on.
+    """
+    if value is None:
+        return _NONE
+    rounded = round(value, 3) + 0.0
+    if rounded in (0.0, DIFFERENCE_THRESHOLD, -DIFFERENCE_THRESHOLD) and value != rounded:
+        return f"{value:+.{_SETTLED_DECIMALS}f}".rstrip("0")
+    return _signed(value)
+
+
 def _interval(comparison: Comparison) -> str:
     if comparison.ci_low is None or comparison.ci_high is None:
         return _NONE
-    return f"[{_signed(comparison.ci_low)}, {_signed(comparison.ci_high)}]"
+    return f"[{_ruled(comparison.ci_low)}, {_ruled(comparison.ci_high)}]"
 
 
 def _mean(value: float | None, count: int) -> str:

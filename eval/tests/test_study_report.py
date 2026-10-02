@@ -299,9 +299,83 @@ def test_a_comparison_short_of_its_nominal_size_says_so():
     assert "k = 7 of 8 queries, 19 of 24 pairs" in caveats["Citation recall"]
     assert "k = 8 of 8 queries, 23 of 24 pairs" in caveats["Citation precision"]
     assert "k = 3 of 6 queries, 9 of 18 pairs" in caveats["must_contain pass rate"]
-    for caveat in caveats.values():
-        assert "weaker than its nominal 95%" in caveat
-        assert "at k ≤ 3 it equals the range of the per-query deltas" in caveat
+
+    # Short of queries: the interval is over fewer queries than planned, and small k is to blame.
+    for name in ("Citation recall", "must_contain pass rate"):
+        assert "weaker than its nominal 95%" in caveats[name]
+        assert "at k ≤ 3 it equals the range of the per-query deltas" in caveats[name]
+
+    # Short of pairs only: every query is in, so k is not what is short.
+    pairs_only = caveats["Citation precision"]
+    assert "small k" not in pairs_only and "k ≤ 3" not in pairs_only
+    assert "Every query in scope is compared" in pairs_only
+    assert "fewer passes" in pairs_only
+
+
+@pytest.mark.parametrize(
+    ("mean_delta", "ci", "verdict", "printed"),
+    [
+        # A bound of +0.000 at 3 places, beside a verdict whose interval excludes zero.
+        (0.15, (0.0004, 0.2), "difference", ("+0.150", "[+0.0004, +0.200]")),
+        (-0.15, (-0.2, -0.0004), "difference", ("-0.150", "[-0.200, -0.0004]")),
+        # A mean of +0.100 at 3 places, beside an inconclusive verdict.
+        (0.0996, (0.05, 0.15), "inconclusive", ("+0.0996", "[+0.050, +0.150]")),
+        (-0.0995, (-0.15, -0.05), "inconclusive", ("-0.0995", "[-0.150, -0.050]")),
+        (0.1004, (0.05, 0.15), "difference", ("+0.1004", "[+0.050, +0.150]")),
+        # On a boundary exactly, so 3 places are already the whole truth.
+        (0.1, (0.05, 0.15), "difference", ("+0.100", "[+0.050, +0.150]")),
+        (0.15, (0.0, 0.2), "inconclusive", ("+0.150", "[+0.000, +0.200]")),
+    ],
+    ids=["low-bound-above-zero", "high-bound-below-zero", "mean-under-0.10", "mean-over-minus-0.10",
+         "mean-over-0.10", "mean-exactly-0.10", "bound-exactly-zero"],
+)
+def test_a_figure_rounding_onto_a_boundary_shows_which_side_it_is_on(mean_delta, ci, verdict, printed):
+    """At 3 places, 0.0004 and 0.0996 print as +0.000 and +0.100, and the page says an interval
+    touching zero, or a mean short of 0.10, is inconclusive."""
+    comparison = _comparison(
+        "citation_precision", "Z", "O", mean_delta=mean_delta, ci_low=ci[0], ci_high=ci[1], verdict=verdict,
+    )
+
+    section = _sections(render_markdown(_report([comparison])))["Z against O"]
+
+    assert tuple(_row(section, "Citation precision")[2:4]) == printed
+
+
+def test_per_query_deltas_stay_at_3_places():
+    """Only the figures the rule reads, the mean and the bounds, show more places."""
+    section = _sections(render_markdown(_report([
+        _comparison("citation_precision", "Z", "O", per_query_delta={"gq-001": 0.0996, "gq-002": 0.0004}),
+    ])))["Z against O"]
+
+    assert _row(section, "gq-001")[1] == "+0.100"
+    assert _row(section, "gq-002")[1] == "+0.000"
+
+
+def test_a_comparison_of_two_models_says_so():
+    """Z against A compares gpt-4.1-mini with Claude Sonnet 5, so it cannot test whether Azure
+    without a key matches OpenAI with one (spec §8)."""
+    summaries = [
+        _summary("A", models_seen=["claude-sonnet-5"]),
+        _summary("Z", models_seen=["gpt-4.1-mini-2025-04-14"]),
+        _summary("O", models_seen=["gpt-4.1-mini-2025-04-14"]),
+    ]
+
+    sections = _sections(render_markdown(_report(summaries=summaries)))
+
+    sentence = "compares two different models, and does not test the keyless claim"
+    assert sentence in sections["Z against A"]
+    assert sentence not in sections["Z against O"]
+
+    # An arm that answered nothing has no model to differ by.
+    silent = [_summary("A", models_seen=[]), *summaries[1:]]
+    assert sentence not in _sections(render_markdown(_report(summaries=silent)))["Z against A"]
+
+
+def test_the_method_says_filtered_answers_are_scored():
+    method = _sections(render_markdown(_report()))["Method"]
+
+    assert "A filtered answer is scored as the fixed filtered reply" in method
+    assert "counted per arm" in method
 
 
 def test_a_dry_run_is_refused():
