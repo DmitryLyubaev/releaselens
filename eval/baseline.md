@@ -1,3 +1,127 @@
+This file holds the three-arm study of 2 October 2026 first, then the single-provider runs of
+August as history, then how to run the study. The study's raw report is
+`eval/reports/2c413fe9-….json`, which is git-ignored because it embeds answer and evidence text. The
+section below is `python -m app.study_report 2c413fe9-76f1-4f5a-aae9-b7b2419642f0`'s output,
+unedited.
+
+# Three-arm study — 2 October 2026
+
+- **Run id:** `2c413fe9-76f1-4f5a-aae9-b7b2419642f0`
+- **Started:** 2026-10-02T03:25:38.360009+00:00
+- **Sample:** 10 queries × 3 passes per arm: gq-001, gq-002, gq-014, gq-015, gq-022, gq-023, gq-029, gq-030, gq-036, gq-037
+- **Cost of the run:** answering $1.5903, judging $1.1152, total $2.7055. Answering is what the arms reported over every outcome, rejected replies included, since they were billed. Judging is the harness's own cost, and is not charged to any arm.
+
+## Arms
+
+Each arm is a separate API process started with that provider alone.
+
+| Arm | Expected provider | URL |
+|---|---|---|
+| A | `anthropic` | http://localhost:8081 |
+| Z | `azure-openai` | http://localhost:8082 |
+| O | `openai` | http://localhost:8083 |
+
+Z authenticates as the owner (Azure CLI), not as the deployed managed identity.
+
+## Method
+
+- The unit of analysis is the query. Each query's delta is the mean of x − y over the passes where both arms have a value, so each arm's passes are averaged before the arms are compared.
+- Each metric is scored only over the queries it applies to: groundedness over every query, citation recall and precision over the answerable ones, and the must_contain pass rate over those with something to contain. k is the queries with at least one pass where both arms have a value.
+- The 95% interval is a bootstrap that resamples queries with their passes kept together: 10,000 resamples, seed 20260924, percentiles by nearest rank.
+- The decision rule, pre-registered in spec §8, applies to the four quality metrics. A difference is declared only when the mean paired delta is ≤ −0.10 or ≥ +0.10 and its 95% interval excludes zero; an interval that touches zero does not exclude it. Anything else is inconclusive at its k queries × passes.
+- The rule reads the mean and the interval bounds settled to 12 decimal places, so float error cannot flip a verdict at −0.10, +0.10 or 0.
+- Groundedness is scored by a Claude Sonnet 5 judge, blinded to the arm.
+- A filtered answer is scored as the fixed filtered reply the API returned in its place, on every metric that applies to its query, as any other answer is. Filtered answers are counted per arm under "Outcomes, filter events and models", so a delta that filter events may have driven can be told apart.
+- Figures are the report's own, formatted: deltas, intervals and means to 3 decimal places, cost to 4, latency in whole milliseconds. A mean delta or an interval bound that 3 places would show as exactly 0, +0.10 or −0.10 without being it is shown to as many places as it takes to say which side it is on.
+
+## Quality per arm
+
+Descriptive. Each mean is over the arm's outcomes without errors, on the queries the metric applies to, where the outcome has a value for it; n is how many outcomes that is. The difference between two arms' means is not a comparison's delta, which is over the paired outcomes only. Judgements failed counts the answers put to the judge that came back with no score, because the judge failed or its reply was not a score in [0, 1]; they are left out of groundedness. Unanswerable handled is reported only, since two queries cannot support a conclusion.
+
+| Arm | Groundedness | Judgements failed | Citation recall | Citation precision | must_contain pass rate | Unanswerable handled |
+|---|---:|---:|---:|---:|---:|---:|
+| A | 0.840 (n = 30) | 0 | 0.889 (n = 24) | 0.569 (n = 24) | 1.000 (n = 18) | 5 of 6 |
+| Z | 0.783 (n = 30) | 0 | 0.646 (n = 24) | 0.585 (n = 24) | 0.889 (n = 18) | 4 of 6 |
+| O | 0.860 (n = 30) | 0 | 0.674 (n = 24) | 0.576 (n = 24) | 1.000 (n = 18) | 2 of 6 |
+
+## Outcomes, filter events and models
+
+Recorded as legitimate differences between the arms, not explained away. No reply counts the errors on which the request got no reply, whose cost is unknown. Filtered counts the outcomes on which a content filter blocked the request, errors included. Models seen is each `model` the arm's outcomes without errors or filter events name, as the replies' metadata gives it. A filtered answer is left out because no response named its model.
+
+| Arm | Outcomes | Errors | No reply | Filtered | Models seen |
+|---|---:|---:|---:|---:|---|
+| A | 30 | 0 | 0 | 0 | `claude-sonnet-5` |
+| Z | 30 | 0 | 0 | 0 | `gpt-4.1-mini-2025-04-14` |
+| O | 30 | 0 | 0 | 0 | `gpt-4.1-mini-2025-04-14` |
+
+## Latency and cost per arm
+
+Descriptive, with no significance claim. Latency and mean cost per query are over the outcomes without errors. Answering cost is over all of the arm's outcomes, because a rejected reply was still billed.
+
+| Arm | p50 latency | p95 latency | Mean cost per query | Answering cost |
+|---|---:|---:|---:|---:|
+| A | 5,406 ms | 32,434 ms | $0.0488 | $1.4650 |
+| Z | 3,049 ms | 9,101 ms | $0.0021 | $0.0631 |
+| O | 2,821 ms | 6,432 ms | $0.0021 | $0.0623 |
+
+## Z against O
+
+Each delta is Z − O. Z's models seen: `gpt-4.1-mini-2025-04-14`. O's: `gpt-4.1-mini-2025-04-14`.
+
+| Metric | Sample | Mean delta | 95% CI | Verdict |
+|---|---|---:|---|---|
+| Groundedness | 10 queries × 3 passes, 30 pairs | -0.077 | [-0.147, -0.017] | inconclusive at 10 queries × 3 passes |
+| Citation recall | 8 queries × 3 passes, 24 pairs | -0.028 | [-0.083, +0.000] | inconclusive at 8 queries × 3 passes |
+| Citation precision | 8 queries × 3 passes, 24 pairs | +0.008 | [-0.013, +0.038] | inconclusive at 8 queries × 3 passes |
+| must_contain pass rate | 6 queries × 3 passes, 18 pairs | -0.111 | [-0.333, +0.000] | inconclusive at 6 queries × 3 passes |
+
+### Per-query deltas, Z − O
+
+— means the metric does not apply to the query, or no pass of it was paired.
+
+| Query | Groundedness | Citation recall | Citation precision | must_contain pass rate |
+|---|---:|---:|---:|---:|
+| gq-001 | +0.000 | +0.000 | +0.000 | +0.000 |
+| gq-002 | +0.000 | +0.000 | +0.000 | +0.000 |
+| gq-014 | -0.167 | +0.000 | +0.000 | — |
+| gq-015 | -0.300 | +0.000 | +0.101 | — |
+| gq-022 | -0.200 | -0.222 | -0.033 | -0.667 |
+| gq-023 | +0.000 | +0.000 | +0.000 | +0.000 |
+| gq-029 | -0.100 | +0.000 | +0.000 | +0.000 |
+| gq-030 | +0.000 | +0.000 | +0.000 | +0.000 |
+| gq-036 | +0.000 | — | — | — |
+| gq-037 | +0.000 | — | — | — |
+
+## Z against A
+
+Each delta is Z − A. Z's models seen: `gpt-4.1-mini-2025-04-14`. A's: `claude-sonnet-5`. It compares two different models, and does not test the keyless claim.
+
+| Metric | Sample | Mean delta | 95% CI | Verdict |
+|---|---|---:|---|---|
+| Groundedness | 10 queries × 3 passes, 30 pairs | -0.057 | [-0.243, +0.130] | inconclusive at 10 queries × 3 passes |
+| Citation recall | 8 queries × 3 passes, 24 pairs | -0.243 | [-0.556, +0.028] | inconclusive at 8 queries × 3 passes |
+| Citation precision | 8 queries × 3 passes, 24 pairs | +0.016 | [-0.178, +0.203] | inconclusive at 8 queries × 3 passes |
+| must_contain pass rate | 6 queries × 3 passes, 18 pairs | -0.111 | [-0.333, +0.000] | inconclusive at 6 queries × 3 passes |
+
+### Per-query deltas, Z − A
+
+— means the metric does not apply to the query, or no pass of it was paired.
+
+| Query | Groundedness | Citation recall | Citation precision | must_contain pass rate |
+|---|---:|---:|---:|---:|
+| gq-001 | +0.000 | +0.000 | +0.000 | +0.000 |
+| gq-002 | +0.367 | -1.000 | -0.528 | +0.000 |
+| gq-014 | -0.333 | -1.000 | -0.097 | — |
+| gq-015 | -0.667 | +0.167 | +0.236 | — |
+| gq-022 | -0.167 | -0.111 | +0.022 | -0.667 |
+| gq-023 | +0.200 | +0.000 | +0.000 | +0.000 |
+| gq-029 | -0.300 | +0.000 | +0.495 | +0.000 |
+| gq-030 | +0.333 | +0.000 | +0.000 | +0.000 |
+| gq-036 | +0.000 | — | — | — |
+| gq-037 | +0.000 | — | — | — |
+
+---
+
 # Evaluation — 12 August 2026
 
 The current measured state of ReleaseLens against its golden query set. Every number came
@@ -181,7 +305,7 @@ are not measuring retrieval over the same corpus.
 
 How to run the study pre-registered in spec §8
 (`docs/superpowers/specs/2026-09-24-azure-openai-keyless-design.md`). This is the method only.
-The study has not been run, and nothing in this section is a result.
+Its results are in "Three-arm study — 2 October 2026" at the top of this file.
 
 The same ten golden queries (`per_category=2`) go to three arms on each of three passes, and one
 judge scores every answer without being told which arm wrote it. Each arm is a separate local

@@ -20,14 +20,59 @@ over.
 
 ## Evaluation
 
+### Three-arm study, 2 October 2026
+
+The claim under test: going keyless on Azure changed how requests are authenticated, not what is
+sent. The study puts the same ten golden queries (two per category) to three arms, on three
+passes each, against the corpus of 41,825 chunks restored from 12 August. One Claude Sonnet 5
+judge, blinded to the arm, scores groundedness. The design and the decision rule were fixed in
+advance, in spec §8. The full write-up, with method, per-arm figures and every per-query delta:
+**[eval/baseline.md](eval/baseline.md#three-arm-study--2-october-2026)**.
+
+| Arm | Provider | Model the replies named | Auth |
+|---|---|---|---|
+| A | Anthropic | `claude-sonnet-5` | key |
+| Z | Azure OpenAI, Global Standard | `gpt-4.1-mini-2025-04-14` | the owner's Entra identity, through the Azure CLI |
+| O | OpenAI | `gpt-4.1-mini-2025-04-14` | key |
+
+Z authenticates as the owner, not as the managed identity the deployed app uses.
+
+**Z against O, the same model through two auth paths.** Each delta is Z − O. A difference is
+declared only when the mean paired delta is at most −0.10 or at least +0.10 *and* its 95%
+interval excludes zero.
+
+| Metric | Sample | Mean delta | 95% CI | Verdict |
+|---|---|---:|---|---|
+| Groundedness | 10 queries × 3 passes, 30 pairs | -0.077 | [-0.147, -0.017] | inconclusive at 10 queries × 3 passes |
+| Citation recall | 8 queries × 3 passes, 24 pairs | -0.028 | [-0.083, +0.000] | inconclusive at 8 queries × 3 passes |
+| Citation precision | 8 queries × 3 passes, 24 pairs | +0.008 | [-0.013, +0.038] | inconclusive at 8 queries × 3 passes |
+| must_contain pass rate | 6 queries × 3 passes, 18 pairs | -0.111 | [-0.333, +0.000] | inconclusive at 6 queries × 3 passes |
+
+All four are inconclusive. That does not show the two paths give the same answers; it shows
+this sample cannot tell. Groundedness is the closest: its interval excludes zero, so Z's answers
+scored lower than O's in this sample, but by 0.077, less than the 0.10 the rule requires. Most
+of that comes from three queries (gq-014, gq-015 and gq-022; see the per-query deltas). The
+`must_contain` delta comes from one query, gq-022.
+
+Z against A compares two different models and does not test the keyless claim. All four of its
+metrics are inconclusive too.
+
+| Arm | Groundedness | Citation recall | p50 / p95 latency | Mean cost per query |
+|---|---:|---:|---:|---:|
+| A | 0.840 (n = 30) | 0.889 (n = 24) | 5,406 / 32,434 ms | $0.0488 |
+| Z | 0.783 (n = 30) | 0.646 (n = 24) | 3,049 / 9,101 ms | $0.0021 |
+| O | 0.860 (n = 30) | 0.674 (n = 24) | 2,821 / 6,432 ms | $0.0021 |
+
+Per-arm figures are descriptive, with no significance claim. The run had no errors, no content
+filter events and no failed judgements, and cost $2.7055: $1.5903 answering and $1.1152 judging.
+
+### Single-provider runs, 11–12 August 2026
+
+These are kept as history. They measured Claude Sonnet 5 alone, before the three-arm harness.
+
 Measured 12 August 2026, against a corpus of 41,825 chunks. Full
 write-up, including method, caveats and the previous run for comparison:
-**[eval/baseline.md](eval/baseline.md)**.
-
-A pre-registered three-arm study, putting the same queries to Anthropic, to Azure OpenAI
-through the owner's Entra identity and to OpenAI with a key, has not been run yet, so nothing in
-this section comes from it; [eval/baseline.md](eval/baseline.md#running-the-three-arm-study)
-says how to run it.
+**[eval/baseline.md](eval/baseline.md#evaluation--12-august-2026)**.
 
 | Metric | 11 Aug | 12 Aug |
 |---|---|---|
