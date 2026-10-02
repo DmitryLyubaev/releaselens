@@ -362,6 +362,8 @@ def test_build_set_checkpoints_and_a_rerun_pays_for_nothing_twice(tmp_path):
     assert resumed.rejections == reference.rejections == {"copies its target": 1}
     assert (resumed.rewrites, resumed.replacements) == (reference.rewrites, reference.replacements)
     assert (resumed.input_tokens, resumed.output_tokens) == (reference.input_tokens, reference.output_tokens)
+    # The call that raised returned nothing, so it was not billed and is not counted.
+    assert resumed.calls == reference.calls == 5
     assert len(resumed.written_on) == 1
 
     # A finished checkpoint replays the whole set without a single call.
@@ -369,6 +371,42 @@ def test_build_set_checkpoints_and_a_rerun_pays_for_nothing_twice(tmp_path):
     replayed = build_set(sample_artefacts(_resumable_corpus(), n=4), replayed_client, checkpoint=checkpoint)
     assert replayed.questions == reference.questions
     assert replayed_client.messages.created == []
+
+
+def test_a_slot_that_fails_partway_keeps_its_spend(tmp_path):
+    """Every call is recorded as it returns, so a slot that dies on its rewrite still counts the
+    first draft it paid for, and the accepted slot before it is never paid twice."""
+    checkpoint = tmp_path / "questions.checkpoint.jsonl"
+    spend = tmp_path / "questions.spend.jsonl"
+
+    # q001 is accepted; q002's first draft is rejected, and the connection drops on its rewrite.
+    failing = _FailingAnthropic([_GOOD, _COPIED])
+    with pytest.raises(ConnectionError):
+        build_set(sample_artefacts(_resumable_corpus(), n=3), failing, checkpoint=checkpoint)
+
+    assert len(checkpoint.read_text(encoding="utf-8").splitlines()) == 1
+    recorded = [json.loads(line) for line in spend.read_text(encoding="utf-8").splitlines()]
+    assert [(r["qid"], r["attempt"], r["kind"]) for r in recorded] == [("q001", 1, "first"), ("q002", 1, "first")]
+    assert all((r["input_tokens"], r["output_tokens"]) == (1_000, 40) for r in recorded)
+
+    resumed_client = _FakeAnthropic([_COPIED, _GOOD, _GOOD])
+    resumed = build_set(sample_artefacts(_resumable_corpus(), n=3), resumed_client, checkpoint=checkpoint)
+
+    # q002 is written again from its first draw, and q003 once: q001 is not paid for again.
+    assert len(resumed_client.messages.created) == 3
+    recorded = [json.loads(line) for line in spend.read_text(encoding="utf-8").splitlines()]
+    assert [r["qid"] for r in recorded] == ["q001", "q002", "q002", "q002", "q003"]
+    # The totals are every paid call, the failed slot's first draft included.
+    assert (resumed.calls, resumed.input_tokens, resumed.output_tokens) == (5, 5_000, 200)
+
+
+def test_a_checkpoint_without_its_spend_record_is_refused(tmp_path):
+    checkpoint = tmp_path / "questions.checkpoint.jsonl"
+    build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([_GOOD, _GOOD]), checkpoint=checkpoint)
+    (tmp_path / "questions.spend.jsonl").unlink()
+
+    with pytest.raises(ValueError, match="questions.spend.jsonl"):
+        build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([]), checkpoint=checkpoint)
 
 
 def test_a_checkpoint_line_cut_off_by_a_crash_is_written_again(tmp_path):
@@ -390,9 +428,12 @@ def test_a_checkpoint_from_another_prompt_or_corpus_is_refused(tmp_path):
     build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([_GOOD, _GOOD]), checkpoint=checkpoint)
     lines = checkpoint.read_text(encoding="utf-8").splitlines()
 
+    spend = (tmp_path / "questions.spend.jsonl").read_text(encoding="utf-8")
+
     other_prompt = json.loads(lines[0]) | {"prompts_sha256": "0" * 64}
     stale = tmp_path / "stale.jsonl"
     stale.write_text(json.dumps(other_prompt) + "\n", encoding="utf-8")
+    (tmp_path / "stale.spend.jsonl").write_text(spend, encoding="utf-8")
     with pytest.raises(ValueError, match="another PROMPT or REWRITE"):
         build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([]), checkpoint=stale)
 
@@ -400,6 +441,7 @@ def test_a_checkpoint_from_another_prompt_or_corpus_is_refused(tmp_path):
     record["question"]["target"] = "commit:zzzz"
     foreign = tmp_path / "foreign.jsonl"
     foreign.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    (tmp_path / "foreign.spend.jsonl").write_text(spend, encoding="utf-8")
     with pytest.raises(ValueError, match="commit:zzzz"):
         build_set(sample_artefacts(_resumable_corpus(), n=2), _FakeAnthropic([]), checkpoint=foreign)
 

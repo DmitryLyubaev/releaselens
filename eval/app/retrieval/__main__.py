@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -103,11 +104,15 @@ def _built(args, client) -> tuple[SampleStream, BuiltSet]:
     return stream, build_set(stream, client, checkpoint=_checkpoint(args))
 
 
+def _spend(built: BuiltSet) -> dict:
+    return {"calls": built.calls, "input_tokens": built.input_tokens, "output_tokens": built.output_tokens}
+
+
 def write_questions(args) -> int:
     """Write the 300 questions, checkpointing each, so a rerun pays only for those not saved."""
     _, built = _built(args, _writer())
     print(f"{len(built.questions)} questions in {_checkpoint(args)}: {built.rewrites} rewritten, "
-          f"{built.replacements} replaced, rejections {built.rejections}; "
+          f"{built.replacements} replaced, rejections {built.rejections}; {built.calls} calls paid for, "
           f"{built.input_tokens:,} input and {built.output_tokens:,} output tokens")
     return 0
 
@@ -119,24 +124,30 @@ def spot_check(args) -> int:
         raise Refused(f"{out} exists, and may already hold marks; move it aside to draw it again")
     _, built = _built(args, _CheckpointOnly(_checkpoint(args)))
     sheet = spot_check_sheet(built.questions, built.artefacts, round=args.round, why_unique=built.why_unique)
-    _write_json(out, {"round": args.round, "seed": SEED + args.round, "rows": sheet})
+    # The generation's spend goes on its sheet, so a set later regenerated keeps it on record.
+    _write_json(out, {"round": args.round, "seed": SEED + args.round, "spend": _spend(built), "rows": sheet})
     print(f"{len(sheet)} questions to mark in {out}: set each mark to fine, ambiguous or wrong")
     return 0
 
 
 def _round(path: Path) -> dict:
     sheet = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(sheet.get("spend"), dict):
+        raise Refused(f"{path} records no spend for its generation; write its sheet with spot-check")
     marks = {row["qid"]: row["mark"] for row in sheet["rows"]}
     result = apply_marks(sheet["rows"], marks)
     return {"round": sheet["round"], "seed": sheet["seed"], "sheet": sheet["rows"], "marks": marks,
-            "fine": result.fine, "not_fine": result.not_fine, "passes": result.passes}
+            "fine": result.fine, "not_fine": result.not_fine, "passes": result.passes,
+            "spend": sheet["spend"]}
 
 
 def freeze_set(args) -> int:
     """Freeze the set with its manifest, only if the last spot-check passed on this very set.
 
     Each sheet given is one round, oldest first; the earlier ones are the rounds that failed and
-    sent the set back to be regenerated, and are frozen with it as the record.
+    sent the set back to be regenerated, and are frozen with it as the record. Each round is one
+    generation, and carries what writing it cost, so `spend_all_rounds` is every question-writing
+    call the set took, the generations thrown away included.
     """
     stream, built = _built(args, _CheckpointOnly(_checkpoint(args)))
     rounds = [_round(path) for path in args.sheet]
@@ -151,6 +162,9 @@ def freeze_set(args) -> int:
         if question is None or (question.question, question.target) != (row["question"], row["target"]):
             raise Refused(f"round {last['round']}'s sheet shows {row['qid']} as it is not in this set; "
                           "the last sheet must be of the set being frozen")
+    if last["spend"] != _spend(built):
+        raise Refused(f"round {last['round']}'s sheet records a spend of {last['spend']}, but this set's "
+                      f"spend record holds {_spend(built)}; the last sheet must be of the set being frozen")
     if not last["passes"]:
         raise Refused(f"round {last['round']}'s spot-check failed: {last['not_fine']} of {len(last['marks'])} "
                       "are not fine, more than 3, so the set is regenerated, not frozen (spec §3.5)")
@@ -171,9 +185,12 @@ def freeze_set(args) -> int:
         "rejections": built.rejections,
         "rewrites": built.rewrites,
         "replacements": built.replacements,
+        "calls": built.calls,
         "input_tokens": built.input_tokens,
         "output_tokens": built.output_tokens,
         "spot_check": [{key: value for key, value in checked.items() if key != "sheet"} for checked in rounds],
+        "spend_all_rounds": {key: sum(checked["spend"][key] for checked in rounds)
+                             for key in ("calls", "input_tokens", "output_tokens")},
         "why_unique": built.why_unique,
     }
     args.questions.parent.mkdir(parents=True, exist_ok=True)
@@ -230,10 +247,11 @@ def run_arms(args) -> int:
     """All six arms over the frozen set, then the determinism repeat, saved after each arm.
 
     Everything free is checked before anything is paid for: the frozen file, the Worker's four
-    files and the saved vectors. E2 runs before S2 and S3, which search with its vectors, on both
-    passes, so the repeat embeds nothing for them. An arm that raises (a token failure before its
-    first question, say) is the run's arm failure: the run stops there, so no ranker request is
-    spent on a run that cannot be published, and is saved with what it had.
+    files, the saved vectors, and a token for each scope, so a sign-in failure costs nothing. E2
+    runs before S2 and S3, which search with its vectors, on both passes, so the repeat embeds
+    nothing for them. An arm that raises (say, a token that lapses and cannot be renewed) is the
+    run's arm failure: the run stops there, so no ranker request is spent on a run that cannot
+    be published, and is saved with what it had. A run has no resume: run it again in full.
     """
     questions = load_frozen(args.questions)
     qids = [question.qid for question in questions]
@@ -258,6 +276,15 @@ def run_arms(args) -> int:
     if out.exists():
         raise Refused(f"{out} exists; a run is never overwritten")
 
+    embed_tokens = TokenSource(EMBEDDING_SCOPE, args.tenant)
+    search_tokens = TokenSource(SEARCH_SCOPE, args.tenant)
+    for tokens, scope in ((embed_tokens, EMBEDDING_SCOPE), (search_tokens, SEARCH_SCOPE)):
+        try:
+            tokens.token()
+        except Exception as error:
+            raise Refused(f"no token for {scope}, so nothing was spent: {type(error).__name__}: {error}. "
+                          "Check az account show, and REQUESTS_CA_BUNDLE behind TLS inspection") from error
+
     run = {
         "run_id": run_id,
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -277,8 +304,6 @@ def run_arms(args) -> int:
     results, repeat = list(worker_first), list(worker_repeat)
     _write_json(out, run, indent=None)
 
-    embed_tokens = TokenSource(EMBEDDING_SCOPE, args.tenant)
-    search_tokens = TokenSource(SEARCH_SCOPE, args.tenant)
     repeated = questions[:args.repeat_first]
     # E2's own vectors, for S2 and S3. Never E3's: run_embedding_arm fills any dict it is given.
     e2_vectors: dict[str, QueryVector] = {}
@@ -312,6 +337,8 @@ def run_arms(args) -> int:
             except Exception as error:
                 run["arm_failure"] = {"arm": arm, "pass": which, "error": f"{type(error).__name__}: {error}"}
                 _write_json(out, run, indent=None)
+                # The failure's own traceback, since the refusal below prints only its message.
+                traceback.print_exception(error)
                 raise Refused(f"{arm} failed on its {which} pass, so the run stopped and is not analysed: "
                               f"{run['arm_failure']['error']}. Saved what it had in {out}") from error
             (results if which == "first" else repeat).extend(rows)
@@ -405,8 +432,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return args.handler(args)
-    except (Refused, ValueError, FileNotFoundError) as error:
+    except Refused as error:
         print(error, file=sys.stderr)
+        return 1
+    except Exception as error:
+        # Anything else is a failure, not an answer: keep the whole traceback.
+        traceback.print_exception(error)
         return 1
 
 

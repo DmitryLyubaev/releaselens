@@ -75,8 +75,10 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
 
     failing = SimpleNamespace(messages=_Messages(300, fail_after=100))
     monkeypatch.setattr(cli, "_writer", lambda: failing)
-    with pytest.raises(ConnectionError):
-        cli.main(["write-questions", *paths])
+    assert cli.main(["write-questions", *paths]) == 1
+    # Anything but a refusal keeps its traceback, so a failure is never reduced to one line.
+    error = capsys.readouterr().err
+    assert "Traceback" in error and "ConnectionError: connection dropped (not real)" in error
     checkpoint = data / "questions.checkpoint.jsonl"
     assert len(checkpoint.read_text(encoding="utf-8").splitlines()) == 100
 
@@ -90,6 +92,9 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
     sheet_path = data / "spot-check-round-0.json"
     sheet = json.loads(sheet_path.read_text(encoding="utf-8"))
     assert sheet["round"] == 0 and sheet["seed"] == SEED
+    # The generation's whole spend: the 100 calls of the failed run and the 200 of the rerun.
+    spend = {"calls": 300, "input_tokens": 300_000, "output_tokens": 12_000}
+    assert sheet["spend"] == spend
     assert len(sheet["rows"]) == 30
     assert all(row["why_unique"] == "only this artefact says so" and row["mark"] == "" for row in sheet["rows"])
     # A sheet the owner may already be marking is never overwritten.
@@ -102,7 +107,9 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
     sheet_path.write_text(json.dumps(sheet), encoding="utf-8")
     capsys.readouterr()
     assert cli.main(["freeze", "--sheet", str(sheet_path), "--questions", str(questions_path), *paths]) == 1
-    assert "4 of 30" in capsys.readouterr().err
+    refused = capsys.readouterr().err
+    # A refusal is the plain message: it is an answer, not a failure.
+    assert "4 of 30" in refused and "Traceback" not in refused
     assert not questions_path.exists()
 
     sheet["rows"][0]["mark"] = "ambiguous"
@@ -121,8 +128,47 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
     assert manifest["why_unique"] == {question.qid: "only this artefact says so" for question in frozen}
     [check] = manifest["spot_check"]
     assert (check["round"], check["seed"], check["fine"], check["not_fine"], check["passes"]) == (0, SEED, 27, 3, True)
+    assert check["spend"] == spend
+    assert (manifest["calls"], manifest["input_tokens"], manifest["output_tokens"]) == (300, 300_000, 12_000)
     assert check["marks"][sheet["rows"][0]["qid"]] == "ambiguous"
     assert manifest["quotas"] == {"commit": 94, "issue": 113, "pull_request": 84, "release": 9}
+
+
+def _mark(path, *, wrong: int) -> None:
+    sheet = json.loads(path.read_text(encoding="utf-8"))
+    for index, row in enumerate(sheet["rows"]):
+        row["mark"] = "wrong" if index < wrong else "fine"
+    path.write_text(json.dumps(sheet), encoding="utf-8")
+
+
+def test_a_regenerated_set_carries_every_generations_spend(tmp_path, monkeypatch):
+    data, questions_path = tmp_path / "data", tmp_path / "retrieval" / "questions.jsonl"
+    _export(data, _sample_corpus())
+    paths = ["--data", str(data)]
+    monkeypatch.setattr(cli, "_writer", lambda: SimpleNamespace(messages=_Messages(300)))
+
+    assert cli.main(["write-questions", *paths]) == 0
+    assert cli.main(["spot-check", "--round", "0", *paths]) == 0
+    _mark(data / "spot-check-round-0.json", wrong=5)
+
+    # Regenerated, as the README says: the first generation's files are moved aside and kept.
+    first = tmp_path / "generation-0"
+    first.mkdir()
+    for name in ("questions.checkpoint.jsonl", "questions.spend.jsonl"):
+        (data / name).rename(first / name)
+    assert cli.main(["write-questions", *paths]) == 0
+    assert cli.main(["spot-check", "--round", "1", *paths]) == 0
+    _mark(data / "spot-check-round-1.json", wrong=1)
+
+    assert cli.main(["freeze", "--sheet", str(data / "spot-check-round-0.json"),
+                     "--sheet", str(data / "spot-check-round-1.json"),
+                     "--questions", str(questions_path), *paths]) == 0
+
+    manifest = json.loads(questions_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    generation = {"calls": 300, "input_tokens": 300_000, "output_tokens": 12_000}
+    assert [(c["round"], c["passes"], c["spend"]) for c in manifest["spot_check"]] == [
+        (0, False, generation), (1, True, generation)]
+    assert manifest["spend_all_rounds"] == {"calls": 600, "input_tokens": 600_000, "output_tokens": 24_000}
 
 
 # --- run-arms ------------------------------------------------------------------------------
@@ -130,12 +176,17 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
 
 class _Tokens:
     made: list[str] = []
+    fetched: list[str] = []
+    failing: str | None = None
 
     def __init__(self, scope: str, tenant_id: str) -> None:
         _Tokens.made.append(scope)
         self.scope = scope
 
     def token(self) -> str:
+        _Tokens.fetched.append(self.scope)
+        if self.scope == _Tokens.failing:
+            raise RuntimeError("az: please run az login (not real)")
         return "fake-token"
 
 
@@ -187,7 +238,7 @@ def _measurement(tmp_path, monkeypatch, *, fail: str | None = None):
     monkeypatch.setattr(cli, "run_search_arm", search_arm)
     monkeypatch.setattr(cli, "TokenSource", _Tokens)
     monkeypatch.setattr(cli, "REPORTS", reports)
-    _Tokens.made = []
+    _Tokens.made, _Tokens.fetched, _Tokens.failing = [], [], None
 
     argv = ["run-arms", "--base-url", "https://example-account.openai.azure.com/openai/v1/",
             "--tenant", "tenant-not-real", "--endpoint", "https://search-not-real.search.windows.net",
@@ -242,10 +293,38 @@ def test_a_token_failure_is_an_arm_failure_not_300_question_errors(tmp_path, mon
                                   "error": "RuntimeError: az: token request failed (not real)"}
     assert not [row for row in run["results"] if row["arm"] == "E3"]
     assert run["analysis"] is None
-    assert "E3" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "E3 failed on its first pass" in error and "Traceback" in error
 
     assert cli.main(["report", "test-run"]) == 1
     assert "E3" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("scope", ["https://ai.azure.com/.default", "https://search.azure.com/.default"])
+def test_a_sign_in_failure_is_found_before_anything_is_paid_for(tmp_path, monkeypatch, capsys, scope):
+    argv, calls, saved = _measurement(tmp_path, monkeypatch)
+    _Tokens.failing = scope
+
+    assert cli.main(argv) == 1
+
+    assert calls == []
+    assert not saved.exists()
+    assert "nothing was spent" in capsys.readouterr().err
+
+
+def test_run_arms_fetches_both_tokens_before_the_first_arm(tmp_path, monkeypatch):
+    argv, calls, _ = _measurement(tmp_path, monkeypatch)
+    seen_before_first_arm = []
+    original = cli.run_embedding_arm
+
+    def first_arm(*args, **kwargs):
+        seen_before_first_arm.extend(_Tokens.fetched)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_embedding_arm", first_arm)
+
+    assert cli.main(argv) == 0
+    assert set(seen_before_first_arm[:2]) == {"https://ai.azure.com/.default", "https://search.azure.com/.default"}
 
 
 def test_run_arms_refuses_worker_output_for_another_question_file_before_paying(tmp_path, monkeypatch, capsys):

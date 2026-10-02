@@ -231,13 +231,17 @@ def test_cost_per_1000_prices_the_measured_query_tokens():
     s3.append(_result(arm="S3", qid="q004", error=NO_QUERY_VECTOR))
 
     assert cost_per_1000("E3", e3, RATES) == pytest.approx(1000 * 20 * 0.13 / 1e6)
-    assert cost_per_1000("S3", s3, RATES) == pytest.approx(1000 * (30 / 4) * 0.02 / 1e6)
+    # Per search sent: the question E2 gave no vector for was never searched, so it is not a query.
+    assert cost_per_1000("S3", s3, RATES) == pytest.approx(1000 * (30 / 3) * 0.02 / 1e6)
     assert cost_per_1000("E1", [_result(arm="E1")], RATES) == 0.0
 
     # The ranker's price per request applies to each S3 search actually sent.
     priced = RATES | {"ranker_per_request": 0.001}
-    assert cost_per_1000("S3", s3, priced) == pytest.approx(1000 * (30 * 0.02 / 1e6 + 3 * 0.001) / 4)
+    assert cost_per_1000("S3", s3, priced) == pytest.approx(1000 * (30 * 0.02 / 1e6 + 3 * 0.001) / 3)
     assert cost_per_1000("S2", [_result(arm="S2", tokens=10)], priced) == pytest.approx(1000 * 10 * 0.02 / 1e6)
+
+    with pytest.raises(ValueError, match="no S2 search was sent"):
+        cost_per_1000("S2", [_result(arm="S2", error=NO_QUERY_VECTOR)], RATES)
 
 
 def _questions(count: int) -> list[Question]:

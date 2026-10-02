@@ -18,7 +18,7 @@ import os
 import random
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,6 +133,10 @@ class BuiltSet:
     is, by qid, the writer's reason that only its target answers the question, for the
     spot-check sheet; it is not part of the frozen question. `written_on` is the distinct UTC
     dates the questions were written on, a checkpoint's included, for the manifest.
+
+    `calls`, `input_tokens` and `output_tokens` are every call the writer returned and was paid
+    for, accepted or not. With a checkpoint, they are summed from its spend record, over every
+    run that wrote into it, so a slot that failed partway still counts what it had spent.
     """
 
     questions: list[Question]
@@ -144,6 +148,7 @@ class BuiltSet:
     input_tokens: int
     output_tokens: int
     written_on: tuple[str, ...] = ()
+    calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -378,22 +383,31 @@ class _Slot:
     written_on: str = ""
 
 
-def _fill(stream: SampleStream, entity_type: str, client) -> _Slot:
-    """Draw and write until a question of this type passes, rewriting each rejection once."""
+def _fill(stream: SampleStream, entity_type: str, client, paid: Callable[[int, str, Draft], None]) -> _Slot:
+    """Draw and write until a question of this type passes, rewriting each rejection once.
+
+    `paid` is told of every call as it returns, with its attempt number in the slot and whether
+    it was a first draft or a rewrite, before anything else can fail.
+    """
     rejections: Counter[str] = Counter()
-    rewrites = replacements = input_tokens = output_tokens = 0
+    rewrites = replacements = input_tokens = output_tokens = attempt = 0
+
+    def write(target: Artefact, kind: str, feedback: str | None = None) -> Draft:
+        nonlocal attempt, input_tokens, output_tokens
+        draft = write_question(target, client, feedback=feedback)
+        attempt += 1
+        paid(attempt, kind, draft)
+        input_tokens, output_tokens = input_tokens + draft.input_tokens, output_tokens + draft.output_tokens
+        return draft
+
     while True:
         target = stream.draw(entity_type)
-        draft = write_question(target, client)
-        input_tokens, output_tokens = input_tokens + draft.input_tokens, output_tokens + draft.output_tokens
+        draft = write(target, "first")
         reasons = _rejections(draft, target)
         if reasons:
             rejections.update(reason.split(":", 1)[0] for reason in reasons)
             rewrites += 1
-            draft = write_question(
-                target, client, feedback=REWRITE.format(reasons="; ".join(reasons), raw=draft.raw)
-            )
-            input_tokens, output_tokens = input_tokens + draft.input_tokens, output_tokens + draft.output_tokens
+            draft = write(target, "rewrite", REWRITE.format(reasons="; ".join(reasons), raw=draft.raw))
             reasons = _rejections(draft, target)
         if not reasons:
             return _Slot(target, draft, rejections, rewrites, replacements, input_tokens, output_tokens,
@@ -420,17 +434,29 @@ def _record(qid: str, slot: _Slot) -> dict:
     }
 
 
-def _read_checkpoint(path: Path) -> dict[str, dict]:
-    """The checkpoint's records by qid. A last line that a crash cut off is cut from the file
-    too, so its slot is written again and the next record starts on a line of its own."""
+def spend_path(checkpoint: Path) -> Path:
+    """The spend record beside a checkpoint: `questions.spend.jsonl` for
+    `questions.checkpoint.jsonl`, and `<stem>.spend.jsonl` for any other name."""
+    name = checkpoint.name
+    stem = name.removesuffix(".checkpoint.jsonl") if name.endswith(".checkpoint.jsonl") else checkpoint.stem
+    return checkpoint.with_name(f"{stem}.spend.jsonl")
+
+
+def _read_lines(path: Path) -> list[dict]:
+    """A JSON lines file's records. A last line that a crash cut off is cut from the file too,
+    so the next record starts on a line of its own."""
     if not path.exists():
-        return {}
+        return []
     text = path.read_bytes().decode("utf-8")
     whole = text[: text.rfind("\n") + 1]
     if whole != text:
         path.write_bytes(whole.encode("utf-8"))
-    records = [json.loads(line) for line in whole.splitlines() if line]
-    return {record["question"]["qid"]: record for record in records}
+    return [json.loads(line) for line in whole.splitlines() if line]
+
+
+def _read_checkpoint(path: Path) -> dict[str, dict]:
+    """The checkpoint's records by qid. A slot whose line a crash cut off is written again."""
+    return {record["question"]["qid"]: record for record in _read_lines(path)}
 
 
 def _append(path: Path, record: dict) -> None:
@@ -482,38 +508,52 @@ def build_set(stream: SampleStream, client, *, checkpoint: Path | None = None) -
     With `checkpoint`, each accepted Question is appended to that JSON lines file as soon as it
     passes, with its Draft and what its slot cost, and a slot already there is replayed instead
     of written: a run that fails at question 250 is run again, and pays only for the slots not
-    yet saved. The slot that failed is written again from its first draw, so whatever it had
-    spent is paid twice, and is missing from the token totals.
+    yet saved. The slot that failed is written again from its first draw, so what it had spent
+    is paid twice. Every call is also appended to the spend record (see spend_path) as it
+    returns, so the totals count that spend too. A checkpoint with questions but no spend
+    record is refused, since what they cost would be unknown.
     """
     done = _read_checkpoint(checkpoint) if checkpoint is not None else {}
+    spending = spend_path(checkpoint) if checkpoint is not None else None
+    if done and not spending.exists():
+        raise ValueError(f"{checkpoint} holds {len(done)} questions, but {spending} is missing, so "
+                         "what they cost is unknown; restore it, or move both aside to write afresh")
+    spend = _read_lines(spending) if spending is not None else []
     questions: list[Question] = []
     artefacts: dict[str, Artefact] = {}
     why_unique: dict[str, str] = {}
     rejections: Counter[str] = Counter()
     written_on: set[str] = set()
-    rewrites = replacements = input_tokens = output_tokens = 0
+    rewrites = replacements = 0
 
     for number, entity_type in enumerate(stream.schedule, start=1):
         qid = f"q{number:03d}"
         if qid in done:
             slot = _replay(stream, entity_type, done[qid], checkpoint)
         else:
-            slot = _fill(stream, entity_type, client)
+            def paid(attempt: int, kind: str, draft: Draft, qid: str = qid) -> None:
+                record = {"qid": qid, "attempt": attempt, "kind": kind,
+                          "input_tokens": draft.input_tokens, "output_tokens": draft.output_tokens}
+                spend.append(record)
+                if spending is not None:
+                    _append(spending, record)
+
+            slot = _fill(stream, entity_type, client, paid)
             if checkpoint is not None:
                 _append(checkpoint, _record(qid, slot))
 
         rejections.update(slot.rejections)
         rewrites += slot.rewrites
         replacements += slot.replacements
-        input_tokens += slot.input_tokens
-        output_tokens += slot.output_tokens
         written_on.add(slot.written_on)
         questions.append(Question(qid, slot.draft.question, slot.target.artefact, entity_type))
         artefacts[slot.target.artefact] = slot.target
         why_unique[qid] = slot.draft.why_unique
 
     return BuiltSet(questions, artefacts, why_unique, dict(rejections), rewrites, replacements,
-                    input_tokens, output_tokens, tuple(sorted(written_on)))
+                    sum(record["input_tokens"] for record in spend),
+                    sum(record["output_tokens"] for record in spend),
+                    tuple(sorted(written_on)), len(spend))
 
 
 def spot_check_sheet(

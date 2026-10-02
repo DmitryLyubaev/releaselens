@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 
 from .. import analysis
 from ..metrics import latency_percentiles
-from .arms import K, NO_QUERY_VECTOR, ArmResult, Hit
+from .arms import K, NO_QUERY_VECTOR, SEARCH_ARMS, ArmResult, Hit
 from .questions import Question
 
 THRESHOLD = 0.05
@@ -155,20 +155,26 @@ def determinism(first: list[ArmResult], repeat: list[ArmResult]) -> dict[str, in
 def cost_per_1000(arm: str, results: list[ArmResult], rates: Mapping = RATES) -> float:
     """What 1,000 of this arm's queries cost at `rates`, from its measured query tokens (spec §5.7).
 
-    Over every row of the arm, errored ones included, since an embedding billed before a failure
-    was still paid for. S2 and S3 carry E2's tokens for the question they search with. S3 adds
-    the ranker's price for each search it sent. E1 and S1 are local, and cost nothing per query.
-    AI Search's hourly charge is fixed whatever the queries, so it is not in this figure.
+    A query is a question asked, for E2 and E3: every row, errored ones included, since an
+    embedding billed before a failure was still paid for. For S2 and S3 it is a search sent, so
+    a question E2 gave no vector for, which was never searched, is not one. S2 and S3 carry E2's
+    tokens for the question they search with, and S3 adds the ranker's price for each search.
+    E1 and S1 are local, and cost nothing per query. AI Search's hourly charge is fixed whatever
+    the queries, so it is not in this figure.
     """
     own = [result for result in results if result.arm == arm]
     if not own:
         raise ValueError(f"there are no {arm} results to price")
+    if arm in SEARCH_ARMS:
+        own = [result for result in own if result.error != NO_QUERY_VECTOR]
+        if not own:
+            raise ValueError(f"no {arm} search was sent, so there is no query to price")
     model = ARM_MODELS.get(arm)
     total = 0.0
     if model is not None:
         total += sum(result.query_tokens for result in own) * rates["per_million_tokens"][model] / 1_000_000
     if arm == "S3":
-        total += sum(1 for result in own if result.error != NO_QUERY_VECTOR) * rates["ranker_per_request"]
+        total += len(own) * rates["ranker_per_request"]
     return 1000 * total / len(own)
 
 

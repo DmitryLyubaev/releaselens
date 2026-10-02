@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 
-from ..analysis import _SETTLED_DECIMALS
+from ..analysis import SETTLED_DECIMALS
 from .score import ARMS, DETERMINISM_LIMIT, LOCAL_ARMS, THRESHOLD
 
 NO_CORRECTION = "The three comparisons are each made at 95%, with no correction for multiple comparisons."
@@ -127,7 +127,7 @@ def _method(analysis: dict) -> list[str]:
         f"only when the paired difference is ≤ −{threshold} or ≥ +{threshold} and its 95% interval "
         "excludes zero; an interval that touches zero does not exclude it. Anything else is "
         "inconclusive at its number of questions.",
-        f"- The rule reads the mean and the bounds settled to {_SETTLED_DECIMALS} decimal places, so "
+        f"- The rule reads the mean and the bounds settled to {SETTLED_DECIMALS} decimal places, so "
         f"float error cannot flip a verdict at −{threshold}, +{threshold} or 0.",
         "",
     ]
@@ -147,8 +147,8 @@ def _comparisons(analysis: dict) -> list[str]:
             for number, c in enumerate(analysis["comparisons"], start=1)
         ),
         "",
-        f"{NO_CORRECTION} Each has its own 5% chance of declaring a difference that is not there, "
-        "so the three together have a greater chance than that of declaring at least one.",
+        f"{NO_CORRECTION} Each has at most about a 5% chance of declaring a difference that is not "
+        "there, so the three together have a greater chance than that of declaring at least one.",
         "",
     ]
 
@@ -200,8 +200,10 @@ def _latency_and_cost(analysis: dict) -> list[str]:
         f"- Cost per 1,000 queries is priced from each arm's measured query tokens, at the rates read "
         f"on {rates['date']} from {rates['source']}: `text-embedding-3-small` at "
         f"${per_million['text-embedding-3-small']:.2f} and `text-embedding-3-large` at "
-        f"${per_million['text-embedding-3-large']:.2f} per 1M tokens. It is over every row, errored "
-        "ones included, since an embedding that a failure followed was still billed.",
+        f"${per_million['text-embedding-3-large']:.2f} per 1M tokens.",
+        "- For E2 and E3 it is per question asked, over every row, errored ones included, since an "
+        "embedding that a failure followed was still billed. For S2 and S3 it is per search sent, "
+        "leaving out any question E2 gave no vector for, which was never searched.",
         "- S2 and S3 include E2's tokens for embedding the question.",
         f"- S3 adds the semantic ranker at ${rates['ranker_per_request']:g} per request, on "
         f"{rates['ranker_plan']}.",
@@ -307,9 +309,14 @@ def _type_label(entity_type: str) -> str:
     return f"{entity_type} (too small to read)" if entity_type == _TOO_SMALL else entity_type
 
 
+def _minus(text: str) -> str:
+    # The text's own minus sign, U+2212, so a figure reads as the method's "−0.05" does.
+    return text.replace("-", "−")
+
+
 def _signed(value: float | None) -> str:
     # Rounded first, so that a residue such as -1e-17 on a difference of zero prints as +0.000.
-    return _NONE if value is None else f"{round(value, 3) + 0.0:+.3f}"
+    return _NONE if value is None else _minus(f"{round(value, 3) + 0.0:+.3f}")
 
 
 def _ruled(value: float | None) -> str:
@@ -320,7 +327,7 @@ def _ruled(value: float | None) -> str:
         return _NONE
     rounded = round(value, 3) + 0.0
     if rounded in (0.0, THRESHOLD, -THRESHOLD) and value != rounded:
-        return f"{value:+.{_SETTLED_DECIMALS}f}".rstrip("0")
+        return _minus(f"{value:+.{SETTLED_DECIMALS}f}".rstrip("0"))
     return _signed(value)
 
 

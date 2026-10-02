@@ -55,8 +55,11 @@ python -m app.retrieval write-questions
 ```
 
 Each accepted question is appended, with its draft, to
-`retrieval-data/questions.checkpoint.jsonl` as it passes. If the run fails partway, run the same
-command again: it skips the questions already saved, and pays only for the rest.
+`retrieval-data/questions.checkpoint.jsonl` as it passes. Every paid call to Claude is appended
+to `retrieval-data/questions.spend.jsonl` as it returns, accepted or not. If the run fails partway,
+run the same command again: it skips the questions already saved, and pays only for the rest.
+The question it failed on is written again from its first draft, and the spend record counts
+both attempts, so the totals are what was really spent.
 
 Then write the spot-check sheet:
 
@@ -64,8 +67,9 @@ Then write the spot-check sheet:
 python -m app.retrieval spot-check --round 0
 ```
 
-The owner opens `retrieval-data/spot-check-round-0.json`, and sets each of the 30 `mark` fields to
-`fine`, `ambiguous` or `wrong`. Then freeze:
+The sheet also records what writing this generation cost: its calls and tokens. The owner opens
+`retrieval-data/spot-check-round-0.json`, and sets each of the 30 `mark` fields to `fine`,
+`ambiguous` or `wrong`. Then freeze:
 
 ```
 python -m app.retrieval freeze --sheet retrieval-data/spot-check-round-0.json
@@ -74,18 +78,23 @@ python -m app.retrieval freeze --sheet retrieval-data/spot-check-round-0.json
 `freeze` refuses a sheet with more than 3 that are not fine. If that happens, the set is
 regenerated, which is another Ask first:
 1. Change the prompt or the checks.
-2. Move the old checkpoint aside: a checkpoint written under another prompt is refused.
+2. Move the old checkpoint and its spend record aside together, into a folder of their own, and
+   keep both: a checkpoint written under another prompt is refused, and the old generation's
+   spend is part of what the set cost. Keep the round's marked sheet where it is.
 3. Run `write-questions` again.
 4. Run `spot-check --round 1`, which draws a fresh 30.
 5. Freeze with every round's sheet, oldest first:
    `freeze --sheet retrieval-data/spot-check-round-0.json --sheet retrieval-data/spot-check-round-1.json`
 
+   Each round's spend goes into the manifest's `spot_check`, and their sum into
+   `spend_all_rounds`, so the generations that were thrown away are counted too.
+
 `freeze` writes `retrieval/questions.jsonl` and `retrieval/questions.manifest.json`. The manifest
 holds:
 - the seed, the model and the prompts (`PROMPT` and `REWRITE`)
 - the generation and freezing dates
-- the rejection counts
-- each spot-check round with its marks
+- the rejection counts, and the calls and tokens the set took
+- each spot-check round with its marks and its generation's spend
 - each question's `why_unique`
 - the file's SHA-256
 
@@ -136,14 +145,21 @@ batch already saved.
    python -m app.retrieval run-arms --repeat-first 30 --base-url https://<account>.openai.azure.com/openai/v1/ --endpoint https://<search-service>.search.windows.net --tenant <tenant-id> --worker-hybrid retrieval-data/worker-hybrid.jsonl --worker-hybrid-repeat retrieval-data/worker-hybrid-repeat.jsonl --worker-bge retrieval-data/worker-bge.jsonl --worker-bge-repeat retrieval-data/worker-bge-repeat.jsonl
    ```
 
-   It checks the frozen file, the four Worker files and the saved vectors before it pays for
-   anything. It then runs E2, E3, S2 and S3 over all 300 questions, and repeats the first 30 on
-   each of them. S2 and S3 search with E2's vectors on both passes. For E1 and S1 it compares the
-   first 30 questions of each pair of Worker files.
+   Before it pays for anything, it checks the frozen file, the four Worker files and the saved
+   vectors, and gets a token for each scope, so a sign-in failure costs nothing. It then runs E2,
+   E3, S2 and S3 over all 300 questions, and repeats the first 30 on each of them. S2 and S3
+   search with E2's vectors on both passes. For E1 and S1 it compares the first 30 questions of
+   each pair of Worker files.
 
    The run is saved to `reports/retrieval-<run_id>.json` after each arm, and the run id is
-   printed. If an arm fails as a whole, for example when a token cannot be had, the run stops
-   there and is saved with that failure. It is not analysed: run it again with a new run id.
+   printed. If an arm fails as a whole, the run stops there, and is saved with that failure. It
+   is not analysed.
+
+   **A run has no resume.** A failed run is run again from the start, with a new run id, and
+   pays again for everything it had done. The scarce part is the semantic ranker's free
+   allowance of 1,000 requests a month. A failure after S3's first pass has already spent about
+   300 of them, and the rerun spends about 330 more, so a month has room for about two failed
+   attempts and a successful one.
 
 6. Destroy `infra/search` from WSL, then confirm that the same `az group exists` check prints
    `false`.

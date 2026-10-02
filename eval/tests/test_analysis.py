@@ -268,6 +268,7 @@ def test_verdict_default_threshold_unchanged():
     # The settling is public now, and the old private name is the same function.
     assert analysis.settled(0.1 + 0.2) == 0.3
     assert analysis._settled is analysis.settled
+    assert analysis.SETTLED_DECIMALS == analysis._SETTLED_DECIMALS == 12
 
 
 def _sixths(m: int) -> tuple[list[float], list[float]]:

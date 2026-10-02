@@ -33,7 +33,9 @@ BOOTSTRAP_SEED = 20260924
 _CI_LOWER = Fraction(1, 40)
 _CI_UPPER = Fraction(39, 40)
 
-_SETTLED_DECIMALS = 12
+SETTLED_DECIMALS = 12
+# The name plan 3's renderer imports.
+_SETTLED_DECIMALS = SETTLED_DECIMALS
 
 
 class Comparison(BaseModel):
@@ -253,7 +255,7 @@ def settled(value: float) -> float:
 
     Adding 0.0 turns the -0.0 that rounding a tiny negative leaves into 0.0.
     """
-    return round(value, _SETTLED_DECIMALS) + 0.0
+    return round(value, SETTLED_DECIMALS) + 0.0
 
 
 # The name plan 3 used. This module calls it by this name, so a test that replaces `_settled`

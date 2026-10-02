@@ -100,6 +100,14 @@ def test_render_appendix_is_exploratory_with_no_interval(page):
     pairs = [line for line in appendix.splitlines() if line.startswith("| ") and " − " in line]
     assert len(pairs) == 12
     assert "CI" not in appendix and "[" not in appendix
+    # One minus sign throughout, the same as the text's.
+    assert "| S1 − E2 | 299 | −0.067 |" in appendix
+    assert "-0." not in page
+
+
+def test_render_states_the_chance_and_the_cost_denominators(page):
+    assert "at most about a 5% chance" in page
+    assert "per question asked" in page and "per search sent" in page
 
 
 def test_render_caveats_determinism_and_drops(page):
