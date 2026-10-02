@@ -98,7 +98,10 @@ class Arm(BaseModel):
 class RunRequest(BaseModel):
     # Each query is put to every arm, in this order.
     arms: list[Arm] = Field(min_length=1)
-    passes: int = Field(default=1, ge=1)
+
+    # Capped because every pass is paid for, answering and judging both, and the harness spends
+    # whatever a request asks. The study needs three.
+    passes: int = Field(default=1, ge=1, le=10)
 
     # Each pair (x, y) is reported as the delta x − y, by arm name.
     comparisons: list[tuple[str, str]] = Field(default_factory=list)

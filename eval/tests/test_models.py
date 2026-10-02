@@ -28,6 +28,7 @@ def test_a_well_formed_study_is_accepted():
     assert [arm.name for arm in request.arms] == ["A", "Z", "O"]
     assert request.passes == 3
     assert request.comparisons == [("Z", "O"), ("Z", "A")]
+    assert _study(passes=10).passes == 10
 
     # The default judge is the pre-registered one, whose rates the judge holds.
     assert request.judge_model == "claude-sonnet-5"
@@ -42,10 +43,15 @@ def test_a_well_formed_study_is_accepted():
         ({"comparisons": [("Z", "Z")]}, "compares arm 'Z' with itself"),
         ({"arms": []}, "arms"),
         ({"passes": 0}, "passes"),
+        # Every pass is paid for, judged included, and the study needs three.
+        ({"passes": 11}, "less than or equal to 10"),
         # Billed at its own rates and reported at Sonnet 5's, it would understate what was spent.
         ({"judge_model": "claude-opus-5"}, "the judge has no rates for judge model 'claude-opus-5'"),
     ],
-    ids=["duplicate-arm", "unknown-arm", "arm-against-itself", "no-arms", "no-passes", "unpriced-judge"],
+    ids=[
+        "duplicate-arm", "unknown-arm", "arm-against-itself", "no-arms", "no-passes", "too-many-passes",
+        "unpriced-judge",
+    ],
 )
 def test_run_request_rejects_a_malformed_study(overrides, complaint):
     with pytest.raises(ValidationError) as rejected:
