@@ -106,6 +106,11 @@ class ArmSummary(BaseModel):
     """Every outcome of the arm: each query on each pass, errors included."""
 
     error_count: int
+    no_reply_count: int
+    """Errors on which the request got no reply, a timeout or a connection error. Each records a
+    cost of 0, though the arm may have billed for it, so total_cost_usd leaves out whatever they
+    cost."""
+
     filtered_count: int
     """Outcomes on which a content filter blocked the request, errors included."""
 
@@ -143,7 +148,8 @@ class ArmSummary(BaseModel):
 
     total_cost_usd: float
     """What answering cost, summed over ALL the arm's outcomes. A rejected reply was billed
-    whether or not it counts, so it is money spent."""
+    whether or not it counts, so it is money spent. It leaves out whatever the no_reply_count
+    requests cost, which no reply reported."""
 
     models_seen: list[str]
     """Each `model` the outcomes without errors or filter events name, sorted. A rejected reply's
@@ -363,6 +369,7 @@ def summarise(
         arm=arm.name,
         outcome_count=len(own),
         error_count=len(own) - len(answered),
+        no_reply_count=sum(1 for o in own if o.no_reply),
         filtered_count=sum(1 for o in own if o.filtered_stage is not None),
         **{f"mean_{metric}": _mean_or_none(values) for metric, values in scores.items()},
         **{f"{metric}_count": len(values) for metric, values in scores.items()},

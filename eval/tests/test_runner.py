@@ -417,6 +417,38 @@ async def test_a_failed_arm_query_is_an_error_not_a_score(fake_api, failure, com
     assert len(report.outcomes) - len(errored) == 10
 
 
+@pytest.mark.parametrize(
+    ("failure", "no_reply"),
+    [
+        (httpx.ReadTimeout(""), True),
+        (httpx.ConnectError("connection refused"), True),
+        (503, False),
+        (_without_evidence({**_BODY, "metadata": None}), False),
+    ],
+    ids=["read-timeout", "connection-refused", "status-503", "malformed"],
+)
+async def test_a_request_that_got_no_reply_is_counted(fake_api, failure, no_reply):
+    """It records $0, though the arm may have gone on answering and billed. Counted, the write-up
+    can say its total leaves that spend out."""
+    z = _ARMS[1]
+    failing_question = load_golden()[1].question
+    fake_api.replies = {
+        **_each_arm_answers_as_itself(),
+        z.base_url: lambda sent: failure if sent["question"] == failing_question else _reply("azure-openai"),
+    }
+
+    report = await run_eval(RunRequest(api_key="rl_test", limit=2, passes=2, judge=False, arms=_ARMS))
+
+    errored = [o for o in report.outcomes if o.error is not None]
+    assert len(errored) == 2
+    assert all(o.no_reply is no_reply for o in errored)
+    assert not any(o.no_reply for o in report.outcomes if o.error is None)
+
+    assert [(s.arm, s.no_reply_count) for s in report.arm_summaries] == [
+        ("A", 0), ("Z", 2 if no_reply else 0), ("O", 0),
+    ]
+
+
 def test_an_unscored_outcome_must_say_why():
     """An empty error is falsy, and would let an outcome with no answer pass for one."""
     query = load_golden()[0]

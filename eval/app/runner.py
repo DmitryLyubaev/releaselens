@@ -133,7 +133,7 @@ def _spend(metadata: dict | None) -> dict:
 
 def _unscored(
     query: GoldenQuery, arm: Arm, pass_index: int, latency_ms: float, error: str,
-    metadata: dict | None = None,
+    metadata: dict | None = None, no_reply: bool = False,
 ) -> QueryOutcome:
     """An outcome with no score: the request failed, or its reply cannot count as the arm's.
 
@@ -161,6 +161,7 @@ def _unscored(
         latency_ms=latency_ms,
         degraded=bool((metadata or {}).get("degraded", False)), unresolved_citation_markers=[],
         error=error,
+        no_reply=no_reply,
         **_spend(metadata),
         **_answered_by(metadata or {}),
     )
@@ -193,8 +194,12 @@ async def _ask(
         body = response.json()
     except Exception as exc:  # noqa: BLE001 — a failed query is a data point, not a crash
         latency_ms = (time.perf_counter() - started) * 1000
-        # Named by its type as well: an httpx timeout's message is empty.
-        return _unscored(query, arm, pass_index, latency_ms, f"{type(exc).__name__}: {exc}"), None
+        # Named by its type as well: an httpx timeout's message is empty. A transport error is a
+        # timeout or a failed connection, so no reply came back to say what was spent.
+        return _unscored(
+            query, arm, pass_index, latency_ms, f"{type(exc).__name__}: {exc}",
+            no_reply=isinstance(exc, httpx.TransportError),
+        ), None
 
     latency_ms = (time.perf_counter() - started) * 1000
 

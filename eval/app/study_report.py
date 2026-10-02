@@ -89,6 +89,15 @@ def _study_run(report: dict) -> RunReport:
 
 def _header(run: RunReport) -> list[str]:
     started = datetime.fromisoformat(run.started_at)
+
+    # A request with no reply records $0, though the arm may have gone on and billed for it.
+    no_reply = sum(summary.no_reply_count for summary in run.arm_summaries)
+    unseen = (
+        f" The total excludes any spend on {no_reply} {'request' if no_reply == 1 else 'requests'} "
+        "that got no reply, a timeout or a connection error, since no reply said what it cost."
+        if no_reply else ""
+    )
+
     return [
         f"# Three-arm study — {started.day} {started:%B %Y}",
         "",
@@ -98,7 +107,7 @@ def _header(run: RunReport) -> list[str]:
         f"- **Cost of the run:** answering {_usd(run.answering_cost_usd)}, "
         f"judging {_usd(run.judge_cost_usd)}, total {_usd(run.total_cost_usd)}. Answering is what "
         "the arms reported over every outcome, rejected replies included, since they were billed. "
-        "Judging is the harness's own cost, and is not charged to any arm.",
+        f"Judging is the harness's own cost, and is not charged to any arm.{unseen}",
         "",
     ]
 
@@ -192,15 +201,16 @@ def _outcomes(summaries: list[ArmSummary]) -> list[str]:
     return [
         "## Outcomes, filter events and models",
         "",
-        "Recorded as legitimate differences between the arms, not explained away. Filtered counts "
+        "Recorded as legitimate differences between the arms, not explained away. No reply counts "
+        "the errors on which the request got no reply, whose cost is unknown. Filtered counts "
         "the outcomes on which a content filter blocked the request, errors included. Models seen "
         "is each `model` the arm's outcomes without errors or filter events name, as the replies' "
         "metadata gives it. A filtered answer is left out because no response named its model.",
         "",
-        "| Arm | Outcomes | Errors | Filtered | Models seen |",
-        "|---|---:|---:|---:|---|",
+        "| Arm | Outcomes | Errors | No reply | Filtered | Models seen |",
+        "|---|---:|---:|---:|---:|---|",
         *(
-            f"| {s.arm} | {s.outcome_count} | {s.error_count} | {s.filtered_count} "
+            f"| {s.arm} | {s.outcome_count} | {s.error_count} | {s.no_reply_count} | {s.filtered_count} "
             f"| {', '.join(f'`{model}`' for model in s.models_seen) or 'none'} |"
             for s in summaries
         ),

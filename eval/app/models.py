@@ -80,6 +80,11 @@ class QueryOutcome(BaseModel):
 
     error: str | None = None
 
+    # True when the request got no reply at all: a timeout or a connection error. Its cost_usd of
+    # 0 is then not known to be 0, because the arm may have gone on answering, and billed, after
+    # the harness gave up. A reply with an error status is a reply, and is not counted here.
+    no_reply: bool = False
+
 
 class Arm(BaseModel):
     """One configuration under test: a separate ReleaseLens API process at its own URL.

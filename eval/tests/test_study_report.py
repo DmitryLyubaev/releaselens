@@ -41,6 +41,7 @@ def _summary(arm: str, **fields) -> ArmSummary:
         "mean_groundedness": 0.9,
         "groundedness_count": 30,
         "judge_failure_count": 0,
+        "no_reply_count": 0,
         "mean_citation_recall": 0.8,
         "citation_recall_count": 24,
         "mean_citation_precision": 0.6,
@@ -246,10 +247,10 @@ def test_models_seen_and_filter_events_are_listed():
     section = _sections(render_markdown(_report(summaries=summaries)))["Outcomes, filter events and models"]
 
     assert _rows(section) == [
-        ["Arm", "Outcomes", "Errors", "Filtered", "Models seen"],
-        ["A", "30", "0", "0", "`claude-sonnet-5`"],
-        ["Z", "30", "1", "2", "`gpt-4.1-mini-2025-04-14`"],
-        ["O", "30", "0", "0", "`gpt-4.1-mini`, `gpt-4.1-mini-2025-04-14`"],
+        ["Arm", "Outcomes", "Errors", "No reply", "Filtered", "Models seen"],
+        ["A", "30", "0", "0", "0", "`claude-sonnet-5`"],
+        ["Z", "30", "1", "0", "2", "`gpt-4.1-mini-2025-04-14`"],
+        ["O", "30", "0", "0", "0", "`gpt-4.1-mini`, `gpt-4.1-mini-2025-04-14`"],
     ]
 
 
@@ -346,6 +347,25 @@ def test_the_run_cost_shows_answering_judging_and_total():
     assert "answering $1.2344" in header
     assert "judging $0.5000" in header
     assert "total $1.7344" in header
+
+
+def test_the_run_cost_says_what_it_leaves_out():
+    """A request that got no reply records $0, though the arm may have billed for it."""
+    summaries = [_summary("A"), _summary("Z", error_count=3, no_reply_count=2), _summary("O", error_count=1, no_reply_count=1)]
+
+    sections = _sections(render_markdown(_report(summaries=summaries)))
+
+    assert "The total excludes any spend on 3 requests that got no reply" in sections[""]
+    assert _row(sections["Outcomes, filter events and models"], "Arm") == [
+        "Arm", "Outcomes", "Errors", "No reply", "Filtered", "Models seen",
+    ]
+    assert _row(sections["Outcomes, filter events and models"], "Z")[1:4] == ["30", "3", "2"]
+
+    one = _sections(render_markdown(_report(summaries=[_summary("A", error_count=1, no_reply_count=1), _summary("Z"), _summary("O")])))
+    assert "The total excludes any spend on 1 request that got no reply" in one[""]
+
+    # Every request got a reply, so nothing is left out and nothing is said.
+    assert "no reply" not in _sections(render_markdown(_report()))[""]
 
 
 def test_the_command_prints_a_saved_run(tmp_path, monkeypatch, capsys):
