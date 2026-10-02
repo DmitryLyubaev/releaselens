@@ -1,7 +1,6 @@
 # Retrieval benchmark on Azure AI Search — design
 
-**Status: specification, written 2026-10-02 from the design the owner approved section by section
-on 2026-10-02. Not yet reviewed as a document.** Nothing is built or measured. Every figure below
+**Status: specification, approved by the owner on 2026-10-02.** Nothing is built or measured. Every figure below
 is either read from a named source on a stated date, or labelled as an estimate. Claims that
 could not be checked are labelled *unverified* and listed in §10.
 
