@@ -42,8 +42,9 @@ class Hit:
 class ArmResult:
     """One question on one arm. `hits` is empty exactly when `error` says why.
 
-    `ms` times what the arm did for the question; `query_tokens` is what embedding the question
-    was billed, and stays 0 for an arm that embeds nothing it pays for.
+    `ms` times the question end to end on the arm, embedding it included (spec §5.6); S2 and S3
+    add the time E2 took to embed it, since they search with E2's vector. `query_tokens` is what
+    embedding the question was billed, S2 and S3 carrying E2's, and stays 0 for E1 and S1.
     """
 
     qid: str
@@ -52,6 +53,15 @@ class ArmResult:
     ms: float
     error: str | None
     query_tokens: int = 0
+
+
+@dataclass(frozen=True, eq=False)
+class QueryVector:
+    """E2's vector for one question, with what embedding it took: its time and its billed tokens."""
+
+    vector: np.ndarray
+    ms: float
+    tokens: int
 
 
 def _describe(error: Exception) -> str:
@@ -97,13 +107,16 @@ def run_embedding_arm(
     ids_path: Path,
     artefacts: Mapping[int, str],
     embed: Callable[[str], tuple[np.ndarray, int]],
-    query_vectors: dict[str, np.ndarray] | None = None,
+    query_vectors: dict[str, QueryVector] | None = None,
+    tokens: TokenSource | None = None,
 ) -> list[ArmResult]:
     """E2 or E3: embed each question with `embed`, then exact cosine over the saved corpus vectors.
 
     A question's `ms` covers its embedding call and the search. The corpus is normalised once,
     before any question, because a deployed system would store it so. When `query_vectors` is
-    given, each question embedded is stored in it under its qid, so S2 and S3 can reuse E2's.
+    given, each question searched is stored in it under its qid, with its embedding's own time
+    and tokens, so S2 and S3 can reuse E2's. `tokens`, when given, is the source `embed` uses:
+    its token is fetched before the first question is timed, so no question pays for running `az`.
     """
     if arm not in EMBEDDING_ARMS:
         raise ValueError(f"{arm} is not an embedding arm; use one of {EMBEDDING_ARMS}")
@@ -115,6 +128,8 @@ def run_embedding_arm(
     if unknown:
         raise ValueError(f"{len(unknown)} saved chunk ids are not in the corpus, the first {unknown[0]}")
     unit = _unit(vectors, in_place=True)
+    if tokens is not None:
+        tokens.token()
 
     results = []
     for question in questions:
@@ -122,14 +137,16 @@ def run_embedding_arm(
         used = 0
         try:
             vector, used = embed(question.question)
-            hits = _top(unit, ids, artefacts, _unit(np.asarray(vector, dtype=np.float32)), K)
+            embed_ms = _elapsed_ms(start)
+            vector = np.asarray(vector, dtype=np.float32)
+            hits = _top(unit, ids, artefacts, _unit(vector), K)
         except Exception as error:
             # An embedding that was billed and then failed to search still counts its tokens.
             results.append(ArmResult(question.qid, arm, [], _elapsed_ms(start), _describe(error), used))
             continue
         results.append(ArmResult(question.qid, arm, hits, _elapsed_ms(start), None, used))
         if query_vectors is not None:
-            query_vectors[question.qid] = np.asarray(vector, dtype=np.float32)
+            query_vectors[question.qid] = QueryVector(vector, embed_ms, used)
     return results
 
 
@@ -137,16 +154,18 @@ def run_search_arm(
     arm: str,
     questions: list[Question],
     *,
-    query_vectors: Mapping[str, np.ndarray],
+    query_vectors: Mapping[str, QueryVector],
     endpoint: str,
     tokens: TokenSource,
     client: httpx.Client | None = None,
 ) -> list[ArmResult]:
     """S2 (hybrid) or S3 (hybrid with the semantic ranker), with E2's vector for each question.
 
-    A question's `ms` covers the search call only: its vector was embedded, and timed, by E2. Any
-    reply that is not a success, and any exception, is that question's `error`, with the reply's
-    body verbatim, so a ranker billing error says what it was. Nothing is retried.
+    A question's `ms` is E2's time to embed it plus this arm's search call, and its
+    `query_tokens` are E2's, so latency and cost include the embedding the arm depends on. The
+    search token is fetched before the first question is timed. Any reply that is not a success,
+    and any exception, is that question's `error`, with the reply's body verbatim, so a ranker
+    billing error says what it was. Nothing is retried.
     """
     # Imported here because search_index builds this module's Hits.
     from .search_index import new_client, search
@@ -158,19 +177,22 @@ def run_search_arm(
     client = client or new_client()
     results = []
     try:
+        tokens.token()
         for question in questions:
-            vector = query_vectors.get(question.qid)
-            if vector is None:
+            embedded = query_vectors.get(question.qid)
+            if embedded is None:
                 results.append(ArmResult(question.qid, arm, [], 0.0, NO_QUERY_VECTOR))
                 continue
             start = time.perf_counter()
             try:
-                hits = search(question.question, vector, semantic=semantic, endpoint=endpoint, tokens=tokens,
-                              client=client)
+                hits = search(question.question, embedded.vector, semantic=semantic, endpoint=endpoint,
+                              tokens=tokens, client=client)
             except Exception as error:
-                results.append(ArmResult(question.qid, arm, [], _elapsed_ms(start), _describe(error)))
+                results.append(ArmResult(question.qid, arm, [], embedded.ms + _elapsed_ms(start),
+                                         _describe(error), embedded.tokens))
                 continue
-            results.append(ArmResult(question.qid, arm, hits, _elapsed_ms(start), None))
+            results.append(ArmResult(question.qid, arm, hits, embedded.ms + _elapsed_ms(start), None,
+                                     embedded.tokens))
     finally:
         if owned:
             client.close()

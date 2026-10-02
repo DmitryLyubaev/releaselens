@@ -114,16 +114,37 @@ def test_semantic_uses_reranker_score():
     assert _search(recorder, semantic=False) == [Hit(17, "commit:abc1234", 0.031), Hit(9, "issue:12", 0.033)]
 
 
-def test_a_partial_semantic_response_is_an_error():
+def _partial(returned: str | None):
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = {**_results(request).json(), "@search.semanticPartialResponseReason": "CapacityOverloaded"}
+        if returned is not None:
+            body["@search.semanticPartialResponseType"] = returned
+        return httpx.Response(200, json=body)
+    return respond
+
+
+@pytest.mark.parametrize("returned", ["baseResults", None])
+def test_a_partial_semantic_response_is_an_error(returned):
     # AI Search's default is to answer 200 with unranked results when the ranker cannot run;
     # scored as S3, they would be S2's results under S3's name.
-    def partial(request: httpx.Request) -> httpx.Response:
-        body = _results(request).json()
-        return httpx.Response(200, json={**body, "@search.semanticPartialResponseReason": "CapacityOverloaded",
-                                         "@search.semanticPartialResponseType": "baseResults"})
-
     with pytest.raises(SearchError, match="CapacityOverloaded"):
-        _search(_Recorder(partial), semantic=True)
+        _search(_Recorder(_partial(returned)), semantic=True)
+
+
+def test_a_partial_response_that_was_reranked_is_kept():
+    hits = _search(_Recorder(_partial("rerankedResults")), semantic=True)
+
+    assert hits == [Hit(17, "commit:abc1234", 2.75), Hit(9, "issue:12", 1.5)]
+
+
+def test_a_semantic_hit_without_a_reranker_score_is_an_error():
+    def unscored(request: httpx.Request) -> httpx.Response:
+        body = _results(request).json()
+        body["value"][1]["@search.rerankerScore"] = None
+        return httpx.Response(200, json=body)
+
+    with pytest.raises(SearchError, match="1 semantic hits have no reranker score, the first chunk 9"):
+        _search(_Recorder(unscored), semantic=True)
 
 
 def test_a_failed_reply_keeps_its_body_verbatim():
@@ -239,7 +260,8 @@ def test_a_full_batch_fits_the_request_limit(tmp_path):
     assert len(request.content) < 16_000_000
 
 
-@pytest.mark.parametrize("change", ["a chunk without a vector", "a vector without a chunk", "the wrong width"])
+@pytest.mark.parametrize("change", ["a chunk without a vector", "a vector without a chunk", "the wrong width",
+                                    "an all-zero row"])
 def test_upload_refuses_vectors_that_do_not_match_before_sending(tmp_path, change):
     chunks = _chunks(10)
     if change == "a chunk without a vector":
@@ -247,8 +269,14 @@ def test_upload_refuses_vectors_that_do_not_match_before_sending(tmp_path, chang
     elif change == "a vector without a chunk":
         vectors_path, ids_path, _ = _save(tmp_path, chunks)
         chunks = chunks[:9]
-    else:
+    elif change == "the wrong width":
         vectors_path, ids_path, _ = _save(tmp_path, chunks, dimensions=3072)
+    else:
+        # A row an unfinished embedding run never wrote: the memory-mapped file starts as zeros.
+        vectors_path, ids_path, _ = _save(tmp_path, chunks)
+        saved = np.load(vectors_path)
+        saved[6] = 0
+        np.save(vectors_path, saved)
     recorder = _Recorder(_indexed)
 
     with pytest.raises(ValueError):

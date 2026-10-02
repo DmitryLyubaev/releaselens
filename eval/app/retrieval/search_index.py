@@ -79,8 +79,9 @@ def _client(client: httpx.Client | None) -> Iterator[httpx.Client]:
 def _compact(vector: np.ndarray) -> list[float]:
     """A float32 vector as the shortest decimals that read back as the same float32 values.
 
-    `tolist()` would write each value's float64 expansion, about 20 characters, and a batch of
-    500 documents would then pass AI Search's 16 MB request limit; these come to about half.
+    For upload batches only. `tolist()` would write each value's float64 expansion, about 20
+    characters, and a batch of 500 documents would then pass AI Search's 16 MB request limit;
+    these come to about half.
     """
     return [float(text) for text in np.asarray(vector, dtype=np.float32).astype(str)]
 
@@ -117,7 +118,8 @@ def upload(
     """Upload every chunk with its saved `-small` vector, `batch` documents a request; the count sent.
 
     The saved vectors must cover exactly the chunks given, at 1,536 dimensions; anything else is
-    refused before the first request. A document the service rejects fails the upload, naming it.
+    refused before the first request, as is an all-zero row, which is a chunk an unfinished
+    embedding run never wrote. A document the service rejects fails the upload, naming it.
     """
     vectors = np.load(vectors_path)
     ids = json.loads(ids_path.read_text(encoding="utf-8"))
@@ -127,6 +129,10 @@ def upload(
                          f"the index needs one {DIMENSIONS}-dimension row per id")
     if len(set(ids)) != len(ids) or set(ids) != set(by_id) or len(by_id) != len(chunks):
         raise ValueError(f"{ids_path} does not hold exactly the {len(chunks)} chunks given, each once")
+    empty = np.flatnonzero(~vectors.any(axis=1))
+    if len(empty):
+        raise ValueError(f"{vectors_path} has {len(empty)} all-zero rows, the first row {empty[0]}: "
+                         "its embedding run is unfinished")
 
     with _client(client) as http:
         for start in range(0, len(ids), batch):
@@ -158,11 +164,13 @@ def search(
 
     With `semantic`, the ranker reorders them and each hit's score is its reranker score;
     without, it is the fused hybrid score. A query the ranker did not rank raises, though the
-    service answers it with 200: its results are S2's, and would be scored as S3's.
+    service answers it with 200: its results are S2's, and would be scored as S3's. So does a
+    semantic hit with no reranker score.
     """
     body = {
         "search": question,
-        "vectorQueries": [{"kind": "vector", "vector": _compact(vector), "fields": "vector", "k": K}],
+        "vectorQueries": [{"kind": "vector", "vector": np.asarray(vector, dtype=np.float32).tolist(),
+                           "fields": "vector", "k": K}],
         "top": K,
         "select": "chunk_id,artefact",
     }
@@ -172,10 +180,17 @@ def search(
     with _client(client) as http:
         reply = _send(http, "POST", endpoint, f"indexes/{INDEX_NAME}/docs/search", body, tokens).json()
 
-    partial = reply.get("@search.semanticPartialResponseReason")
-    if semantic and partial is not None:
-        raise SearchError(f"the semantic ranker did not rank this query: {partial}, returning "
-                          f"{reply.get('@search.semanticPartialResponseType')}")
+    if semantic:
+        reason = reply.get("@search.semanticPartialResponseReason")
+        returned = reply.get("@search.semanticPartialResponseType")
+        # A partial reply of `rerankedResults` was still reranked, so it is kept.
+        if reason is not None and returned in (None, "baseResults"):
+            raise SearchError(f"the semantic ranker did not rank this query: {reason}, returning {returned}")
+        unranked = [document["chunk_id"] for document in reply["value"]
+                    if document.get("@search.rerankerScore") is None]
+        if unranked:
+            raise SearchError(f"{len(unranked)} semantic hits have no reranker score, the first chunk "
+                              f"{unranked[0]}")
     score = "@search.rerankerScore" if semantic else "@search.score"
     return [Hit(int(document["chunk_id"]), document["artefact"], float(document[score]))
             for document in reply["value"]]

@@ -10,9 +10,11 @@ import httpx
 import numpy as np
 import pytest
 
+from app.retrieval import arms
 from app.retrieval.arms import (
     ArmResult,
     Hit,
+    QueryVector,
     exact_cosine,
     read_worker_output,
     run_embedding_arm,
@@ -76,7 +78,7 @@ def test_embedding_arm_searches_the_saved_vectors_and_keeps_each_query_vector(tm
             return np.ones(31, dtype=np.float32), 7
         return queries[text], 7
 
-    kept: dict[str, np.ndarray] = {}
+    kept: dict[str, QueryVector] = {}
     results = run_embedding_arm("E3", _questions(4), vectors_path=vectors_path, ids_path=ids_path,
                                 artefacts=artefacts, embed=embed, query_vectors=kept)
 
@@ -93,7 +95,8 @@ def test_embedding_arm_searches_the_saved_vectors_and_keeps_each_query_vector(tm
     # Embedded, and billed, but not searchable: the tokens still count.
     assert results[3].hits == [] and results[3].error.startswith("ValueError") and results[3].query_tokens == 7
     assert set(kept) == {"q000", "q002"}
-    assert np.array_equal(kept["q002"], queries["question 2"])
+    assert np.array_equal(kept["q002"].vector, queries["question 2"])
+    assert kept["q002"].tokens == 7
 
 
 def test_embedding_arm_refuses_mismatched_files_before_embedding(tmp_path):
@@ -127,14 +130,16 @@ def test_an_errored_question_is_dropped_not_missed():
         return reply
 
     questions = _questions(5)
-    vectors = {question.qid: np.ones(4, dtype=np.float32) for question in questions[:4]}
+    vectors = {question.qid: QueryVector(np.ones(4, dtype=np.float32), 1.0, 5) for question in questions[:4]}
     client = httpx.Client(transport=httpx.MockTransport(respond))
 
     results = run_search_arm("S3", questions, query_vectors=vectors, endpoint=_ENDPOINT, tokens=_Tokens(),
                              client=client)
 
     assert [result.qid for result in results] == ["q000", "q001", "q002", "q003", "q004"]
-    assert all(result.arm == "S3" and result.query_tokens == 0 for result in results)
+    assert all(result.arm == "S3" for result in results)
+    # E2 billed the first four for their embedding; the fifth was never embedded.
+    assert [result.query_tokens for result in results] == [5, 5, 5, 5, 0]
     failed = results[:3] + results[4:]
     assert all(result.hits == [] and result.error for result in failed)
     assert results[0].error == "SearchError: HTTP 503: Service Unavailable"
@@ -142,7 +147,77 @@ def test_an_errored_question_is_dropped_not_missed():
     assert results[2].error == f"SearchError: HTTP 403: {billing}"
     # E2 did not embed this question, so S2 and S3 have nothing to search with.
     assert results[4].error == "no query vector: E2 did not embed this question"
-    assert results[3] == ArmResult("q003", "S3", [Hit(26, "issue:7", 3.1)], results[3].ms, None)
+    assert results[3] == ArmResult("q003", "S3", [Hit(26, "issue:7", 3.1)], results[3].ms, None, 5)
+
+
+class _Clock:
+    """A `time` stand-in for `arms`: the time moves only when a test advances it, and every
+    reading is logged, beside the token fetches and requests, so their order can be checked."""
+
+    def __init__(self, log: list[str]) -> None:
+        self.now = 0.0
+        self.log = log
+
+    def perf_counter(self) -> float:
+        self.log.append("clock")
+        return self.now
+
+
+class _LoggedTokens:
+    def __init__(self, log: list[str]) -> None:
+        self.log = log
+
+    def token(self) -> str:
+        self.log.append("token")
+        return "fake-token"
+
+
+def test_search_arms_time_and_cost_the_embedding_e2_made(tmp_path, monkeypatch):
+    # Spec §5.6: latency end to end, embedding the question included. S2 and S3 search with
+    # E2's vector, so each adds E2's embedding time, not E2's whole time, which includes its
+    # own exact search, and carries E2's billed tokens.
+    rng, vectors, ids, artefacts = _corpus(200, 4)
+    vectors_path, ids_path = _save(tmp_path, vectors, ids)
+    log: list[str] = []
+    clock = _Clock(log)
+    monkeypatch.setattr(arms, "time", clock)
+    exact = arms._top
+
+    def timed_top(*args):
+        clock.now += 0.005
+        return exact(*args)
+
+    monkeypatch.setattr(arms, "_top", timed_top)
+
+    def embed(text: str):
+        clock.now += 0.040
+        return rng.normal(size=4).astype(np.float32), 9
+
+    kept: dict[str, QueryVector] = {}
+    (e2,) = run_embedding_arm("E2", _questions(1), vectors_path=vectors_path, ids_path=ids_path,
+                              artefacts=artefacts, embed=embed, query_vectors=kept, tokens=_LoggedTokens(log))
+
+    # The token is fetched before the first question's clock starts, so no question pays for `az`.
+    assert log[:2] == ["token", "clock"]
+    assert e2.ms == pytest.approx(45.0)
+    assert (kept["q000"].ms, kept["q000"].tokens) == (pytest.approx(40.0), 9)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        log.append("request")
+        clock.now += 0.015
+        return httpx.Response(200, json={"value": [
+            {"@search.score": 0.03, "@search.rerankerScore": 2.0, "chunk_id": str(ids[0]), "artefact": "issue:7"}]})
+
+    for arm in ("S2", "S3"):
+        log.clear()
+        client = httpx.Client(transport=httpx.MockTransport(respond))
+        (result,) = run_search_arm(arm, _questions(1), query_vectors=kept, endpoint=_ENDPOINT,
+                                   tokens=_LoggedTokens(log), client=client)
+
+        assert log[:2] == ["token", "clock"]
+        assert result.error is None
+        assert result.ms == pytest.approx(40.0 + 15.0)
+        assert result.query_tokens == 9
 
 
 def test_read_worker_output(tmp_path):
