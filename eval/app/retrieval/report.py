@@ -101,13 +101,18 @@ def _audit(audit: Mapping | None) -> list[str]:
     if audit is None:
         return []
     audited, kept = audit["questions_audited"], audit["kept"]
-    by_type = [f"{entity_type} {count:,}" for entity_type, count in audit["kept_by_type"].items()]
+    measured = {t: count for t, count in audit["kept_by_type"].items() if count}
+    none_left = [t for t, count in audit["kept_by_type"].items() if not count]
+    by_type = [f"{entity_type} {count:,}" for entity_type, count in measured.items()]
     listed = by_type[0] if len(by_type) == 1 else f"{', '.join(by_type[:-1])} and {by_type[-1]}"
-    return [
-        f"- **Audit:** all {audited:,} questions written were audited by an independent reviewer, "
-        f"{audit['marked_by']}, who marked each fine, ambiguous or wrong. The {audited - kept:,} marked "
-        f"ambiguous or wrong were dropped, and the {kept:,} kept are the ones measured: {listed}."
-    ]
+    line = (
+        f"- **Audit:** an independent reviewer audited all {audited:,} questions written, and marked "
+        f"each fine, ambiguous or wrong. The {audited - kept:,} marked ambiguous or wrong were dropped, "
+        f"and the {kept:,} kept are the ones measured: {listed}."
+    )
+    if none_left:
+        line += f" No {' or '.join(none_left)} question survived, so that type is not measured."
+    return [line + f" Reviewer: {audit['marked_by']}."]
 
 
 def _arms() -> list[str]:
@@ -236,14 +241,19 @@ def _latency_and_cost(run: dict, analysis: dict) -> list[str]:
     ]
 
 
+def _too_small(n: int) -> str:
+    if n == 0:
+        return "No release question was measured."
+    return f"Releases are labelled too small to read: n = {n} supports no reading."
+
+
 def _by_type(analysis: dict) -> list[str]:
     by_type = analysis["by_type"]
     lines = [
         "## By artefact type",
         "",
         "Descriptive, with no verdict. Each figure has its n, the questions of that type the arm "
-        f"scored. Releases are labelled too small to read: n = {by_type.get(_TOO_SMALL, {}).get('questions', 0)} "
-        "supports no reading.",
+        f"scored. {_too_small(by_type.get(_TOO_SMALL, {}).get('questions', 0))}",
         "",
     ]
     for key, title in (("top1", "Top-1"), ("mrr", "MRR"), ("lenient_top1", "Lenient top-1")):

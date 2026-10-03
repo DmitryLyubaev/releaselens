@@ -160,10 +160,21 @@ def test_render_states_the_audit_near_the_top():
 
     header = render(run).split("## The arms", 1)[0]
 
-    assert ("- **Audit:** all 1,300 questions written were audited by an independent reviewer, "
-            "Reviewer X (not real), who marked each fine, ambiguous or wrong. The 1,000 "
-            "marked ambiguous or wrong were dropped, and the 300 kept are the ones measured: commit 62, "
-            "issue 81, pull_request 151 and release 6.") in header
+    assert ("- **Audit:** an independent reviewer audited all 1,300 questions written, and marked each "
+            "fine, ambiguous or wrong. The 1,000 marked ambiguous or wrong were dropped, and the 300 kept "
+            "are the ones measured: commit 62, issue 81, pull_request 151 and release 6. "
+            "Reviewer: Reviewer X (not real).") in header
+
+
+def test_render_says_a_type_with_no_question_left_is_not_measured():
+    run = _run()
+    run["questions"] = run["questions"] | {"audit": {
+        "marked_by": "Reviewer X (not real)", "questions_audited": 300, "kept": 229,
+        "kept_by_type": {"commit": 49, "issue": 68, "pull_request": 112, "release": 0}}}
+
+    header = render(run).split("## The arms", 1)[0]
+
+    assert "measured: commit 49, issue 68 and pull_request 112. No release question survived" in header
 
 
 def test_render_states_no_audit_for_a_set_frozen_without_one(page):

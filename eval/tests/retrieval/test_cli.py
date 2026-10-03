@@ -506,7 +506,7 @@ def test_run_arms_carries_the_frozen_sets_audit_into_the_run_and_its_write_up(tm
     assert run["questions"]["audit"] == summary
     capsys.readouterr()
     assert cli.main(["report", "test-run"]) == 0
-    assert "all 4 questions written were audited" in capsys.readouterr().out
+    assert "audited all 4 questions written" in capsys.readouterr().out
 
 
 def test_run_arms_records_no_audit_for_a_set_frozen_without_one(tmp_path, monkeypatch):
