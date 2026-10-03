@@ -42,7 +42,7 @@ MARKS = ("fine", "ambiguous", "wrong")
 EXCLUDED = (
     "Routine version and dependency bumps among pull requests and commits are left out of the "
     "sample, judged on the title and opener alone: a title that bumps something; one that updates "
-    "or upgrades something from one version to another, to a version number, a requirement or "
+    "or upgrades something and also names a version number, a from-to change, a requirement or "
     "nuget-package.props; one that prepares a Maven release or the next development iteration; "
     "or one opened or authored by dependabot or renovate. They are skipped at draw time, as thin "
     "artefacts are, and still count towards the per-type quotas. Issues and releases are never "
@@ -64,7 +64,9 @@ The question must stand on its own: never refer to "this pull request", "this co
 issue" or "this release".
 
 Include the specifics the text gives, such as the component, sample, package or feature, and \
-any versions or dates, so that no similar change in the same repository would also answer it.
+any versions or dates, so that no similar change in the same repository would also answer it. \
+Name them in your own words; numbers, versions and dates can be exact, except a release's own \
+version, which is its tag.
 
 Do not copy the artefact's distinctive phrasing. Put the question in your own words.
 

@@ -334,6 +334,8 @@ def test_the_prompt_asks_for_stated_facts_standalone_questions_and_specifics():
     assert all(phrase in PROMPT for phrase in
                ('"this pull request"', '"this commit"', '"this issue"', '"this release"'))
     assert "no similar change in the same repository would also answer it" in PROMPT
+    # In its own words, so that the specifics do not trip the copying check.
+    assert "Name them in your own words" in PROMPT
 
 
 def test_rejected_artefact_is_rewritten_once_then_replaced():

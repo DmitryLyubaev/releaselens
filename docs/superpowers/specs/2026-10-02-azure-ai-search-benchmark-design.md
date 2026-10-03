@@ -375,10 +375,13 @@ Each step marked **Ask first** waits for the owner's yes.
   answer, as in lenient scoring. Each mark carries the reviewer's note and `marked_by`. The pass
   mark is unchanged. The writer (Sonnet 5) and the marker (Opus 5.5) both come from Anthropic, a
   possible shared bias that is stated, not removed.
-- **Round 0 failed:** 21 fine, 8 ambiguous, 1 wrong. Six of the nine targets were routine version
-  or dependency bumps. Such changes are near-identical by nature, and release notes repeat their
-  titles. Two questions asked who merged a pull request, which the corpus never records. One said
-  "this PR".
+- **Round 0 failed:** 21 fine, 8 ambiguous, 1 wrong.
+  - **Seven of the nine targets were routine version or dependency bumps.** Such changes are
+    near-identical by nature, and release notes repeat their titles. Among these seven:
+    - Two questions also asked who merged a pull request, which the corpus never records.
+    - One said "this PR".
+  - **The other two were pull requests** that a superseding or sibling pull request answers as
+    well. Nothing in round 1 removes this kind, so it may recur.
 - **The change for round 1:**
   - **Bumps are left out.** Routine version and dependency bumps among pull requests and commits
     are skipped at draw time, as the 40-token floor is. The per-type quotas are unchanged. The rule
