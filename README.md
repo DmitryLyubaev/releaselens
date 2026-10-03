@@ -20,6 +20,74 @@ over.
 
 ## Evaluation
 
+### Retrieval benchmark on Azure AI Search, 3 October 2026
+
+**The question:** how much better could ReleaseLens's retrieval be, measured against what it does
+today? Six arms searched the same corpus of 41,825 chunks, restored from 12 August, with the same
+questions. The design and the decision rule were fixed in advance, in
+[the spec](docs/superpowers/specs/2026-10-02-azure-ai-search-benchmark-design.md). Its dated
+amendments in §13 record every change made after approval. The full write-up, with method,
+per-type figures, determinism and costs, is in
+**[eval/baseline.md](eval/baseline.md#retrieval-benchmark--3-october-2026)**.
+
+| Arm | What it is |
+|---|---|
+| E1 | BGE-small, the local model ReleaseLens embeds with: exact cosine search |
+| E2 | Azure OpenAI `text-embedding-3-small`: exact cosine search |
+| E3 | Azure OpenAI `text-embedding-3-large`: exact cosine search |
+| S1 | ReleaseLens today: the app's own hybrid retriever |
+| S2 | Azure AI Search hybrid: keyword plus `-small` vectors |
+| S3 | S2 with AI Search's semantic ranker |
+
+**The questions.**
+- **Writing:** Claude Sonnet 5 wrote one question per artefact, from a seeded, stratified sample.
+  Each question has exactly one right answer: its pull request, commit or issue.
+- **Checking:** an independent reviewer (Claude Opus 5.5 subagents, at the owner's direction)
+  audited all 300, searching the whole corpus for a second answer, and kept the **229** with
+  exactly one.
+- **Releases are not measured.** Every release question had a pull request or another release
+  note that answered it as well.
+- **Routine version bumps are not measured either.** They were left out of the sample, being
+  near-identical to each other.
+
+**The three comparisons.** Each is x − y in top-1 accuracy, paired by question. A difference is
+declared only when the paired difference is at least ±0.05 *and* its 95% bootstrap interval
+excludes zero.
+
+| # | Comparison | n | Mean difference in top-1 | 95% CI | Verdict |
+|---|---|---:|---:|---|---|
+| C1 | E3 − E1: OpenAI's large model against the local BGE, both exact | 229 | +0.271 | [+0.201, +0.341] | difference |
+| C2 | S3 − S1: AI Search with the semantic ranker against ReleaseLens today | 229 | +0.262 | [+0.192, +0.332] | difference |
+| C3 | S3 − S2: the semantic ranker's own effect | 229 | +0.105 | [+0.026, +0.179] | difference |
+
+The three are each made at 95%, with no correction for making three.
+
+| Arm | Top-1 | MRR | p50 / p95 latency | Cost per 1,000 queries |
+|---|---:|---:|---:|---:|
+| E1 | 0.376 | 0.494 | 199 / 270 ms | $0, local |
+| E2 | 0.485 | 0.613 | 340 / 911 ms | $0.000544 |
+| E3 | 0.646 | 0.739 | 132 / 149 ms | $0.003538 |
+| S1 | 0.367 | 0.483 | 147 / 258 ms | $0, local |
+| S2 | 0.524 | 0.637 | 652 / 1,273 ms | $0.000544 |
+| S3 | 0.629 | 0.739 | 667 / 1,229 ms | $0.000544 |
+
+**How to read the per-arm figures.**
+- **They are descriptive,** with no significance claim, n = 229 each.
+- **Latency is not a contest** between the local arms and the network arms.
+- **Fixed costs are outside the table.** The search service costs $0.133 an hour on Basic, and
+  embedding the corpus once cost $1.57.
+- **Nothing errored.** No arm errored on any question, and repeating the first 30 questions
+  changed no arm's top-1 result.
+- **Keyless throughout.** AI Search ran with key authentication off. Every call to it and to
+  Azure OpenAI carried the owner's Entra token, through the Azure CLI.
+
+**What this does not show.**
+- **It measures retrieval only,** not the quality of any answer built on it.
+- **ReleaseLens's search is unchanged.** S1 is what it runs today.
+- **The service was short-lived.** It was created for the session and destroyed straight after.
+- **A possible shared bias.** The question writer and the auditor are both Anthropic models. No
+  arm uses an Anthropic model.
+
 ### Three-arm study, 2 October 2026
 
 The claim under test: going keyless on Azure changed how requests are authenticated, not what is

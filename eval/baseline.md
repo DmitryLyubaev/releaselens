@@ -1,8 +1,165 @@
-This file holds the three-arm study of 2 October 2026 first, then the single-provider runs of
-August as history, then how to run the study. The study's raw report is
-`eval/reports/2c413fe9-….json`, which is git-ignored because it embeds answer and evidence text. The
-section below is `python -m app.study_report 2c413fe9-76f1-4f5a-aae9-b7b2419642f0`'s output,
-unedited.
+This file holds the retrieval benchmark of 3 October 2026 first, then the three-arm study of 2
+October 2026, then the single-provider runs of August as history, then how to run the study.
+
+The retrieval benchmark's raw run is `eval/reports/retrieval-20261003T210637Z.json`, which is
+git-ignored because it holds the search service's endpoint. The section below is
+`python -m app.retrieval report 20261003T210637Z`'s output, unedited. How to run it again is in
+[retrieval/README.md](retrieval/README.md), and the design and its dated amendments are in
+[the spec](../docs/superpowers/specs/2026-10-02-azure-ai-search-benchmark-design.md).
+
+# Retrieval benchmark — 3 October 2026
+
+- **Run id:** `20261003T210637Z`
+- **Started:** 2026-10-03T21:06:42+00:00
+- **Questions:** 229, frozen in `retrieval/questions.jsonl` with SHA-256 `a6d0c1e50636ffffa348e329af2a345365f97499a537e1051e79ce5c74e72bd4`. Each has one artefact as its single right answer.
+- **Audit:** an independent reviewer audited all 300 questions written, and marked each fine, ambiguous or wrong. The 71 marked ambiguous or wrong were dropped, and the 229 kept are the ones measured: commit 49, issue 68 and pull_request 112. No release question survived, so that type is not measured. Reviewer: Claude Opus 5.5, independent reviewer subagents (one per batch of 30, identical instructions), at the owner's direction.
+- **Corpus:** 41,825 chunks, the same for every arm. Each arm returns its top 50 chunks per question.
+- **Embedding deployments:** `releaselens-embed-small` for E2, S2 and S3, and `releaselens-embed-large` for E3, called keyless as the owner through the Azure CLI.
+- **AI Search:** the index `releaselens-chunks`, REST API `2026-04-01`, keyless: local authentication is off, and every call carries an Entra token.
+
+## The arms
+
+| Arm | What it is |
+|---|---|
+| E1 | BGE-small, local: exact cosine over the stored 384-dimension vectors, the question embedded with BGE's query prefix |
+| E2 | `text-embedding-3-small`: exact cosine over 1,536-dimension vectors of the corpus |
+| E3 | `text-embedding-3-large`: exact cosine over 3,072-dimension vectors of the corpus |
+| S1 | ReleaseLens today: the app's `HybridRetriever`, run by the Worker's `retrieve` |
+| S2 | AI Search hybrid: keyword (English analyzer) plus vector (`-small`, HNSW), fused by the service |
+| S3 | S2's query with the semantic ranker (`queryType: semantic`), which reorders its top 50 |
+
+The E arms search exactly, so no approximate index blurs the comparison of models. The S arms run as each system really runs, with its own approximate index.
+
+## Method
+
+- Each arm's ranked chunks are collapsed to artefacts by first appearance. Top-1 is 1 when the first artefact is the target. Reciprocal rank is 1 over the target's rank among the collapsed artefacts, and 0 when it is not within the 50 chunks. MRR is its mean.
+- Lenient top-1 also counts a pull request's merge commit as right for a pull-request target, and the reverse.
+- The margin is the arm's score for its first artefact less its score for the next artefact, on top-1 hits only. It is within the arm, in the arm's own units, and is not compared across arms.
+- A question an arm errored on is dropped from that arm's figures and from every pair it is in. It is never scored as a miss.
+- The comparisons pair top-1 by question. The 95% interval is a bootstrap that resamples questions: 10,000 resamples, seed 20261002, percentiles by nearest rank.
+- The decision rule was pre-registered before any data existed. A difference is declared only when the paired difference is ≤ −0.05 or ≥ +0.05 and its 95% interval excludes zero; an interval that touches zero does not exclude it. Anything else is inconclusive at its number of questions.
+- The rule reads the mean and the bounds settled to 12 decimal places, so float error cannot flip a verdict at −0.05, +0.05 or 0.
+
+## The pre-registered comparisons
+
+Each is x − y in top-1 accuracy, over the n questions both arms scored.
+
+| # | Comparison | n | Dropped | Mean difference in top-1 | 95% CI | Verdict |
+|---|---|---:|---:|---:|---|---|
+| C1 | E3 − E1 | 229 | 0 | +0.271 | [+0.201, +0.341] | difference |
+| C2 | S3 − S1 | 229 | 0 | +0.262 | [+0.192, +0.332] | difference |
+| C3 | S3 − S2 | 229 | 0 | +0.105 | [+0.026, +0.179] | difference |
+
+The three comparisons are each made at 95%, with no correction for multiple comparisons. Each has at most about a 5% chance of declaring a difference that is not there, so the three together have a greater chance than that of declaring at least one.
+
+## Per arm
+
+Descriptive, with no verdict. Top-1, MRR, lenient top-1 and the margin are over the n questions the arm scored; dropped is the questions it errored on. The median margin is in each arm's own units, with its n of top-1 hits.
+
+| Arm | n | Dropped | Top-1 | MRR | Lenient top-1 | Median margin | p50 latency | p95 latency | Cost per 1,000 queries |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| E1 | 229 | 0 | 0.376 | 0.494 | 0.441 | 0.0217 (n = 86) | 199 ms | 270 ms | $0, local |
+| E2 | 229 | 0 | 0.485 | 0.613 | 0.546 | 0.0434 (n = 111) | 340 ms | 911 ms | $0.000544 |
+| E3 | 229 | 0 | 0.646 | 0.739 | 0.725 | 0.0406 (n = 148) | 132 ms | 149 ms | $0.003538 |
+| S1 | 229 | 0 | 0.367 | 0.483 | 0.432 | 0.0126 (n = 84) | 147 ms | 258 ms | $0, local |
+| S2 | 229 | 0 | 0.524 | 0.637 | 0.590 | 0.0019 (n = 120) | 652 ms | 1,273 ms | $0.000544 |
+| S3 | 229 | 0 | 0.629 | 0.739 | 0.716 | 0.2437 (n = 144) | 667 ms | 1,229 ms | $0.000544 |
+
+**Latency.**
+
+- It is measured per question by the harness, end to end on each arm, embedding the question included, over the rows without errors.
+- The local arms (E1 and S1) and the network arms (E2, E3, S2 and S3) are not alike, so their latencies are not a contest. The local arms run in one process beside the database; the network arms make HTTPS calls to Azure.
+- S2 and S3 add E2's time to embed the question, since they search with E2's vector.
+- E1 and S1 open a database connection for each question, inside its time, and q001 pays for a cold one.
+- Each arm's dropped questions are in the table. The arms do not retry alike: E2 and E3 retry a throttled or failed embedding call inside the question's time, so a retried question is kept and is slower, while S2 and S3 never retry a search, so a failed search drops the question from that arm, and from its latency.
+
+**Cost.**
+
+- Cost per 1,000 queries is priced from each arm's measured query tokens, at the rates read on 2026-10-02 from the Azure Retail Prices API, Australia East, in USD: `text-embedding-3-small` at $0.02 and `text-embedding-3-large` at $0.13 per 1M tokens.
+- For E2 and E3 it is per question asked, over every row, errored ones included, since an embedding that a failure followed was still billed. For S2 and S3 it is per search sent, leaving out any question E2 gave no vector for, which was never searched.
+- S2 and S3 include E2's tokens for embedding the question.
+- Embedding the corpus is a one-time cost, not a cost per query, billed at the rates above: `text-embedding-3-small` 10,492,572 tokens, $0.209851; `text-embedding-3-large` 10,492,572 tokens, $1.364034.
+- S3 adds the semantic ranker at $0 per request, on the free plan, whose monthly allowance of requests is free, and which refuses requests beyond it rather than billing them.
+- E1 and S1 run locally, with no per-query charge.
+- AI Search Basic costs $0.133 per hour of service. It is a fixed cost whatever the number of queries, so it is reported here and not in the cost per 1,000 queries.
+
+## By artefact type
+
+Descriptive, with no verdict. Each figure has its n, the questions of that type the arm scored. No release question was measured.
+
+### Top-1
+
+| Type | Questions | E1 | E2 | E3 | S1 | S2 | S3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| commit | 49 | 0.184 (n = 49) | 0.429 (n = 49) | 0.592 (n = 49) | 0.163 (n = 49) | 0.408 (n = 49) | 0.571 (n = 49) |
+| issue | 68 | 0.529 (n = 68) | 0.691 (n = 68) | 0.853 (n = 68) | 0.515 (n = 68) | 0.721 (n = 68) | 0.632 (n = 68) |
+| pull_request | 112 | 0.366 (n = 112) | 0.384 (n = 112) | 0.545 (n = 112) | 0.366 (n = 112) | 0.455 (n = 112) | 0.652 (n = 112) |
+
+### MRR
+
+| Type | Questions | E1 | E2 | E3 | S1 | S2 | S3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| commit | 49 | 0.333 (n = 49) | 0.563 (n = 49) | 0.702 (n = 49) | 0.313 (n = 49) | 0.558 (n = 49) | 0.703 (n = 49) |
+| issue | 68 | 0.616 (n = 68) | 0.775 (n = 68) | 0.891 (n = 68) | 0.594 (n = 68) | 0.780 (n = 68) | 0.744 (n = 68) |
+| pull_request | 112 | 0.490 (n = 112) | 0.536 (n = 112) | 0.664 (n = 112) | 0.489 (n = 112) | 0.584 (n = 112) | 0.752 (n = 112) |
+
+### Lenient top-1
+
+| Type | Questions | E1 | E2 | E3 | S1 | S2 | S3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| commit | 49 | 0.347 (n = 49) | 0.531 (n = 49) | 0.694 (n = 49) | 0.327 (n = 49) | 0.531 (n = 49) | 0.755 (n = 49) |
+| issue | 68 | 0.529 (n = 68) | 0.691 (n = 68) | 0.853 (n = 68) | 0.515 (n = 68) | 0.721 (n = 68) | 0.632 (n = 68) |
+| pull_request | 112 | 0.429 (n = 112) | 0.464 (n = 112) | 0.661 (n = 112) | 0.429 (n = 112) | 0.536 (n = 112) | 0.750 (n = 112) |
+
+## Caveats
+
+**Determinism.**
+
+The first 30 questions were run a second time on every arm. E1's and S1's second pass is a second full Worker run, of which the first 30 questions are compared. S2's and S3's second pass searches with E2's first-pass vectors, so it embeds nothing again. More than 3 changes on an arm is a caveat on that arm. A question that errored on either pass is not compared.
+
+- E1: 0 of 30 top-1 results changed.
+- E2: 0 of 30 top-1 results changed.
+- E3: 0 of 30 top-1 results changed.
+- S1: 0 of 30 top-1 results changed.
+- S2: 0 of 30 top-1 results changed.
+- S3: 0 of 30 top-1 results changed.
+
+**Pairs dropped.**
+
+A question an arm errored on is dropped from that arm, and from each comparison with it.
+
+- E1: 0 questions dropped.
+- E2: 0 questions dropped.
+- E3: 0 questions dropped.
+- S1: 0 questions dropped.
+- S2: 0 questions dropped.
+- S3: 0 questions dropped.
+- C1 (E3 − E1): 0 pairs dropped, leaving 229.
+- C2 (S3 − S1): 0 pairs dropped, leaving 229.
+- C3 (S3 − S2): 0 pairs dropped, leaving 229.
+
+## Appendix: exploratory pairs
+
+Exploratory: every other pair of arms, as a plain difference in top-1 accuracy over the questions both arms scored. These have no interval and no verdict, and support no claim.
+
+| Pair | n | Difference in top-1 |
+|---|---:|---:|
+| E2 − E1 | 229 | +0.109 |
+| S1 − E1 | 229 | −0.009 |
+| S2 − E1 | 229 | +0.148 |
+| S3 − E1 | 229 | +0.253 |
+| E3 − E2 | 229 | +0.162 |
+| S1 − E2 | 229 | −0.118 |
+| S2 − E2 | 229 | +0.039 |
+| S3 − E2 | 229 | +0.144 |
+| S1 − E3 | 229 | −0.279 |
+| S2 − E3 | 229 | −0.122 |
+| S3 − E3 | 229 | −0.017 |
+| S2 − S1 | 229 | +0.157 |
+
+The three-arm study's raw report is `eval/reports/2c413fe9-….json`, which is git-ignored because
+it embeds answer and evidence text. The section below is
+`python -m app.study_report 2c413fe9-76f1-4f5a-aae9-b7b2419642f0`'s output, unedited.
 
 # Three-arm study — 2 October 2026
 
