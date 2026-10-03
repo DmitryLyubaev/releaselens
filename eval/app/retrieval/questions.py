@@ -681,6 +681,12 @@ def freeze(questions: Iterable[Question], manifest: Mapping, path: Path) -> str:
     return digest
 
 
+def load_manifest(path: Path) -> dict:
+    """The manifest frozen beside the set at `path`. It does not check the set against it:
+    load_frozen does."""
+    return json.loads(_manifest_path(path).read_text(encoding="utf-8"))
+
+
 def load_frozen(path: Path) -> list[Question]:
     """The frozen set, only if the file is byte for byte what its manifest hashed.
 
@@ -688,7 +694,7 @@ def load_frozen(path: Path) -> list[Question]:
     """
     payload = path.read_bytes()
     actual = hashlib.sha256(payload).hexdigest()
-    expected = json.loads(_manifest_path(path).read_text(encoding="utf-8"))["sha256"]
+    expected = load_manifest(path)["sha256"]
     if actual != expected:
         raise ValueError(
             f"{path.name} has SHA-256 {actual}, but its manifest froze {expected}: "

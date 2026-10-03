@@ -22,6 +22,7 @@ import re
 import sys
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ from .corpus import load_chunks, load_links
 from .embed import embed_corpus, embed_query
 from .questions import (
     EXCLUDED,
+    MARKS,
     MAX_TEXT_TOKENS,
     MAX_TOKENS,
     MIN_TOKENS,
@@ -44,11 +46,13 @@ from .questions import (
     REWRITE,
     SEED,
     BuiltSet,
+    Question,
     SampleStream,
     apply_marks,
     build_set,
     freeze,
     load_frozen,
+    load_manifest,
     sample_artefacts,
     spot_check_sheet,
 )
@@ -67,6 +71,8 @@ SMALL = "releaselens-embed-small"
 LARGE = "releaselens-embed-large"
 CHECKPOINT = "questions.checkpoint.jsonl"
 REPEAT_FIRST = 30
+# An audit that keeps fewer questions than this is taken for a broken file, not a verdict on the set.
+MIN_KEPT = 200
 # The index counts an uploaded document only once it has indexed it, so build-index reads the
 # count up to this many times, this many seconds apart, before it gives up.
 COUNT_READINGS = 12
@@ -150,8 +156,66 @@ def _round(path: Path) -> dict:
             "spend": sheet["spend"]}
 
 
+def _audit(path: Path, built: BuiltSet, last: dict) -> tuple[list[Question], dict]:
+    """The questions an independent reviewer's audit of the whole set marks fine, in qid order,
+    and the manifest's record of the audit, with every question it drops.
+
+    The audit extends the last spot-check round rather than overruling it, so it must give each
+    question on that round's sheet the sheet's own mark. It must also mark every question of
+    this set exactly once, and nothing else, with one of MARKS, and say who marked it. An audit
+    that keeps fewer than MIN_KEPT is refused as a broken file. It does not judge any question
+    itself: the marks are the reviewer's.
+    """
+    try:
+        audit = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Refused(f"cannot read the audit at {path}: {error}") from error
+    rows = audit.get("rows") if isinstance(audit, dict) else None
+    if not isinstance(rows, list) or not all(
+            isinstance(row, dict) and all(isinstance(row.get(key), str) for key in ("qid", "mark", "note"))
+            for row in rows):
+        raise Refused(f"the audit at {path} has no rows, or a row that is not a qid, a mark and a note, "
+                      "all strings")
+    marked_by = audit.get("marked_by")
+    if not isinstance(marked_by, str) or not marked_by.strip():
+        raise Refused(f"the audit at {path} does not say who marked it: marked_by must be a non-empty string")
+
+    in_set = [question.qid for question in built.questions]
+    counted = Counter(row["qid"] for row in rows)
+    if missing := [qid for qid in in_set if qid not in counted]:
+        raise Refused(f"the audit at {path} leaves out {', '.join(missing)}; it must mark every question of "
+                      "the set once")
+    if extra := sorted(counted.keys() - set(in_set)):
+        raise Refused(f"the audit at {path} marks {', '.join(extra)}, which are not in this set")
+    if repeated := sorted(qid for qid, count in counted.items() if count > 1):
+        raise Refused(f"the audit at {path} marks {', '.join(repeated)} more than once")
+    if invalid := [f"{row['qid']}={row['mark']}" for row in rows if row["mark"] not in MARKS]:
+        raise Refused(f"the audit at {path} has marks that are not one of {', '.join(MARKS)}: {', '.join(invalid)}")
+    marks = {row["qid"]: row for row in rows}
+    if disagree := [f"{qid} (audit {marks[qid]['mark']}, sheet {mark})" for qid, mark in sorted(last["marks"].items())
+                    if marks[qid]["mark"] != mark]:
+        raise Refused(f"the audit at {path} and round {last['round']}'s sheet mark {', '.join(disagree)} "
+                      "differently; the audit must agree with the round it extends")
+
+    kept = [question for question in built.questions if marks[question.qid]["mark"] == "fine"]
+    if len(kept) < MIN_KEPT:
+        raise Refused(f"the audit at {path} keeps {len(kept)} questions, fewer than {MIN_KEPT}, so it is taken for "
+                      "a broken file and nothing is frozen; check it")
+    return kept, {
+        "marked_by": marked_by,
+        "questions_audited": len(built.questions),
+        "kept": len(kept),
+        "kept_by_type": {entity_type: sum(1 for question in kept if question.entity_type == entity_type)
+                         for entity_type in sorted({question.entity_type for question in built.questions})},
+        "dropped": [{"qid": question.qid, "target": question.target, "entity_type": question.entity_type,
+                     "mark": marks[question.qid]["mark"], "note": marks[question.qid]["note"]}
+                    for question in built.questions if marks[question.qid]["mark"] != "fine"],
+    }
+
+
 def freeze_set(args) -> int:
-    """Freeze the set with its manifest, only if the last spot-check passed on this very set.
+    """Freeze the set with its manifest, only if the last spot-check passed on this very set,
+    or, with --audit, only the questions an independent audit of the whole set marks fine.
 
     Each sheet given is one round, every round from 0, oldest first; the earlier ones are the
     rounds that failed and sent the set back to be regenerated, and are frozen with it as the
@@ -159,6 +223,10 @@ def freeze_set(args) -> int:
     `spend_all_rounds` is every question-writing call the set took, the generations thrown away
     included. So a round left out is refused, as is an earlier round's sheet in --data that was
     not the one given.
+
+    With --audit, the last round may have failed: the audit (see _audit) takes the place of its
+    pass mark, and the round is still frozen as the record, with its marks. The questions it
+    drops leave gaps in the qids, which stay as they were written.
     """
     stream, built = _built(args, _CheckpointOnly(_checkpoint(args)))
     rounds = [_round(path) for path in args.sheet]
@@ -182,9 +250,13 @@ def freeze_set(args) -> int:
     if last["spend"] != _spend(built):
         raise Refused(f"round {last['round']}'s sheet records a spend of {last['spend']}, but this set's "
                       f"spend record holds {_spend(built)}; the last sheet must be of the set being frozen")
-    if not last["passes"]:
+    if args.audit is not None:
+        kept, audit = _audit(args.audit, built, last)
+    elif not last["passes"]:
         raise Refused(f"round {last['round']}'s spot-check failed: {last['not_fine']} of {len(last['marks'])} "
                       "are not fine, more than 3, so the set is regenerated, not frozen (spec §3.5)")
+    else:
+        kept, audit = built.questions, None
 
     manifest = {
         "seed": SEED,
@@ -211,9 +283,11 @@ def freeze_set(args) -> int:
                              for key in ("calls", "input_tokens", "output_tokens")},
         "why_unique": built.why_unique,
     }
+    if audit is not None:
+        manifest["audit"] = audit
     args.questions.parent.mkdir(parents=True, exist_ok=True)
-    digest = freeze(built.questions, manifest, args.questions)
-    print(f"froze {len(built.questions)} questions in {args.questions}, SHA-256 {digest}")
+    digest = freeze(kept, manifest, args.questions)
+    print(f"froze {len(kept)} of the {len(built.questions)} questions in {args.questions}, SHA-256 {digest}")
     return 0
 
 
@@ -319,6 +393,7 @@ def run_arms(args) -> int:
     full.
     """
     questions = load_frozen(args.questions)
+    audit = load_manifest(args.questions).get("audit")
     qids = [question.qid for question in questions]
     if not 1 <= args.repeat_first <= len(questions):
         raise Refused(f"--repeat-first must be between 1 and {len(questions)}")
@@ -369,7 +444,10 @@ def run_arms(args) -> int:
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "finished_at": None,
         "questions": {"file": _shown(args.questions),
-                      "sha256": hashlib.sha256(args.questions.read_bytes()).hexdigest(), "count": len(questions)},
+                      "sha256": hashlib.sha256(args.questions.read_bytes()).hexdigest(), "count": len(questions),
+                      # What the write-up states of the audit; the dropped questions stay in the manifest.
+                      "audit": None if audit is None else {key: value for key, value in audit.items()
+                                                           if key != "dropped"}},
         "chunks": len(chunks),
         # One-time costs, not per query: the tokens embedding the corpus was billed, per model.
         "corpus_tokens": corpus_tokens,
@@ -478,6 +556,8 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--sheet", type=Path, action="append", required=True,
                              help="a marked sheet; repeat it for each round, oldest first")
             sub.add_argument("--questions", type=Path, default=QUESTIONS, help="where to freeze the set")
+            sub.add_argument("--audit", type=Path, default=None,
+                             help="an independent audit of every question: freeze only those it marks fine")
 
     sub = command("embed", embed, "embed the corpus with one deployment, resumably", tenant=True)
     sub.add_argument("--deployment", required=True)

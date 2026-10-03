@@ -1,9 +1,10 @@
 """The benchmark's write-up: a saved run rendered as exactly the markdown that is published.
 
-Spec §5.3–§5.7, and nothing more: the three pre-registered verdicts, the line saying no
-correction was made for running three, each arm's descriptive figures with the latency and cost
-caveats, the breakdown by artefact type, the caveats on determinism and dropped pairs, and every
-other pair of arms in an exploratory appendix with no interval.
+Spec §5.3–§5.7, and nothing more: for a set frozen from an audit of every question, what the
+audit kept; the three pre-registered verdicts, the line saying no correction was made for
+running three, each arm's descriptive figures with the latency and cost caveats, the breakdown
+by artefact type, the caveats on determinism and dropped pairs, and every other pair of arms in
+an exploratory appendix with no interval.
 
 Every figure is the run's own, from the analysis `run-arms` saved, and only formatting is
 applied: accuracies, means and bounds to 3 places (or more, where 3 would put a mean or a bound
@@ -83,6 +84,7 @@ def _header(run: dict) -> list[str]:
         f"- **Started:** {run['started_at']}",
         f"- **Questions:** {questions['count']:,}, frozen in `{questions['file']}` with SHA-256 "
         f"`{questions['sha256']}`. Each has one artefact as its single right answer.",
+        *_audit(questions.get("audit")),
         f"- **Corpus:** {run['chunks']:,} chunks, the same for every arm. Each arm returns its top 50 "
         "chunks per question.",
         f"- **Embedding deployments:** `{deployments['E2']}` for E2, S2 and S3, and "
@@ -90,6 +92,21 @@ def _header(run: dict) -> list[str]:
         f"- **AI Search:** the index `{run['search']['index']}`, REST API `{run['search']['api_version']}`, "
         "keyless: local authentication is off, and every call carries an Entra token.",
         "",
+    ]
+
+
+def _audit(audit: Mapping | None) -> list[str]:
+    """The line saying the set measured is what an independent audit of every question kept,
+    or nothing, for a set frozen on its spot-check alone."""
+    if audit is None:
+        return []
+    audited, kept = audit["questions_audited"], audit["kept"]
+    by_type = [f"{entity_type} {count:,}" for entity_type, count in audit["kept_by_type"].items()]
+    listed = by_type[0] if len(by_type) == 1 else f"{', '.join(by_type[:-1])} and {by_type[-1]}"
+    return [
+        f"- **Audit:** all {audited:,} questions written were audited by an independent reviewer, "
+        f"{audit['marked_by']}, who marked each fine, ambiguous or wrong. The {audited - kept:,} marked "
+        f"ambiguous or wrong were dropped, and the {kept:,} kept are the ones measured: {listed}."
     ]
 
 

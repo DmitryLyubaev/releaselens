@@ -150,3 +150,22 @@ def test_render_refuses_a_run_with_an_arm_failure():
 def test_render_refuses_a_run_with_no_analysis():
     with pytest.raises(ValueError, match="no analysis"):
         render(_run() | {"analysis": None})
+
+
+def test_render_states_the_audit_near_the_top():
+    run = _run()
+    run["questions"] = run["questions"] | {"audit": {
+        "marked_by": "Reviewer X (not real)", "questions_audited": 1_300, "kept": 300,
+        "kept_by_type": {"commit": 62, "issue": 81, "pull_request": 151, "release": 6}}}
+
+    header = render(run).split("## The arms", 1)[0]
+
+    assert ("- **Audit:** all 1,300 questions written were audited by an independent reviewer, "
+            "Reviewer X (not real), who marked each fine, ambiguous or wrong. The 1,000 "
+            "marked ambiguous or wrong were dropped, and the 300 kept are the ones measured: commit 62, "
+            "issue 81, pull_request 151 and release 6.") in header
+
+
+def test_render_states_no_audit_for_a_set_frozen_without_one(page):
+    assert "Audit" not in page
+    assert "Audit" not in render(_run() | {"questions": _run()["questions"] | {"audit": None}})

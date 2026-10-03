@@ -6,6 +6,7 @@ Azure or spends anything.
 """
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,6 +204,155 @@ def test_freeze_refuses_a_set_of_rounds_that_leaves_one_out(tmp_path, monkeypatc
     assert cli.main(["freeze", *[item for path in sheet for item in ("--sheet", path)], *paths]) == 0
 
 
+# --- freeze --audit ------------------------------------------------------------------------
+
+_MARKED_BY = "an independent reviewer (not real)"
+
+
+def _failed_round(tmp_path, monkeypatch) -> tuple[list[str], dict, list[dict]]:
+    """A written set whose only round, round 0, failed with 5 wrong: freeze's arguments, the
+    marked sheet, and every question of the set, from the checkpoint, in qid order."""
+    data, questions_path = tmp_path / "data", tmp_path / "retrieval" / "questions.jsonl"
+    _export(data, _sample_corpus())
+    monkeypatch.setattr(cli, "_writer", lambda: SimpleNamespace(messages=_Messages(300)))
+    assert cli.main(["write-questions", "--data", str(data)]) == 0
+    assert cli.main(["spot-check", "--round", "0", "--data", str(data)]) == 0
+    sheet_path = data / "spot-check-round-0.json"
+    _mark(sheet_path, wrong=5)
+    records = (data / "questions.checkpoint.jsonl").read_text(encoding="utf-8").splitlines()
+    questions = sorted((json.loads(line)["question"] for line in records), key=lambda question: question["qid"])
+    argv = ["freeze", "--data", str(data), "--sheet", str(sheet_path), "--questions", str(questions_path)]
+    return argv, json.loads(sheet_path.read_text(encoding="utf-8")), questions
+
+
+def _audit(sheet: dict, questions: list[dict], *, ambiguous: int = 3, wrong: int = 2) -> dict:
+    """Every question marked: the sheet's own marks for its 30, and of the rest, the first
+    `ambiguous` ambiguous, the next `wrong` wrong, and the others fine."""
+    on_sheet = {row["qid"]: row["mark"] for row in sheet["rows"]}
+    rest = [question["qid"] for question in questions if question["qid"] not in on_sheet]
+    marks = on_sheet | {qid: "ambiguous" for qid in rest[:ambiguous]} | {
+        qid: "wrong" for qid in rest[ambiguous:ambiguous + wrong]}
+    return {"marked_by": _MARKED_BY,
+            "rows": [{"qid": question["qid"], "mark": marks.get(question["qid"], "fine"),
+                      "note": f"note on {question['qid']} (not real)"} for question in questions]}
+
+
+def _write_audit(tmp_path, audit: dict) -> list[str]:
+    path = tmp_path / "audit.json"
+    path.write_text(json.dumps(audit), encoding="utf-8")
+    return ["--audit", str(path)]
+
+
+def test_freeze_with_an_audit_keeps_only_the_fine_questions_though_the_last_round_failed(tmp_path, monkeypatch):
+    argv, sheet, questions = _failed_round(tmp_path, monkeypatch)
+    audit = _audit(sheet, questions)
+    questions_path = Path(argv[-1])
+
+    assert cli.main([*argv, *_write_audit(tmp_path, audit)]) == 0
+
+    marks = {row["qid"]: row for row in audit["rows"]}
+    kept = [question for question in questions if marks[question["qid"]]["mark"] == "fine"]
+    frozen = load_frozen(questions_path)
+    # Only the fine ones, in qid order, keeping their qids.
+    assert [asdict(question) for question in frozen] == kept
+    assert len(frozen) == 290
+    manifest = json.loads(questions_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    dropped = [question for question in questions if marks[question["qid"]]["mark"] != "fine"]
+    assert manifest["audit"] == {
+        "marked_by": _MARKED_BY,
+        "questions_audited": 300,
+        "kept": 290,
+        "kept_by_type": {entity_type: sum(1 for question in kept if question["entity_type"] == entity_type)
+                         for entity_type in ("commit", "issue", "pull_request", "release")},
+        "dropped": [{"qid": question["qid"], "target": question["target"],
+                     "entity_type": question["entity_type"], "mark": marks[question["qid"]]["mark"],
+                     "note": marks[question["qid"]]["note"]} for question in dropped],
+    }
+    assert [entry["mark"] for entry in manifest["audit"]["dropped"]].count("wrong") == 7
+    # Everything already in the manifest stays: the failed round is recorded with its marks.
+    [check] = manifest["spot_check"]
+    assert (check["round"], check["fine"], check["not_fine"], check["passes"]) == (0, 25, 5, False)
+    assert check["marks"] == {row["qid"]: row["mark"] for row in sheet["rows"]}
+    assert manifest["sample_size"] == 300
+    assert manifest["excluded_from_sample"] == EXCLUDED
+    assert manifest["quotas"] == {"commit": 94, "issue": 113, "pull_request": 84, "release": 9}
+
+
+def _remove_row(audit: dict, sheet: dict) -> str:
+    audit["rows"].pop(1)
+    return "leaves out"
+
+
+def _add_row(audit: dict, sheet: dict) -> str:
+    audit["rows"].append({"qid": "q301", "mark": "fine", "note": ""})
+    return "q301"
+
+
+def _repeat_row(audit: dict, sheet: dict) -> str:
+    audit["rows"].append(dict(audit["rows"][0]))
+    return "more than once"
+
+
+def _bad_mark(audit: dict, sheet: dict) -> str:
+    audit["rows"][2]["mark"] = "unclear"
+    return "unclear"
+
+
+def _no_marker(audit: dict, sheet: dict) -> str:
+    audit["marked_by"] = "  "
+    return "marked_by"
+
+
+def _disagree(audit: dict, sheet: dict) -> str:
+    # A question the sheet marked fine, marked ambiguous by the audit.
+    qid = next(row["qid"] for row in sheet["rows"] if row["mark"] == "fine")
+    next(row for row in audit["rows"] if row["qid"] == qid)["mark"] = "ambiguous"
+    return "agree with the round it extends"
+
+
+def _not_rows(audit: dict, sheet: dict) -> str:
+    audit["rows"] = {"q001": "fine"}
+    return "rows"
+
+
+@pytest.mark.parametrize("spoil", [_remove_row, _add_row, _repeat_row, _bad_mark, _no_marker, _disagree, _not_rows])
+def test_freeze_refuses_an_audit_that_does_not_mark_this_set_as_its_last_round_did(tmp_path, monkeypatch,
+                                                                                     capsys, spoil):
+    argv, sheet, questions = _failed_round(tmp_path, monkeypatch)
+    audit = _audit(sheet, questions)
+    expected = spoil(audit, sheet)
+    capsys.readouterr()
+
+    assert cli.main([*argv, *_write_audit(tmp_path, audit)]) == 1
+
+    error = capsys.readouterr().err
+    assert expected in error and "Traceback" not in error
+    assert not Path(argv[-1]).exists()
+
+
+def test_freeze_refuses_an_audit_that_keeps_fewer_than_200(tmp_path, monkeypatch, capsys):
+    argv, sheet, questions = _failed_round(tmp_path, monkeypatch)
+    # 25 fine on the sheet, and 270 others: dropping 96 of them keeps 199.
+    capsys.readouterr()
+    assert cli.main([*argv, *_write_audit(tmp_path, _audit(sheet, questions, ambiguous=50, wrong=46))]) == 1
+    error = capsys.readouterr().err
+    assert "199" in error and "fewer than 200" in error
+    assert not Path(argv[-1]).exists()
+
+    # 200 is enough.
+    assert cli.main([*argv, *_write_audit(tmp_path, _audit(sheet, questions, ambiguous=50, wrong=45))]) == 0
+    assert len(load_frozen(Path(argv[-1]))) == 200
+
+
+def test_freeze_without_an_audit_still_refuses_a_failed_last_round(tmp_path, monkeypatch, capsys):
+    argv, _, _ = _failed_round(tmp_path, monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(argv) == 1
+    assert "5 of 30" in capsys.readouterr().err
+    assert not Path(argv[-1]).exists()
+
+
 # --- run-arms ------------------------------------------------------------------------------
 
 
@@ -237,7 +387,7 @@ def _progress(data, deployment: str, done: dict[str, int], *, chunks: int = 4, b
         encoding="utf-8")
 
 
-def _measurement(tmp_path, monkeypatch, *, fail: str | None = None, indexed: int = 4):
+def _measurement(tmp_path, monkeypatch, *, fail: str | None = None, indexed: int = 4, audit: dict | None = None):
     data, reports = tmp_path / "data", tmp_path / "reports"
     _export(data, _CORPUS)
     for deployment, tokens in (("releaselens-embed-small", 1_234_567), ("releaselens-embed-large", 1_234_000)):
@@ -248,7 +398,7 @@ def _measurement(tmp_path, monkeypatch, *, fail: str | None = None, indexed: int
                  Question("q002", "Which issue reported the crash?", "issue:7", "issue"),
                  Question("q003", "Which pull request added the guard?", "pull_request:1", "pull_request")]
     questions_path = tmp_path / "questions.jsonl"
-    freeze(questions, {"seed": SEED}, questions_path)
+    freeze(questions, {"seed": SEED} | ({"audit": audit} if audit else {}), questions_path)
 
     worker = {}
     for mode, arm in (("hybrid", "S1"), ("bge", "E1")):
@@ -340,6 +490,30 @@ def test_run_arms_runs_e2_first_and_hands_its_own_vectors_to_s2_and_s3(tmp_path,
     page = capsys.readouterr().out
     assert "# Retrieval benchmark" in page
     assert "1,234,567" in page and "one-time" in page
+
+
+def test_run_arms_carries_the_frozen_sets_audit_into_the_run_and_its_write_up(tmp_path, monkeypatch, capsys):
+    dropped = [{"qid": "q004", "target": "release:dotnet-1.0.0", "entity_type": "release", "mark": "ambiguous",
+                "note": "two releases say so (not real)"}]
+    summary = {"marked_by": _MARKED_BY, "questions_audited": 4, "kept": 3,
+               "kept_by_type": {"commit": 1, "issue": 1, "pull_request": 1, "release": 0}}
+    argv, _, saved = _measurement(tmp_path, monkeypatch, audit=summary | {"dropped": dropped})
+
+    assert cli.main(argv) == 0
+
+    run = json.loads(saved.read_text(encoding="utf-8"))
+    # The figures the write-up states; the dropped questions stay in the manifest, beside the set.
+    assert run["questions"]["audit"] == summary
+    capsys.readouterr()
+    assert cli.main(["report", "test-run"]) == 0
+    assert "all 4 questions written were audited" in capsys.readouterr().out
+
+
+def test_run_arms_records_no_audit_for_a_set_frozen_without_one(tmp_path, monkeypatch):
+    argv, _, saved = _measurement(tmp_path, monkeypatch)
+
+    assert cli.main(argv) == 0
+    assert json.loads(saved.read_text(encoding="utf-8"))["questions"]["audit"] is None
 
 
 def test_a_token_failure_is_an_arm_failure_not_300_question_errors(tmp_path, monkeypatch, capsys):
