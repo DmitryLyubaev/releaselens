@@ -35,6 +35,7 @@ from .azure_auth import TokenSource
 from .corpus import load_chunks, load_links
 from .embed import embed_corpus, embed_query
 from .questions import (
+    EXCLUDED,
     MAX_TEXT_TOKENS,
     MAX_TOKENS,
     MIN_TOKENS,
@@ -192,6 +193,7 @@ def freeze_set(args) -> int:
         "thinking": "disabled",
         "prompt": PROMPT,
         "rewrite": REWRITE,
+        "excluded_from_sample": EXCLUDED,
         "generated_on": list(built.written_on),
         "frozen_on": datetime.now(UTC).date().isoformat(),
         "sample_size": len(built.questions),

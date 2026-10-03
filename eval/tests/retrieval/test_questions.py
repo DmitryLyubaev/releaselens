@@ -23,6 +23,7 @@ from app.retrieval.questions import (
     check,
     content_words,
     freeze,
+    is_routine_bump,
     load_frozen,
     sample_artefacts,
     spot_check_sheet,
@@ -144,6 +145,90 @@ def test_a_first_chunk_over_1500_tokens_is_cut_not_dropped():
     assert target.token_count == 2_000
 
 
+# --- routine bumps --------------------------------------------------------------------------
+
+
+def _pull_request(title: str, opener: str = "someone") -> str:
+    return (f"[pull request #12641 merged] {title}\n"
+            f"feature/branch -> main | opened by {opener} on 2025-06-01, merged 2025-06-02 as a2aa88a\n"
+            "Motivation and Context")
+
+
+def _commit(title: str, author: str = "Someone") -> str:
+    return f"[commit a2aa88a] {title}\nauthor: {author} | committed: 2025-06-02\nMotivation and Context"
+
+
+_BUMPS = [
+    ".Net: Update nuget-package.props for 1.58.0",
+    ".Net: Bump to version 1.44.0 (#11209)",
+    "Python: Bump azure-core from 1.30.1 to 1.30.2 in /python",
+    "Java: [maven-release-plugin] prepare release java-0.2.13-alpha",
+    ".Net: Update to Yaml.DotNet 16.3.0",
+    "Bump js-yaml from 4.3.0 to 4.3.1 in /dotnet/samples/Demos/ProcessWithCloudEvents/ProcessWithCloudEvents.Client",
+    "Python: Update autogen-agentchat requirement from <0.4,>=0.2 to >=0.2,<0.6 in /python",
+]
+
+_NOT_BUMPS = [
+    "Updating Streamlit Python Sample to support newest version of SK",
+    "Java: Add ability to use different OpenAI models for semantic functions",
+]
+
+
+@pytest.mark.parametrize("title", _BUMPS)
+def test_routine_bump_titles_are_bumps_as_pull_requests_and_commits(title):
+    assert is_routine_bump("pull_request", _pull_request(title))
+    assert is_routine_bump("commit", _commit(title))
+
+
+@pytest.mark.parametrize("title", _NOT_BUMPS)
+def test_other_titles_are_not_bumps(title):
+    assert not is_routine_bump("pull_request", _pull_request(title))
+    assert not is_routine_bump("commit", _commit(title))
+
+
+def test_a_pull_request_opened_by_a_dependency_bot_is_a_bump_whatever_its_title():
+    title = "Java: Add ability to use different OpenAI models for semantic functions"
+    assert is_routine_bump("pull_request", _pull_request(title, opener="dependabot[bot]"))
+    assert is_routine_bump("pull_request", _pull_request(title, opener="renovate[bot]"))
+    assert is_routine_bump("commit", _commit(title, author="dependabot[bot]"))
+
+
+def test_only_the_first_two_lines_are_read():
+    # A body that mentions a bump, or a bot, does not make a feature a bump.
+    text = (_pull_request("Java: Add ability to use different OpenAI models for semantic functions")
+            + "\nBump azure-core from 1.30.1 to 1.30.2, as dependabot suggested")
+    assert not is_routine_bump("pull_request", text)
+
+
+def test_issues_and_releases_are_never_bumps():
+    assert not is_routine_bump("issue", "[issue #77 open] Bump X to 1.2\nopened by dependabot[bot] on 2025-06-01")
+    assert not is_routine_bump("release", "[release dotnet-1.44.0] dotnet-1.44.0\npublished 2025-06-01\n"
+                                          "* Bump to version 1.44.0")
+
+
+def test_draw_skips_a_routine_bump_and_draws_the_next_artefact():
+    feature = _commit("Python: Add retries to the HTTP connector")
+
+    def stream(first: str):
+        # Only the content of the artefact the seed draws first differs between the two.
+        order = sample_artefacts([_chunk("commit:aa", content=feature), _chunk("commit:bb", content=feature)],
+                                 n=1)
+        head = order.draw("commit").artefact
+        other = "commit:bb" if head == "commit:aa" else "commit:aa"
+        chunks = [_chunk(head, content=first), _chunk(other, content=feature)]
+        return head, other, sample_artefacts(chunks, n=1)
+
+    head, _, plain = stream(feature)
+    assert plain.draw("commit").artefact == head
+
+    head, other, bumped = stream(_commit(".Net: Bump to version 1.44.0 (#11209)"))
+    assert bumped.draw("commit").artefact == other
+    with pytest.raises(LookupError):
+        bumped.draw("commit")
+    # The quotas still count the bump, as they count every distinct artefact.
+    assert bumped.quotas == {"commit": 1}
+
+
 # --- the checks ---------------------------------------------------------------------------
 
 
@@ -240,6 +325,15 @@ def test_write_question_asks_sonnet_5_once_with_the_artefact():
     assert call["system"] == PROMPT
     assert call["thinking"] == {"type": "disabled"}
     assert "[pull request #12 merged] adds retries" in _sent(call)
+
+
+def test_the_prompt_asks_for_stated_facts_standalone_questions_and_specifics():
+    # Round 0's spot-check failed on questions about who merged, on "this PR", and on bumps
+    # that a similar change also answered.
+    assert "never says who merged or approved a pull request" in PROMPT
+    assert all(phrase in PROMPT for phrase in
+               ('"this pull request"', '"this commit"', '"this issue"', '"this release"'))
+    assert "no similar change in the same repository would also answer it" in PROMPT
 
 
 def test_rejected_artefact_is_rewritten_once_then_replaced():

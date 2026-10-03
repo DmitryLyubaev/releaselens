@@ -16,7 +16,7 @@ import pytest
 from app.retrieval import __main__ as cli
 from app.retrieval import arms, search_index
 from app.retrieval.arms import ArmResult, Hit, QueryVector
-from app.retrieval.questions import MODEL, PROMPT, REWRITE, SEED, Question, freeze, load_frozen
+from app.retrieval.questions import EXCLUDED, MODEL, PROMPT, REWRITE, SEED, Question, freeze, load_frozen
 
 _PLANNER = "the planner dereferenced a null step when the goal was empty; guard added"
 _GOOD = json.dumps({"question": "Which change stopped the orchestrator crashing when it was asked to do nothing?",
@@ -125,6 +125,7 @@ def test_the_questions_are_written_resumed_spot_checked_and_frozen(tmp_path, mon
     assert len(frozen) == 300 and frozen[0].qid == "q001"
     assert (manifest["seed"], manifest["model"]) == (SEED, MODEL)
     assert (manifest["prompt"], manifest["rewrite"]) == (PROMPT, REWRITE)
+    assert manifest["excluded_from_sample"] == EXCLUDED
     assert manifest["thinking"] == "disabled"
     assert manifest["rejections"] == {} and (manifest["rewrites"], manifest["replacements"]) == (0, 0)
     assert manifest["generated_on"] and manifest["frozen_on"]

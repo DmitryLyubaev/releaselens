@@ -38,6 +38,17 @@ SPOT_CHECK_SIZE = 30
 MAX_NOT_FINE = 3
 MARKS = ("fine", "ambiguous", "wrong")
 
+# Frozen in the manifest as `excluded_from_sample`, so the results say what they do not cover.
+EXCLUDED = (
+    "Routine version and dependency bumps among pull requests and commits are left out of the "
+    "sample, judged on the title and opener alone: a title that bumps something; one that updates "
+    "or upgrades something from one version to another, to a version number, a requirement or "
+    "nuget-package.props; one that prepares a Maven release or the next development iteration; "
+    "or one opened or authored by dependabot or renovate. They are skipped at draw time, as thin "
+    "artefacts are, and still count towards the per-type quotas. Issues and releases are never "
+    "left out."
+)
+
 PROMPT = """You write one question for a retrieval benchmark over a software repository's GitHub \
 history. You are shown one artefact from it: a commit, an issue, a pull request or a release.
 
@@ -45,6 +56,15 @@ Write one natural question that a developer might ask, and that this artefact al
 
 Ask about what is distinctive to this artefact, such as a number, an author or a date, where \
 its text shows them.
+
+Ask only about facts the text states. The text never says who merged or approved a pull \
+request, so never ask that.
+
+The question must stand on its own: never refer to "this pull request", "this commit", "this \
+issue" or "this release".
+
+Include the specifics the text gives, such as the component, sample, package or feature, and \
+any versions or dates, so that no similar change in the same repository would also answer it.
 
 Do not copy the artefact's distinctive phrasing. Put the question in your own words.
 
@@ -77,6 +97,14 @@ _URL_PATHS = {
 
 _WORDS = re.compile(r"[^\W\d_]+")
 _HEX_RUNS = re.compile(r"(?<![0-9a-f])[0-9a-f]{7,}(?![0-9a-f])")
+_HEADER = re.compile(r"^\[[^\]]*\]\s*")
+_BUMP = re.compile(r"\bbump(?:s|ed|ing)?\b", re.IGNORECASE)
+_UPDATE = re.compile(r"\b(?:updat(?:e|es|ed|ing)|upgrad(?:e|es|ed|ing))\b", re.IGNORECASE)
+_UPDATE_TARGET = re.compile(r"\bfrom\s+\S+\s+to\s+\S+|v?\d+\.\d+|\brequirement\b|nuget-package\.props",
+                            re.IGNORECASE)
+_RELEASE_CHORE = re.compile(
+    r"\[maven-release-plugin\]|prepare release|prepare for next development iteration", re.IGNORECASE)
+_BOT = re.compile(r"(?:opened by|author:)\s*(?:dependabot|renovate)\b", re.IGNORECASE)
 _STOPWORDS = frozenset(
     line.strip().lower()
     for line in (Path(__file__).with_name("stopwords.txt")).read_text(encoding="utf-8").splitlines()
@@ -173,6 +201,26 @@ def largest_remainder(counts: Mapping[str, int], n: int) -> dict[str, int]:
     return floors
 
 
+def is_routine_bump(entity_type: str, text: str) -> bool:
+    """Whether a pull request or commit is a routine version or dependency bump, per EXCLUDED.
+
+    Only the first two lines are read: the `[...]` header with the title, and the line naming
+    who opened or authored it. A body that mentions a bump, or a bot, does not make a change a
+    bump. Issues and releases are never bumps. The rule is a fixed filter by design, not a
+    judgement: it misses bumps worded otherwise, and may catch the odd change that is more.
+    """
+    if entity_type not in ("pull_request", "commit"):
+        return False
+    first, _, rest = text.partition("\n")
+    second = rest.partition("\n")[0]
+    title = _HEADER.sub("", first, count=1)
+    if _BUMP.search(title) or _RELEASE_CHORE.search(title):
+        return True
+    if _UPDATE.search(title) and _UPDATE_TARGET.search(title):
+        return True
+    return bool(_BOT.search(f"{first}\n{second}"))
+
+
 def _url_hints(entity_type: str, key: str) -> tuple[str, ...]:
     return tuple(path.format(key=key) for path in _URL_PATHS[entity_type])
 
@@ -231,7 +279,8 @@ class SampleStream:
         self.schedule: tuple[str, ...] = tuple(schedule)
 
     def draw(self, entity_type: str) -> Artefact:
-        """The next artefact of this type whose chunks total at least `min_tokens`.
+        """The next artefact of this type whose chunks total at least `min_tokens`, and that is
+        not a routine bump (see is_routine_bump). Both are skipped, never drawn.
 
         Raises LookupError when the type has none left, rather than borrowing from another type
         and breaking the per-type counts.
@@ -241,9 +290,10 @@ class SampleStream:
             artefact = order[self._next[entity_type]]
             self._next[entity_type] += 1
             candidate = _artefact(artefact, self._chunks[artefact])
-            if candidate.token_count >= self._min_tokens:
+            if candidate.token_count >= self._min_tokens and not is_routine_bump(entity_type, candidate.text):
                 return candidate
-        raise LookupError(f"no {entity_type} artefact of {self._min_tokens}+ tokens is left to draw")
+        raise LookupError(f"no {entity_type} artefact of {self._min_tokens}+ tokens that is not a "
+                          "routine bump is left to draw")
 
 
 def sample_artefacts(
@@ -251,8 +301,8 @@ def sample_artefacts(
 ) -> SampleStream:
     """The seeded stream the set is drawn from, with quotas over the distinct artefacts per type.
 
-    The quotas count every distinct artefact, thin or not, as spec §3.2 states the proportion;
-    the 40-token floor only decides which artefacts may be drawn.
+    The quotas count every distinct artefact, thin or not, bump or not, as spec §3.2 states the
+    proportion; the 40-token floor and the bump rule only decide which artefacts may be drawn.
     """
     return SampleStream(chunks, n=n, seed=seed, min_tokens=min_tokens)
 
