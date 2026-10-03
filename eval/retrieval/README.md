@@ -104,9 +104,11 @@ Then write the spot-check sheet:
 python -m app.retrieval spot-check --round 0
 ```
 
-The sheet also records what writing this generation cost: its calls and tokens. The owner opens
-`retrieval-data/spot-check-round-0.json`, and sets each of the 30 `mark` fields to `fine`,
-`ambiguous` or `wrong`. Then freeze:
+The sheet also records what writing this generation cost: its calls and tokens. Each of the 30
+`mark` fields in `retrieval-data/spot-check-round-0.json` is set to `fine`, `ambiguous` or
+`wrong`. At the owner's direction, an independent reviewer does the marking: a Claude Opus 5.5
+subagent that checks each question against the whole exported corpus, and adds a `note` and
+`marked_by` to each row. See the spec's §13. Then freeze:
 
 ```
 python -m app.retrieval freeze --sheet retrieval-data/spot-check-round-0.json

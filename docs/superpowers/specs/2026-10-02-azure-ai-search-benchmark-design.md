@@ -2,7 +2,8 @@
 
 **Status: specification, approved by the owner on 2026-10-02.** Nothing is built or measured. Every figure below
 is either read from a named source on a stated date, or labelled as an estimate. Claims that
-could not be checked are labelled *unverified* and listed in §10.
+could not be checked are labelled *unverified* and listed in §10. Changes made after approval are
+in §13, dated, each on the owner's decision.
 
 - Project 2 of the portfolio plan (phase 1), in ReleaseLens, `main` at `59b3ce4`
 - Builds on project 1:
@@ -363,3 +364,27 @@ Each step marked **Ask first** waits for the owner's yes.
   budget alert.
 - **Small releases stratum:** n = 6, labelled too small to read.
 - **Local against network latency:** not comparable as a contest; reported descriptively.
+
+## 13. Amendments
+
+**2026-10-03, the spot-check (§3.5) and the sample (§3.2), on the owner's decision.**
+- **Who marks.** The owner could not judge the questions themselves, and asked for an independent
+  reviewer instead. Each spot-check round is marked by a Claude Opus 5.5 subagent. It checks each
+  question's facts against all of its target's chunks, and searches the whole exported corpus for
+  any other artefact that answers it as well. A pull request and its own merge commit count as one
+  answer, as in lenient scoring. Each mark carries the reviewer's note and `marked_by`. The pass
+  mark is unchanged. The writer (Sonnet 5) and the marker (Opus 5.5) both come from Anthropic, a
+  possible shared bias that is stated, not removed.
+- **Round 0 failed:** 21 fine, 8 ambiguous, 1 wrong. Six of the nine targets were routine version
+  or dependency bumps. Such changes are near-identical by nature, and release notes repeat their
+  titles. Two questions asked who merged a pull request, which the corpus never records. One said
+  "this PR".
+- **The change for round 1:**
+  - **Bumps are left out.** Routine version and dependency bumps among pull requests and commits
+    are skipped at draw time, as the 40-token floor is. The per-type quotas are unchanged. The rule
+    is frozen in the manifest as `excluded_from_sample`, and the results do not cover such changes.
+  - **The prompt is tighter.** It also tells the writer:
+    - to ask only about facts the text states, and never who merged
+    - that each question must stand on its own
+    - to name the specifics that set the artefact apart
+- **Spend.** Round 0's generation is kept, and its spend is counted in `spend_all_rounds`.
