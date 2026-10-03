@@ -130,12 +130,29 @@ regenerated, which is another Ask first:
    refuses a round left out, and an earlier round's sheet in `retrieval-data/` that was not
    given.
 
+**The full audit (what this set used).** If a round fails because of how the repository works,
+not because of how the questions were written, the owner may choose an audit instead of another
+round. That happened here, after rounds 0 and 1: see the spec's §13. The same independent reviewer
+marks every question, and the marks go into `retrieval-data/audit.json`. For a question that is
+also on the last round's sheet, the audit must give the same mark. Freeze with every sheet and
+the audit:
+
+```
+python -m app.retrieval freeze --sheet retrieval-data/spot-check-round-0.json --sheet retrieval-data/spot-check-round-1.json --audit retrieval-data/audit.json
+```
+
+Only the questions marked `fine` are frozen, and each keeps its qid. The manifest's `audit` block
+lists every dropped question with the reviewer's note. `freeze` refuses an audit that misses a
+question, includes one not in the set, or disagrees with the last sheet. It also refuses if fewer
+than 200 questions survive.
+
 `freeze` writes `retrieval/questions.jsonl` and `retrieval/questions.manifest.json`. The manifest
 holds:
 - the seed, the model and the prompts (`PROMPT` and `REWRITE`)
 - the generation and freezing dates
 - the rejection counts, and the calls and tokens the set took
 - each spot-check round with its marks and its generation's spend
+- the audit, when there was one: who marked it, the counts kept, and every dropped question
 - each question's `why_unique`
 - the file's SHA-256
 
@@ -213,7 +230,7 @@ dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/q
    - that the index at `--endpoint` holds all 41,825 documents, so an empty or wrong index is
      refused rather than scored as misses
 
-   It then runs E2, E3, S2 and S3 over all 300 questions, and repeats the first 30 on each of
+   It then runs E2, E3, S2 and S3 over every frozen question (229 after the audit), and repeats the first 30 on each of
    them. S2 and S3 search with E2's vectors on both passes. For E1 and S1 it compares the first
    30 questions of each pair of Worker files.
 
@@ -224,8 +241,8 @@ dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/q
 
    **A run has no resume.** A failed run is run again from the start, with a new run id, and
    pays again for everything it had done. The scarce part is the semantic ranker's free
-   allowance of 1,000 requests a month. A failure after S3's first pass has already spent about
-   300 of them, and the rerun spends about 330 more, so a month has room for about two failed
+   allowance of 1,000 requests a month. A failure after S3's first pass has already spent one per
+   question (229), and the rerun spends about 260 more, so a month has room for about two failed
    attempts and a successful one. Running out of the allowance part-way through S3 returns the
    same error for every remaining question, so it also stops the run: wait for the next month
    rather than running again.

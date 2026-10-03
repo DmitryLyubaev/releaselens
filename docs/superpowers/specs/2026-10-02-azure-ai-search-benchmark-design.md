@@ -391,3 +391,33 @@ Each step marked **Ask first** waits for the owner's yes.
     - that each question must stand on its own
     - to name the specifics that set the artefact apart
 - **Spend.** Round 0's generation is kept, and its spend is counted in `spend_all_rounds`.
+
+**2026-10-03, the full audit (§3.5), on the owner's decision.**
+- **Round 1 failed too:** 25 fine, 5 ambiguous, 0 wrong. All five failures come from how the
+  repository works, not from the writing:
+  - an issue and the pull request or commit that answers it
+  - duplicate or sibling pull requests
+  - a release note that repeats a pull request
+
+  Another round would likely fail the same way.
+- **The owner chose an audit of all 300 instead of a round 2.**
+  - **Who marked them:** the same independent reviewer, with identical written instructions. The
+    round-1 sheet's 30 marks stand. The other 270 were checked in nine batches of 30, one
+    subagent each.
+  - **The result:** 229 fine, 66 ambiguous, 5 wrong.
+  - **What is frozen:** only the 229 fine questions, each keeping its qid.
+    `freeze --audit` refuses an audit that misses a question or disagrees with the last sheet,
+    and the manifest lists every dropped question with its note.
+- **Kept, by type:**
+  - commits 49 of 62
+  - issues 68 of 81
+  - pull requests 112 of 151
+  - releases 0 of 6
+
+  Every release question had a pull request or another release note that answered it as well,
+  so releases are not measured.
+- **The decision rule (§5) is unchanged, applied at n = 229.** The interval widens a little, so a
+  difference near the 0.05 threshold is likelier to come out inconclusive. The determinism repeat
+  is still the first 30 frozen questions.
+- **What this cost.** The audit used no Anthropic credit. Writing the questions took two
+  generations: 636 and 828 calls, both counted in `spend_all_rounds`.
