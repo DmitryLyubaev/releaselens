@@ -78,9 +78,9 @@ def test_bootstrap_registers_exactly_the_ten_providers(repo_root):
     assert sorted(entries) == sorted(f'"{name}"' for name in BOOTSTRAP_PROVIDERS)
 
 
-# The app stack runs as CI, which may not register resource providers. The search stack runs as
-# the owner, who may, but bootstrap is the one place registration happens.
-@pytest.mark.parametrize("stack", ["terraform", "search"])
+# The app stack runs as CI, which may not register resource providers. The search and gateway
+# stacks run as the owner, who may, but bootstrap is the one place registration happens.
+@pytest.mark.parametrize("stack", ["terraform", "search", "gateway"])
 def test_stack_registers_no_providers(repo_root, stack):
     provider = _block(_stack(repo_root, stack)["versions.tf"], 'provider "azurerm"')
 
@@ -206,3 +206,64 @@ def test_search_stack_is_not_in_the_app_group(repo_root):
     group = _block(_stack(repo_root, "search")["main.tf"], 'resource "azurerm_resource_group" "search"')
     group_name = _setting(group, "name")
     assert group_name and group_name.group(1) == '"rg-releaselens-search"'
+
+
+def test_gateway_stack_has_no_role_assignments(repo_root):
+    # Role assignments live in infra/bootstrap/roles.tf only: the gateway identity's roles on the
+    # models and the Gateway.Invoke assignments are all made there.
+    files = _stack(repo_root, "gateway")
+
+    for type_ in ["azurerm_role_assignment", "azuread_app_role_assignment"]:
+        assert _declarations(files, "resource", type_) == [], type_
+    # Nor through azapi.
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if "Microsoft.Authorization/roleAssignments" in line], name
+
+
+def test_gateway_stack_keeps_keys_off(repo_root):
+    files = _stack(repo_root, "gateway")
+
+    # No product and no subscription, so no subscription key exists to be leaked or required.
+    keyed = re.compile(r'^resource "azurerm_api_management_(product|subscription)', re.MULTILINE)
+    for name, text in files.items():
+        assert not keyed.search(text), name
+    # Nor through azapi, and no line of code may carry a key out.
+    keys = re.compile(r"subscription_key|primary_key|secondary_key|/products|/subscriptions@")
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if keys.search(line)], name
+    # Every revision is called with an Entra token alone.
+    for header in [
+        'resource "azurerm_api_management_api" "v1"',
+        'resource "azurerm_api_management_api" "v1_rev2"',
+    ]:
+        required = _setting(_block(files["api.tf"], header), "subscription_required")
+        assert required and required.group(1) == "false", header
+
+
+def test_gateway_stack_is_not_in_the_app_group(repo_root):
+    # In rg-releaselens, the nightly destroy's empty-group check would find the service and fail.
+    app_group = re.compile(r"rg-releaselens(?![-\w])")
+    for name, text in _stack(repo_root, "gateway").items():
+        assert not [line for line in _code_lines(text) if app_group.search(line)], name
+
+    group = _block(_stack(repo_root, "gateway")["main.tf"], 'resource "azurerm_resource_group" "gateway"')
+    group_name = _setting(group, "name")
+    assert group_name and group_name.group(1) == '"rg-releaselens-gateway"'
+
+
+def test_gateway_stack_purges_and_never_recovers(repo_root):
+    files = _stack(repo_root, "gateway")
+    provider = _block(files["versions.tf"], 'provider "azurerm"')
+
+    # A destroy purges the soft-deleted service, and a create never restores an old one.
+    features = re.search(r"^  features \{\n(.*?)^  \}", provider, re.MULTILINE | re.DOTALL)
+    assert features, "the azurerm provider has no features block"
+    api_management = re.search(r"^    api_management \{\n(.*?)^    \}", features.group(1), re.MULTILINE | re.DOTALL)
+    assert api_management, "the features block has no api_management block"
+    purge = _setting(api_management.group(1), "purge_soft_delete_on_destroy")
+    assert purge and purge.group(1) == "true"
+    recover = _setting(api_management.group(1), "recover_soft_deleted")
+    assert recover and recover.group(1) == "false"
+    # The stack is meant to be destroyed at the end of every session.
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if "prevent_destroy" in line], name
