@@ -20,6 +20,8 @@ BOOTSTRAP_PROVIDERS = [
     "Microsoft.Consumption",
     "Microsoft.Insights",
     "Microsoft.Search",
+    "Microsoft.ApiManagement",
+    "Microsoft.OperationalInsights",
 ]
 
 # Bootstrap owns every one of these; the app stack may neither create nor read them.
@@ -63,7 +65,7 @@ def _declarations(files: dict[str, str], kind: str, type_: str) -> list[str]:
     return [name for name, text in files.items() for _ in pattern.finditer(text)]
 
 
-def test_bootstrap_registers_exactly_the_eight_providers(repo_root):
+def test_bootstrap_registers_exactly_the_ten_providers(repo_root):
     provider = _block(_stack(repo_root, "bootstrap")["versions.tf"], 'provider "azurerm"')
 
     registrations = _setting(provider, "resource_provider_registrations")
@@ -96,8 +98,21 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_eight_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 8
+def test_bootstrap_has_the_eleven_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 11
+
+
+def test_failover_account_keeps_keys_off(repo_root):
+    account = _block(_stack(repo_root, "bootstrap")["failover.tf"], 'resource "azurerm_cognitive_account" "failover"')
+
+    local_auth = _setting(account, "local_auth_enabled")
+    assert local_auth and local_auth.group(1) == "false"
+    # The account is AIServices like the first one, and no line of code may carry a key out.
+    kind = _setting(account, "kind")
+    assert kind and kind.group(1) == '"AIServices"'
+    keys = re.compile(r"primary_access_key|secondary_access_key|api_key")
+    for name, text in _stack(repo_root, "bootstrap").items():
+        assert not [line for line in _code_lines(text) if keys.search(line)], name
 
 
 def test_bootstrap_has_one_federated_credential(repo_root):

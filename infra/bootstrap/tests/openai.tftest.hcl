@@ -183,3 +183,24 @@ run "chat_deployment_unchanged" {
     error_message = "The app stack's handoff must still name the chat deployment, never an embedding one."
   }
 }
+
+# The second account and the failover-test deployments are additions. The first account must
+# stay as it was, or the bootstrap plan would try to replace it (spec §3.1).
+run "primary_account_unchanged" {
+  command = plan
+
+  assert {
+    condition     = azurerm_cognitive_account.openai.kind == "AIServices" && azurerm_cognitive_account.openai.location == "australiaeast"
+    error_message = "The primary account must still be AIServices, in australiaeast."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_account.openai.local_auth_enabled == false
+    error_message = "The primary account's key authentication must still be off."
+  }
+
+  assert {
+    condition     = azurerm_cognitive_account.openai.name == "aoai-releaselens-a1b2c3" && azurerm_cognitive_account.openai.custom_subdomain_name == "aoai-releaselens-a1b2c3"
+    error_message = "The primary account's name and subdomain must still be aoai-releaselens-<suffix>, without the sea infix."
+  }
+}

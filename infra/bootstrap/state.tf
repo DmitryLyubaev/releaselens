@@ -55,6 +55,14 @@ resource "azurerm_storage_container" "search" {
   container_access_type = "private"
 }
 
+# The AI gateway stack's state (infra/gateway). Only the owner applies that stack, so only the
+# owner has a role here (spec §3.1).
+resource "azurerm_storage_container" "gateway" {
+  name                  = "tfstate-gateway"
+  storage_account_id    = azurerm_storage_account.state.id
+  container_access_type = "private"
+}
+
 # Every version is a full copy of a state file, and state can hold secrets, so old versions
 # are not kept indefinitely. Version actions never touch the current blob.
 resource "azurerm_storage_management_policy" "state" {

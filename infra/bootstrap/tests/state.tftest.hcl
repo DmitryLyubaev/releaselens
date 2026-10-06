@@ -138,3 +138,17 @@ run "state_storage" {
     error_message = "The lifecycle rule must cover every state container, with no prefix filter."
   }
 }
+
+run "gateway_state_container" {
+  command = plan
+
+  assert {
+    condition     = azurerm_storage_container.gateway.name == "tfstate-gateway" && azurerm_storage_container.gateway.container_access_type == "private"
+    error_message = "The gateway state container must be tfstate-gateway, and private."
+  }
+
+  assert {
+    condition     = azurerm_storage_container.gateway.storage_account_id == azurerm_storage_account.state.id
+    error_message = "The gateway state container must be in the state account."
+  }
+}

@@ -58,3 +58,15 @@ variable "azure_openai_capacity" {
   description = "Capacity of the Global Standard deployment, in thousands of tokens per minute: 300 is 300,000 TPM. It caps how fast spend can grow, not how much. The default is revised from the dry run's measured token counts (spec §4.8)."
   default     = 300
 }
+
+variable "failover_location" {
+  type        = string
+  description = "Region of the AI gateway's second Azure OpenAI account. Southeast Asia, because Australia Southeast does not offer Global Standard for gpt-4.1-mini (spec §3.1)."
+  default     = "southeastasia"
+}
+
+variable "failover_capacity" {
+  type        = number
+  description = "Capacity of each Global Standard deployment on the second account, in thousands of tokens per minute: 100 is 100,000 TPM. The australiaeast failover-test deployment is fixed at 1."
+  default     = 100
+}
