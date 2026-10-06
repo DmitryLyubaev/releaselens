@@ -97,7 +97,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl') }}
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl', 'infra/gateway/.terraform.lock.hcl') }}
 
       - name: Format check
         run: terraform fmt -check -recursive infra
@@ -119,6 +119,13 @@ jobs:
 
       - name: Check infra/search
         working-directory: infra/search
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+
+      - name: Check infra/gateway
+        working-directory: infra/gateway
         run: |
           terraform init -backend=false -input=false
           terraform validate

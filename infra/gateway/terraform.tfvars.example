@@ -1,0 +1,16 @@
+# Copy to a git-ignored terraform.tfvars in this folder, in your own window, and fill in the two
+# inputs. Never commit them. Every identifier the stack needs comes from the bootstrap's state.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# The account that holds every stack's state: terraform -chdir=../bootstrap output -raw tfstate_storage_account
+tfstate_storage_account = "<state storage account>"
+
+# Where API Management sends its service notifications. Required by the service.
+publisher_email = "you@example.com"
+
+# Defaults; change them only for a reason the runbook gives.
+# tokens_per_minute = 10000
+# tokens_per_day    = 50000
+
+# Leave false until revision 2 has passed the smoke test at ;rev=2.
+# release_revision_2 = false
