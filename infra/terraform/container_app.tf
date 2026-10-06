@@ -54,6 +54,11 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "AzureOpenAi__TokenScope"
+        value = var.azure_openai_token_scope
+      }
+
+      env {
         name  = "AzureOpenAi__Deployment"
         value = var.azure_openai_deployment
       }

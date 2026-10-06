@@ -39,6 +39,7 @@ run "deploys_only_app_resources" {
       AzureOpenAi__Model          = "gpt-4.1-mini"
       AzureOpenAi__ModelVersion   = "2025-04-14"
       AzureOpenAi__DeploymentType = "GlobalStandard"
+      AzureOpenAi__TokenScope     = "https://ai.azure.com/.default"
       AZURE_CLIENT_ID             = "11111111-1111-1111-1111-111111111111"
     })
     error_message = "The container's environment variables must be exactly the ones in the table, with their values."
@@ -72,6 +73,22 @@ run "deploys_only_app_resources" {
   assert {
     condition     = azurerm_postgresql_flexible_server.this.resource_group_name == "rg-releaselens"
     error_message = "The Postgres server must be in rg-releaselens."
+  }
+}
+
+# Gateway mode is configuration only: the app is pointed at the gateway by azure_openai_base_url,
+# and asks Entra for a token for the gateway app instead of the model account.
+run "token_scope_passes_through" {
+  command = plan
+
+  variables {
+    image                    = "ghcr.io/dmitrylyubaev/releaselens-api@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    azure_openai_token_scope = "api://11111111-1111-1111-1111-111111111111/.default"
+  }
+
+  assert {
+    condition     = { for env in azurerm_container_app.api.template[0].container[0].env : env.name => env.value if env.name == "AzureOpenAi__TokenScope" }["AzureOpenAi__TokenScope"] == "api://11111111-1111-1111-1111-111111111111/.default"
+    error_message = "AzureOpenAi__TokenScope must be the azure_openai_token_scope given."
   }
 }
 
