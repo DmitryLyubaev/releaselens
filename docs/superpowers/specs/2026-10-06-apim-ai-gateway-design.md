@@ -1,8 +1,9 @@
 # API Management as the AI gateway — design
 
-**Status: specification, awaiting the owner's review.** Nothing is built, applied or measured.
+**Status: specification, approved by the owner on 2026-10-06.** Nothing is built, applied or measured.
 Every figure below is either read from a named source on a stated date, or labelled as an
-estimate. Claims that could not be checked are labelled *unverified* and listed in §12.
+estimate. Claims that could not be checked are labelled *unverified* and listed in §12. Changes
+made after approval are in §13, dated, each on the owner's decision.
 
 - Project 4 of the portfolio plan, in ReleaseLens, `main` at `216423a`
 - Builds on project 1 (the keyless Azure OpenAI account, the bootstrap stack and the provider's
