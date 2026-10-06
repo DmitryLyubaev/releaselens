@@ -303,3 +303,23 @@ def test_gateway_revision_2_is_copied_before_any_policy(repo_root):
         assert needed in revision_2, needed
     assert "azurerm_api_management_api.v1_rev2" in depends_on('resource "azapi_resource" "policy_v1"')
     assert "azapi_resource.policy_v1_rev2" in depends_on('resource "azurerm_api_management_api_release" "revision_2"')
+
+
+def test_gateway_policies_are_saved_after_what_they_refer_to(repo_root):
+    # API Management checks a policy's {{name}} references and its backend-id when the policy is
+    # saved, so the order must not rest on timing.
+    files = _stack(repo_root, "gateway")
+
+    for name in ["policy_v1", "policy_v1_rev2"]:
+        found = re.search(
+            r"^  depends_on = \[(.*?)\]",
+            _block(files["api.tf"], f'resource "azapi_resource" "{name}"'),
+            re.MULTILINE | re.DOTALL,
+        )
+        assert found, f"{name} has no depends_on"
+        for needed in ["azurerm_api_management_named_value.this", "azapi_resource.pool"]:
+            assert needed in found.group(1), (name, needed)
+    # The pool, in turn, refers to both backends, so they exist before it.
+    pool = _block(files["backends.tf"], 'resource "azapi_resource" "pool"')
+    for backend in ["aoai-primary", "aoai-secondary"]:
+        assert f'azapi_resource.backend["{backend}"].id' in pool, backend
