@@ -92,7 +92,13 @@ resource "azapi_resource" "policy_v1" {
   }
 
   # After revision 2 is copied (see above), so revision 2 starts with no policy of revision 1's.
-  depends_on = [azurerm_api_management_api.v1_rev2]
+  # After the named values and the pool, because API Management checks the policy's {{name}}
+  # references and its backend-id when the policy is saved.
+  depends_on = [
+    azurerm_api_management_api.v1_rev2,
+    azurerm_api_management_named_value.this,
+    azapi_resource.pool,
+  ]
 }
 
 resource "azapi_resource" "policy_v1_rev2" {
@@ -106,6 +112,12 @@ resource "azapi_resource" "policy_v1_rev2" {
       value  = file("${path.module}/policies/api-v1-rev2.xml")
     }
   }
+
+  # API Management checks the policy's {{name}} references and its backend-id when it is saved.
+  depends_on = [
+    azurerm_api_management_named_value.this,
+    azapi_resource.pool,
+  ]
 }
 
 # Made only once revision 2 has passed the smoke test, with release_revision_2 = true. The

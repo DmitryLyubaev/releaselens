@@ -105,13 +105,14 @@ terraform plan -var release_revision_2=true -out=tfplan
 terraform apply tfplan
 ```
 
-That plan should add the release and nothing else (see Live checks). The release changes which
-revision is current, not what either holds: each policy is pinned to its own revision, so a
-later apply leaves revision 2's policy on revision 2 and revision 1's on revision 1. The
-operation and the diagnostic address the current revision by name, so after the release they
-refer to revision 2's copies; if a later plan shows either of them created or replaced, revision
-2 did not inherit it, and the plan says what the apply would do. Even so, after the release the
-next step is the destroy: the session ends there.
+That plan should add the release and change nothing else, apart from the policy updates that
+Live checks describes, if they occur. The release changes which revision is current, not what
+either holds: each policy is pinned to its own revision, so a later apply leaves revision 2's
+policy on revision 2 and revision 1's on revision 1. The operation and the diagnostic address
+the current revision by name, so after the release they refer to revision 2's copies; if a later
+plan shows either of them created or replaced, revision 2 did not inherit it, and the plan says
+what the apply would do. Even so, after the release the next step is the destroy: the session
+ends there.
 
 At the end of the session, whether it succeeded or not:
 
@@ -123,15 +124,32 @@ az apim deletedservice list --query "[?starts_with(name, 'apim-releaselens-')].n
 
 The first check must print `false`, and the second nothing.
 
+If revision 2 was released, it is the current revision when the destroy reaches
+`azurerm_api_management_api.v1_rev2`, and API Management may refuse to delete the current
+revision. If the destroy stops on that resource, remove it from the state, with any of its
+children the error names, and destroy again:
+
+```bash
+terraform state rm 'azurerm_api_management_api.v1_rev2'
+terraform destroy
+```
+
+That loses nothing: deleting the service deletes every revision, policy and backend inside it.
+Then run the two checks above.
+
 ## Live checks
 
-The mocked tests cannot show these; the smoke test settles them:
+The mocked tests cannot show these. The smoke test settles the first two, and the destroy the
+third:
 - **Revision 2 inherits the diagnostic.** Revision 2 is copied after the diagnostic and its
   metrics switch exist, and before either policy. A call at `;rev=2` must appear in Application
   Insights, and its tokens in the `releaselens-gateway` metric.
-- **The policies round-trip.** The second plan (the release's) must not show either policy
-  changed. If it does, API Management returned the XML in a different form from the file, and
-  the apply would write the same file again.
+- **The policies round-trip.** API Management may return a policy's XML normalised: different
+  quoting or indentation, or without the leading comment. That is expected. azapi then shows an
+  in-place update of both policies on every plan after the first, the release's included, and
+  that update only writes the same file to the same revision again. It is harmless, not a fault.
+- **The destroy after a release.** Whether API Management deletes the current revision 2 with
+  the rest, or the destroy stops on it and needs the fallback above.
 
 ## Tests
 
