@@ -343,7 +343,8 @@ The bootstrap stack makes every role assignment but two, and looks each role up 
 |---|---|---|---|
 | App identity | Cognitive Services OpenAI User | the Azure OpenAI account | inference. The role also grants the account's assistants, responses and file-read data plane |
 | Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
-| Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app` and `tfstate-search` (three assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
+| Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app`, `tfstate-search` and `tfstate-gateway` (four assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
+| Gateway identity | Cognitive Services OpenAI User | each of the two Azure OpenAI accounts (two assignments) | API Management calls the models as this identity, so no key exists |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
 | Deploy identity | Managed Identity Operator | the app identity only | attach an identity from another resource group to the Container App |
 | Deploy identity | Storage Blob Data Contributor | `tfstate-app` only | read and write the app stack's state, including its lock |
@@ -470,6 +471,7 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | Container Apps (consumption, scales to zero) | app | per use |
 | Azure OpenAI Global Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24 and 2026-09-27). The first invoice will confirm whether it charges anything while idle |
 | Two embedding deployments, Global Standard | bootstrap | per token, and nothing idle (benchmark spec §6.1) |
+| A second Azure OpenAI account in Southeast Asia, with `releaselens-chat` and `releaselens-chat-failover-test` deployments, and a tiny `releaselens-chat-failover-test` on the first account, all Global Standard | bootstrap | per token, and nothing idle (gateway spec §3.1) |
 | AI Search service, Basic | search | by the hour while it exists, US$3.19 a day; destroyed after each benchmark session (benchmark spec §6.4, §8) |
 | State storage account | bootstrap | a few cents a month (an estimate) |
 | Managed identities, resource groups, budget | bootstrap | nothing |

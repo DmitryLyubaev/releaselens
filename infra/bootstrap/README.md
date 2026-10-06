@@ -15,7 +15,7 @@ stack as built, and that runbook. The design and its reasons are in the
 |---|---|---|
 | Resource group | `rg-releaselens-bootstrap` | holds everything below except the budget, `rg-releaselens`, and the deploy identity's Contributor assignment, which is scoped to `rg-releaselens` |
 | Management lock | `lock-releaselens-bootstrap` | `CanNotDelete` on that group; see [the standing rules](#standing-rules-after-r8) |
-| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only), `tfstate-app` and `tfstate-search` (owner only); shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
+| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only), `tfstate-app`, `tfstate-search` (owner only) and `tfstate-gateway` (owner only); shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
 | Deploy identity | `id-releaselens-deploy` | user-assigned; the identity the workflows sign in as |
 | Federated credential | `github-environment-azure` | on the deploy identity, with one subject, for the GitHub environment `azure`; it does not exist while `github_oidc_subject` is unset |
 | App identity | `id-releaselens-app` | user-assigned; the identity the Container App runs as |
@@ -23,10 +23,14 @@ stack as built, and that runbook. The design and its reasons are in the
 | Model deployment | `releaselens-chat` | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `300`, `version_upgrade_option = "NoAutoUpgrade"` |
 | Model deployment | `releaselens-embed-small` | `text-embedding-3-small` version `1`, format `OpenAI`, SKU `GlobalStandard`, capacity `350`, `version_upgrade_option = "NoAutoUpgrade"`; for the retrieval benchmark |
 | Model deployment | `releaselens-embed-large` | `text-embedding-3-large` version `1`, format `OpenAI`, SKU `GlobalStandard`, capacity `350`, `version_upgrade_option = "NoAutoUpgrade"`; for the retrieval benchmark |
+| Gateway identity | `id-releaselens-gateway` | user-assigned; the identity the AI gateway's API Management signs in as to call both model accounts |
+| Second Azure OpenAI account | `aoai-releaselens-sea-<suffix>` | the AI gateway's failover backend: kind `AIServices`, SKU `S0`, in `var.failover_location` (default `southeastasia`), `local_auth_enabled = false`, `project_management_enabled = false`, custom subdomain equal to its name |
+| Model deployment | `releaselens-chat` (second account) | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `var.failover_capacity` (default `100`), `version_upgrade_option = "NoAutoUpgrade"` |
+| Model deployment | `releaselens-chat-failover-test` (both accounts) | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, `NoAutoUpgrade`; capacity `1` on the australiaeast account, so it throttles on purpose, and `var.failover_capacity` on the second |
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | eight, in `roles.tf` | see [Roles](#roles) |
+| Role assignments | eleven, in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -34,10 +38,11 @@ Both identities stay in the bootstrap group and must never move into `rg-release
 Contributor on that group, which includes writing federated credentials. An identity there would
 let CI add a trust for itself outside the environment gate.
 
-The provider registers the eight resource providers that the stacks use: `Microsoft.Storage`,
+The provider registers the ten resource providers that the stacks use: `Microsoft.Storage`,
 `Microsoft.ManagedIdentity`, `Microsoft.CognitiveServices`, `Microsoft.App`,
-`Microsoft.DBforPostgreSQL`, `Microsoft.Consumption`, `Microsoft.Insights` and
-`Microsoft.Search`, which the [search stack](../search/README.md) uses. The owner is allowed to
+`Microsoft.DBforPostgreSQL`, `Microsoft.Consumption`, `Microsoft.Insights`,
+`Microsoft.Search`, which the [search stack](../search/README.md) uses, and
+`Microsoft.ApiManagement` and `Microsoft.OperationalInsights`, which the AI gateway uses. The owner is allowed to
 register them and CI is not, so it happens here. The provider also sets:
 - `storage_use_azuread = true`, so storage data-plane calls authenticate through Entra ID, which
   an account with shared keys off requires
@@ -53,6 +58,9 @@ register them and CI is not, so it happens here. The provider also sets:
 | `owner_state_bootstrap` | the owner | Storage Blob Data Contributor | `tfstate-bootstrap` |
 | `owner_state_app` | the owner | Storage Blob Data Contributor | `tfstate-app` |
 | `owner_state_search` | the owner | Storage Blob Data Contributor | `tfstate-search` |
+| `owner_state_gateway` | the owner | Storage Blob Data Contributor | `tfstate-gateway` |
+| `gateway_openai_user_primary` | gateway identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
+| `gateway_openai_user_failover` | gateway identity | Cognitive Services OpenAI User | the second Azure OpenAI account |
 | `deploy_contributor` | deploy identity | Contributor | `rg-releaselens` |
 | `deploy_identity_operator` | deploy identity | Managed Identity Operator | the app identity |
 | `deploy_state_app` | deploy identity | Storage Blob Data Contributor | `tfstate-app` |
@@ -205,7 +213,7 @@ All four paths must be listed.
 
 ### R5. The budget first
 
-*Changes the subscription; bills nothing.* Even the plan registers the eight resource providers,
+*Changes the subscription; bills nothing.* Even the plan registers the ten resource providers,
 because the provider registers them when it is configured. Registration is free.
 
 1. Create the git-ignored variables file. The budget's start date must be the first of the

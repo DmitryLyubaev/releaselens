@@ -43,6 +43,27 @@ resource "azurerm_role_assignment" "owner_state_search" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+resource "azurerm_role_assignment" "owner_state_gateway" {
+  scope                = azurerm_storage_container.gateway.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# The AI gateway's identity calls the models on both accounts, and nothing else here. Its
+# Monitoring Metrics Publisher role on Application Insights is added with that resource
+# (spec §3.1).
+resource "azurerm_role_assignment" "gateway_openai_user_primary" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_user_assigned_identity.gateway.principal_id
+}
+
+resource "azurerm_role_assignment" "gateway_openai_user_failover" {
+  scope                = azurerm_cognitive_account.failover.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_user_assigned_identity.gateway.principal_id
+}
+
 # CI, as the deploy identity, gets only the three assignments below: nothing at subscription
 # scope, no right to write role assignments, and no role on the Azure OpenAI account, so it
 # cannot turn key authentication back on.

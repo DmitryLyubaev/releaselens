@@ -72,3 +72,30 @@ output "github_environment_variables" {
     AZURE_OPENAI_DEPLOYMENT = azurerm_cognitive_deployment.chat.name
   })
 }
+
+# The AI gateway stack reads these through terraform_remote_state (spec §3.1). Identifiers, not
+# credentials, like everything above. No key exists on either account.
+output "gateway_identity_id" {
+  description = "Resource ID of the gateway identity. The gateway stack attaches it to API Management."
+  value       = azurerm_user_assigned_identity.gateway.id
+}
+
+output "gateway_identity_client_id" {
+  description = "Client ID of the gateway identity, which API Management's backend credentials use to get a token for the model accounts."
+  value       = azurerm_user_assigned_identity.gateway.client_id
+}
+
+output "primary_openai_backend_url" {
+  description = "The australiaeast account's v1 URL, the gateway's first backend. No trailing slash: API Management appends the operation's path."
+  value       = "https://${azurerm_cognitive_account.openai.custom_subdomain_name}.openai.azure.com/openai/v1"
+}
+
+output "failover_openai_backend_url" {
+  description = "The Southeast Asia account's v1 URL, the gateway's second backend. No trailing slash."
+  value       = "https://${azurerm_cognitive_account.failover.custom_subdomain_name}.openai.azure.com/openai/v1"
+}
+
+output "failover_test_deployment" {
+  description = "Name of the failover-test deployment, which exists on both accounts and is tiny on the australiaeast one."
+  value       = local.failover_test_deployment_name
+}
