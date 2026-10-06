@@ -27,10 +27,14 @@ stack as built, and that runbook. The design and its reasons are in the
 | Second Azure OpenAI account | `aoai-releaselens-sea-<suffix>` | the AI gateway's failover backend: kind `AIServices`, SKU `S0`, in `var.failover_location` (default `southeastasia`), `local_auth_enabled = false`, `project_management_enabled = false`, custom subdomain equal to its name |
 | Model deployment | `releaselens-chat` (second account) | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, capacity `var.failover_capacity` (default `100`), `version_upgrade_option = "NoAutoUpgrade"` |
 | Model deployment | `releaselens-chat-failover-test` (both accounts) | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, `NoAutoUpgrade`; capacity `1` on the australiaeast account, so it throttles on purpose, and `var.failover_capacity` on the second |
+| Gateway Entra app | `releaselens-ai-gateway` | the app registration API Management validates tokens for, single-tenant, version 2 tokens, identifier URI `api://<its client ID>`; one app role `Gateway.Invoke` (users and applications), one delegated scope `access_as_user` with the Azure CLI pre-authorised on it (its client ID comes from `azuread_application_published_app_ids`); the signed-in owner owns it; no secret and no certificate |
+| Gateway service principal | `releaselens-ai-gateway` | `app_role_assignment_required = true`: only an identity holding `Gateway.Invoke` can get a token |
+| Log Analytics workspace | `log-releaselens` | `PerGB2018`, 30 days of retention, a daily ingestion cap of `0.1` GB, `local_authentication_enabled = false` |
+| Application Insights | `appi-releaselens` | workspace-based on the workspace above, `application_type = "other"`, `local_authentication_enabled = false`; the "custom metrics with dimensions" setting is a portal step in the gateway runbook, not Terraform |
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | eleven, in `roles.tf` | see [Roles](#roles) |
+| Role assignments | twelve Azure role assignments and three Entra `Gateway.Invoke` assignments, all in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -61,9 +65,20 @@ register them and CI is not, so it happens here. The provider also sets:
 | `owner_state_gateway` | the owner | Storage Blob Data Contributor | `tfstate-gateway` |
 | `gateway_openai_user_primary` | gateway identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
 | `gateway_openai_user_failover` | gateway identity | Cognitive Services OpenAI User | the second Azure OpenAI account |
+| `gateway_metrics_publisher` | gateway identity | Monitoring Metrics Publisher | Application Insights |
 | `deploy_contributor` | deploy identity | Contributor | `rg-releaselens` |
 | `deploy_identity_operator` | deploy identity | Managed Identity Operator | the app identity |
 | `deploy_state_app` | deploy identity | Storage Blob Data Contributor | `tfstate-app` |
+
+Three more assignments are Entra app role assignments (`azuread_app_role_assignment`), not Azure
+roles. Each gives one identity `Gateway.Invoke` on the gateway's service principal, and nothing
+else can get a token for the gateway:
+
+| Assignment | Identity | App role | Resource |
+|---|---|---|---|
+| `gateway_invoke_owner` | the owner | `Gateway.Invoke` | the gateway's service principal |
+| `gateway_invoke_app` | app identity | `Gateway.Invoke` | the gateway's service principal |
+| `gateway_invoke_deploy` | deploy identity | `Gateway.Invoke` | the gateway's service principal |
 
 Role definitions are looked up by name, never by GUID. The deploy identity, which is what CI
 runs as, has:
@@ -72,8 +87,8 @@ runs as, has:
 - no access to the bootstrap state
 - no role on the Azure OpenAI account
 
-**Whoever applies this stack is treated as the owner.** The owner's four assignments use the
-object ID of the principal that is signed in (`data.azurerm_client_config.current`). A plan run
+**Whoever applies this stack is treated as the owner.** The owner's assignments, including the
+owner's `Gateway.Invoke`, use the object ID of the principal that is signed in (`data.azurerm_client_config.current`). A plan run
 by anyone else would move those assignments to that principal. After R8, the lock would also
 block the deletes that move requires.
 
@@ -115,6 +130,13 @@ retrieval benchmark's `--deployment`, and are not in `github_environment_variabl
 
 `SMOKE_OPEN_RUNNER_IP`, a fifth variable, is set by hand, and only if the smoke test cannot reach
 Postgres.
+
+The AI gateway stack reads these outputs through `terraform_remote_state`, so nobody copies them
+by hand: `gateway_identity_id`, `gateway_identity_client_id`, `primary_openai_backend_url`,
+`failover_openai_backend_url`, `failover_test_deployment`, `gateway_app_client_id`,
+`app_insights_id` and `app_insights_connection_string`. The last is marked `sensitive`, because
+the string carries an instrumentation key even though local authentication is off. None is a
+credential.
 
 ## Terraform runs in WSL
 
@@ -345,6 +367,12 @@ PowerShell, for every step here.
 *Creates the federated credential and everything else.* Nothing here bills by the hour. The
 model deployment bills per token, and the storage account costs a few cents a month (an
 estimate).
+
+The `azuread` provider signs in with the same `az` session. The owner needs the right to create
+app registrations in their tenant (the tenant setting "Users can register applications" on, or an
+Entra role that allows it, such as Application Developer), and the right to assign app roles on
+the gateway's own service principal, which owning it gives. Without them the apply fails at the
+gateway's Entra app.
 
 ```bash
 echo 'github_oidc_subject = "<the sub recorded in R7>"' >> terraform.tfvars

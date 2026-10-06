@@ -99,3 +99,21 @@ output "failover_test_deployment" {
   description = "Name of the failover-test deployment, which exists on both accounts and is tiny on the australiaeast one."
   value       = local.failover_test_deployment_name
 }
+
+# The gateway's Entra app and monitoring, read by the gateway stack the same way.
+output "gateway_app_client_id" {
+  description = "Client ID of the gateway's Entra app. The gateway stack's token validation takes it as the audience, and callers ask for a token for api://<this value>."
+  value       = azuread_application.gateway.client_id
+}
+
+output "app_insights_id" {
+  description = "Resource ID of Application Insights. The gateway stack's logger and diagnostic point at it."
+  value       = azurerm_application_insights.gateway.id
+}
+
+# Sensitive although local authentication is off: the string carries the instrumentation key.
+output "app_insights_connection_string" {
+  description = "Application Insights' connection string, for the gateway's logger."
+  value       = azurerm_application_insights.gateway.connection_string
+  sensitive   = true
+}

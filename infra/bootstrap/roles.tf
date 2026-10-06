@@ -49,9 +49,8 @@ resource "azurerm_role_assignment" "owner_state_gateway" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-# The AI gateway's identity calls the models on both accounts, and nothing else here. Its
-# Monitoring Metrics Publisher role on Application Insights is added with that resource
-# (spec §3.1).
+# The AI gateway's identity calls the models on both accounts and publishes its metrics to
+# Application Insights, and does nothing else here (spec §3.1).
 resource "azurerm_role_assignment" "gateway_openai_user_primary" {
   scope                = azurerm_cognitive_account.openai.id
   role_definition_name = "Cognitive Services OpenAI User"
@@ -64,9 +63,37 @@ resource "azurerm_role_assignment" "gateway_openai_user_failover" {
   principal_id         = azurerm_user_assigned_identity.gateway.principal_id
 }
 
-# CI, as the deploy identity, gets only the three assignments below: nothing at subscription
-# scope, no right to write role assignments, and no role on the Azure OpenAI account, so it
-# cannot turn key authentication back on.
+resource "azurerm_role_assignment" "gateway_metrics_publisher" {
+  scope                = azurerm_application_insights.gateway.id
+  role_definition_name = "Monitoring Metrics Publisher"
+  principal_id         = azurerm_user_assigned_identity.gateway.principal_id
+}
+
+# Gateway.Invoke, the one app role on the gateway's Entra app, goes to the three identities that
+# may call the gateway: the owner, the app and CI. With an assignment required on the service
+# principal, nothing else can get a token. These are Entra assignments, not Azure roles, so the
+# subscription-scope checks in the tests do not apply to them.
+resource "azuread_app_role_assignment" "gateway_invoke_owner" {
+  app_role_id         = random_uuid.gateway_invoke_role.result
+  principal_object_id = data.azurerm_client_config.current.object_id
+  resource_object_id  = azuread_service_principal.gateway.object_id
+}
+
+resource "azuread_app_role_assignment" "gateway_invoke_app" {
+  app_role_id         = random_uuid.gateway_invoke_role.result
+  principal_object_id = azurerm_user_assigned_identity.app.principal_id
+  resource_object_id  = azuread_service_principal.gateway.object_id
+}
+
+resource "azuread_app_role_assignment" "gateway_invoke_deploy" {
+  app_role_id         = random_uuid.gateway_invoke_role.result
+  principal_object_id = azurerm_user_assigned_identity.deploy.principal_id
+  resource_object_id  = azuread_service_principal.gateway.object_id
+}
+
+# CI, as the deploy identity, gets only the three Azure role assignments below: nothing at
+# subscription scope, no right to write role assignments, and no role on the Azure OpenAI
+# account, so it cannot turn key authentication back on.
 
 resource "azurerm_role_assignment" "deploy_contributor" {
   scope                = azurerm_resource_group.app.id

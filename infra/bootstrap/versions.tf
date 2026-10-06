@@ -6,11 +6,21 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 5.6"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.0"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
   }
+}
+
+# The owner's az sign-in, in the tenant the azurerm provider signs in to. Applying this stack
+# needs the right to create app registrations in that tenant.
+provider "azuread" {
+  tenant_id = data.azurerm_client_config.current.tenant_id
 }
 
 provider "azurerm" {

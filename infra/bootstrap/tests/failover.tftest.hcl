@@ -4,6 +4,18 @@ variables {
   budget_start_date  = "2026-10-01T00:00:00Z"
 }
 
+# The gateway's Entra app is part of the stack, so every test plans it. The data source's result
+# needs the Azure CLI's key.
+mock_provider "azuread" {
+  mock_data "azuread_application_published_app_ids" {
+    defaults = {
+      result = {
+        MicrosoftAzureCli = "99999999-9999-9999-9999-999999999999"
+      }
+    }
+  }
+}
+
 # The two accounts get distinct IDs, so a deployment placed on the wrong account fails its
 # assertion instead of passing on a shared mock value. The mock default is the australiaeast
 # account's; the override gives the Southeast Asia account its own.
@@ -52,6 +64,15 @@ override_resource {
     id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-gateway"
     principal_id = "77777777-7777-7777-7777-777777777777"
     client_id    = "88888888-8888-8888-8888-888888888888"
+  }
+}
+
+# The gateway app's owner is the signed-in principal, and the provider checks that it is a UUID.
+override_data {
+  target = data.azurerm_client_config.current
+  values = {
+    object_id = "22222222-2222-2222-2222-222222222222"
+    tenant_id = "11111111-1111-1111-1111-111111111111"
   }
 }
 

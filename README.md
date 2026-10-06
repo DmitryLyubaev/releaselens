@@ -443,7 +443,7 @@ There are two Terraform stacks for the app, and a third for the retrieval benchm
 
 | Stack | Applied by | Holds |
 |---|---|---|
-| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its three deployments, the chat model and two embedding models; a second account in Southeast Asia with two failover deployments, a third failover-test deployment on the first account, and the AI gateway's identity; the budget; the empty app resource group; every role assignment except the search stack's two |
+| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its three deployments, the chat model and two embedding models; a second account in Southeast Asia with two failover deployments, a third failover-test deployment on the first account, and the AI gateway's identity, Entra app and monitoring; the budget; the empty app resource group; every role assignment except the search stack's two |
 | [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
 | [`infra/search`](infra/search/README.md) | the owner, locally, for one benchmark session, then destroyed | its own resource group, one keyless AI Search service on Basic, and the owner's two roles on it |
 

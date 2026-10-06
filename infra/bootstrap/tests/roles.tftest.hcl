@@ -4,6 +4,18 @@ variables {
   budget_start_date  = "2026-10-01T00:00:00Z"
 }
 
+# The gateway's Entra app is part of the stack, so every test plans it. The data source's result
+# needs the Azure CLI's key.
+mock_provider "azuread" {
+  mock_data "azuread_application_published_app_ids" {
+    defaults = {
+      result = {
+        MicrosoftAzureCli = "99999999-9999-9999-9999-999999999999"
+      }
+    }
+  }
+}
+
 # Every principal, client ID and scope below is distinct, so an assignment given the wrong
 # principal or scope fails its assertion instead of passing on a shared mock value. The mock
 # defaults give the bootstrap group, the bootstrap container and the deploy identity their
@@ -43,6 +55,12 @@ mock_provider "azurerm" {
   mock_resource "azurerm_cognitive_account" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.CognitiveServices/accounts/aoai-releaselens-a1b2c3"
+    }
+  }
+
+  mock_resource "azurerm_application_insights" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Insights/components/appi-releaselens"
     }
   }
 }
@@ -188,6 +206,7 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_primary,
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
+        azurerm_role_assignment.gateway_metrics_publisher,
       ] : lower(trimsuffix(a.scope, "/")) != lower("/subscriptions/${var.subscription_id}")
     ])
     error_message = "No role assignment may be scoped to the subscription."
@@ -208,6 +227,7 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_primary,
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
+        azurerm_role_assignment.gateway_metrics_publisher,
       ] : startswith(lower(a.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/"))
     ])
     error_message = "Every role assignment must be scoped inside one of this subscription's resource groups."
@@ -230,6 +250,7 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_primary,
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
+        azurerm_role_assignment.gateway_metrics_publisher,
         ] : !(a.principal_id == azurerm_user_assigned_identity.deploy.principal_id && (
           startswith(lower("${azurerm_cognitive_account.openai.id}/"), lower("${trimsuffix(a.scope, "/")}/")) ||
           startswith(lower(a.scope), lower("${azurerm_cognitive_account.openai.id}/"))
