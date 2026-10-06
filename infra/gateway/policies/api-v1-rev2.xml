@@ -1,0 +1,75 @@
+<!--
+  The gateway's policy for API "v1", revision 2 (spec section 4.3): revision 1 plus the outbound block below.
+  Order matters. Each step relies on the one before it, and nothing that costs money runs before
+  the caller is known and within budget. Named values ({{...}}) are created by the gateway stack.
+-->
+<policies>
+  <inbound>
+    <base />
+    <!-- 1. Who. First, so an unauthenticated call is a 401 and touches nothing else. The token
+         goes to "jwt" so the next steps can read the caller's object ID without a second parse.
+         Two audience forms are accepted. The role is the permission: no role, no entry. -->
+    <validate-azure-ad-token tenant-id="{{tenant-id}}" output-token-variable-name="jwt" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized.">
+      <audiences>
+        <audience>api://{{gateway-app-client-id}}</audience>
+        <audience>{{gateway-app-client-id}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Gateway.Invoke</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <!-- 2. How much. Counted per caller. Prompt tokens are estimated before forwarding, so a
+         call over budget never reaches a model. Over the minute budget is 429 with Retry-After,
+         over the daily budget is 403. Placed before the backend so the gateway's own 429 is
+         never retried. -->
+    <llm-token-limit counter-key='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' tokens-per-minute="{{tokens-per-minute}}" token-quota="{{tokens-per-day}}" token-quota-period="Daily" estimate-prompt-tokens="true" />
+    <!-- 3. Record usage by caller and deployment. preserveContent keeps the body for the
+         backend; reading it without that would leave the model an empty request. -->
+    <llm-emit-token-metric namespace="releaselens-gateway">
+      <dimension name="API ID" />
+      <dimension name="Caller" value='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
+      <dimension name="Deployment" value='@(context.Request.Body.As&lt;JObject&gt;(preserveContent: true).Value&lt;string&gt;("model") ?? "unknown")' />
+    </llm-emit-token-metric>
+    <!-- 4. The gateway's own credential. This replaces the caller's Authorization header, so
+         the caller's token never reaches a model and callers need no rights on the models. -->
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" client-id="{{gateway-identity-client-id}}" />
+    <!-- 5. Route to the pool: primary first, secondary when the primary's breaker is open. -->
+    <set-backend-service backend-id="aoai-pool" />
+  </inbound>
+  <!-- No <base /> here: this section sends the request itself, and the inherited default would
+       send it a second time. -->
+  <backend>
+    <!-- One immediate re-send of a model's 429. That 429 trips the primary's breaker, so the
+         pool picks the secondary on the re-send. The body is buffered so it can be sent twice. -->
+    <retry condition="@(context.Response.StatusCode == 429)" count="1" interval="0" first-fast-retry="true">
+      <forward-request buffer-request-body="true" />
+    </retry>
+  </backend>
+  <outbound>
+    <base />
+    <!-- Which backend answered, from the host the request went to. The body is untouched. -->
+    <set-header name="x-releaselens-backend" exists-action="override">
+      <value>@(context.Request.Url.Host == "{{primary-backend-host}}" ? "primary" : "secondary")</value>
+    </set-header>
+    <!-- Revision 2 only: remove backend response headers a caller does not need. x-ms-region,
+         retry-after, retry-after-ms and the label above stay. Placed after the label so the
+         label is set first. -->
+    <set-header name="azureml-model-session" exists-action="delete" />
+    <set-header name="x-ms-rai-invoked" exists-action="delete" />
+    <set-header name="x-envoy-upstream-service-time" exists-action="delete" />
+    <set-header name="x-ms-deployment-name" exists-action="delete" />
+    <set-header name="apim-request-id" exists-action="delete" />
+  </outbound>
+  <on-error>
+    <base />
+    <!-- A fixed message and the status code only: no backend host or error detail leaves the
+         gateway. The body is set on the existing response, not a new one, so headers such as
+         Retry-After on a 429 are kept. -->
+    <set-header name="Content-Type" exists-action="override">
+      <value>application/json</value>
+    </set-header>
+    <set-body>@("{\"error\":{\"status\":" + context.Response.StatusCode + ",\"message\":\"The gateway could not complete the request.\"}}")</set-body>
+  </on-error>
+</policies>
