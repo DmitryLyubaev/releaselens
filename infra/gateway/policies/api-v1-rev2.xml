@@ -1,7 +1,8 @@
 <!--
   The gateway's policy for API "v1", revision 2 (spec section 4.3): revision 1 plus the outbound block below.
   Order matters. Each step relies on the one before it, and nothing that costs money runs before
-  the caller is known and within budget. Named values ({{...}}) are created by the gateway stack.
+  the caller is known and within budget. Named values (the double-brace references) are created
+  by the gateway stack.
 -->
 <policies>
   <inbound>

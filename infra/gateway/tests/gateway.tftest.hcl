@@ -210,8 +210,13 @@ run "api" {
   }
 
   assert {
-    condition     = azurerm_api_management_api_policy.v1.api_name == "azure-openai-v1" && azurerm_api_management_api_policy.v1.xml_content == file("policies/api-v1.xml")
-    error_message = "Revision 1's policy must be policies/api-v1.xml, unchanged."
+    condition     = azapi_resource.policy_v1.type == "Microsoft.ApiManagement/service/apis/policies@2024-05-01" && azapi_resource.policy_v1.name == "policy" && azapi_resource.policy_v1.parent_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3/apis/azure-openai-v1;rev=1"
+    error_message = "Revision 1's policy must be the policy of revision 1 itself, addressed with ;rev=1, not of whichever revision is current."
+  }
+
+  assert {
+    condition     = azapi_resource.policy_v1.body.properties.format == "xml" && azapi_resource.policy_v1.body.properties.value == file("policies/api-v1.xml")
+    error_message = "Revision 1's policy must be policies/api-v1.xml, unchanged, in the xml format its escaped expressions need."
   }
 }
 
@@ -224,8 +229,13 @@ run "revision_2" {
   }
 
   assert {
-    condition     = azurerm_api_management_api_policy.v1_rev2.api_name == "azure-openai-v1;rev=2" && azurerm_api_management_api_policy.v1_rev2.xml_content == file("policies/api-v1-rev2.xml")
-    error_message = "Revision 2's policy must be policies/api-v1-rev2.xml, on revision 2."
+    condition     = azapi_resource.policy_v1_rev2.type == "Microsoft.ApiManagement/service/apis/policies@2024-05-01" && azapi_resource.policy_v1_rev2.name == "policy" && azapi_resource.policy_v1_rev2.parent_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3/apis/azure-openai-v1;rev=2"
+    error_message = "Revision 2's policy must be the policy of revision 2, addressed with ;rev=2."
+  }
+
+  assert {
+    condition     = azapi_resource.policy_v1_rev2.body.properties.format == "xml" && azapi_resource.policy_v1_rev2.body.properties.value == file("policies/api-v1-rev2.xml")
+    error_message = "Revision 2's policy must be policies/api-v1-rev2.xml, unchanged, in the xml format."
   }
 
   assert {

@@ -267,3 +267,39 @@ def test_gateway_stack_purges_and_never_recovers(repo_root):
     # The stack is meant to be destroyed at the end of every session.
     for name, text in files.items():
         assert not [line for line in _code_lines(text) if "prevent_destroy" in line], name
+
+
+def test_gateway_policies_are_pinned_to_their_revisions(repo_root):
+    # azurerm 5.7's api policy resource reads and deletes by the API name with ";rev=n" stripped,
+    # so on a revision it deletes the current revision's policy; the stack uses azapi instead.
+    files = _stack(repo_root, "gateway")
+
+    assert _declarations(files, "resource", "azurerm_api_management_api_policy") == []
+    for name, parent in [
+        ("policy_v1", "azurerm_api_management_api.v1.id"),
+        ("policy_v1_rev2", "azurerm_api_management_api.v1_rev2.id"),
+    ]:
+        policy = _block(files["api.tf"], f'resource "azapi_resource" "{name}"')
+        parent_id = _setting(policy, "parent_id")
+        assert parent_id and parent_id.group(1) == parent, name
+
+
+def test_gateway_revision_2_is_copied_before_any_policy(repo_root):
+    # A revision is a copy of its source when it is created: revision 2 must be copied after the
+    # operation, the diagnostic and its metrics switch exist, and before either policy does.
+    api = _stack(repo_root, "gateway")["api.tf"]
+
+    def depends_on(header: str) -> str:
+        found = re.search(r"^  depends_on = \[(.*?)\]", _block(api, header), re.MULTILINE | re.DOTALL)
+        assert found, f"{header} has no depends_on"
+        return found.group(1)
+
+    revision_2 = depends_on('resource "azurerm_api_management_api" "v1_rev2"')
+    for needed in [
+        "azurerm_api_management_api_operation.chat_completions",
+        "azurerm_api_management_api_diagnostic.appi",
+        "azapi_update_resource.diagnostic_metrics",
+    ]:
+        assert needed in revision_2, needed
+    assert "azurerm_api_management_api.v1_rev2" in depends_on('resource "azapi_resource" "policy_v1"')
+    assert "azapi_resource.policy_v1_rev2" in depends_on('resource "azurerm_api_management_api_release" "revision_2"')
