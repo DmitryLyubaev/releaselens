@@ -4,12 +4,27 @@ variables {
   budget_start_date  = "2026-10-01T00:00:00Z"
 }
 
+# The gateway's Entra app is part of the stack, so every test plans it. The data source's result
+# needs the Azure CLI's key.
+mock_provider "azuread" {
+  mock_data "azuread_application_published_app_ids" {
+    defaults = {
+      result = {
+        MicrosoftAzureCli = "99999999-9999-9999-9999-999999999999"
+      }
+    }
+  }
+}
+
 mock_provider "azurerm" {
   override_during = plan
 
+  # The principal ID goes to the gateway's Gateway.Invoke assignments, which the provider checks
+  # for a UUID.
   mock_resource "azurerm_user_assigned_identity" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-deploy"
+      id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-deploy"
+      principal_id = "33333333-3333-3333-3333-333333333333"
     }
   }
 }
@@ -23,7 +38,17 @@ override_resource {
   target          = azurerm_user_assigned_identity.app
   override_during = plan
   values = {
-    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-app"
+    id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-app"
+    principal_id = "55555555-5555-5555-5555-555555555555"
+  }
+}
+
+# The gateway app's owner is the signed-in principal, and the provider checks that it is a UUID.
+override_data {
+  target = data.azurerm_client_config.current
+  values = {
+    object_id = "22222222-2222-2222-2222-222222222222"
+    tenant_id = "11111111-1111-1111-1111-111111111111"
   }
 }
 

@@ -98,8 +98,62 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_eleven_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 11
+def test_bootstrap_has_the_twelve_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 12
+
+
+def test_bootstrap_has_the_three_gateway_invoke_assignments_all_in_roles_tf(repo_root):
+    files = _stack(repo_root, "bootstrap")
+
+    assert _declarations(files, "resource", "azuread_app_role_assignment") == ["roles.tf"] * 3
+    # The one role, on the gateway's own service principal, for the three principals.
+    for name in ["gateway_invoke_owner", "gateway_invoke_app", "gateway_invoke_deploy"]:
+        assignment = _block(files["roles.tf"], f'resource "azuread_app_role_assignment" "{name}"')
+        resource = _setting(assignment, "resource_object_id")
+        assert resource and resource.group(1) == "azuread_service_principal.gateway.object_id"
+        role = _setting(assignment, "app_role_id")
+        assert role and role.group(1) == "random_uuid.gateway_invoke_role.result"
+
+
+def test_bootstrap_has_no_app_secret(repo_root):
+    files = _stack(repo_root, "bootstrap")
+
+    # No secret and no certificate of any kind, on the application or on its service principal.
+    for type_ in [
+        "azuread_application_password",
+        "azuread_application_certificate",
+        "azuread_application_federated_identity_credential",
+        "azuread_service_principal_password",
+        "azuread_service_principal_certificate",
+    ]:
+        assert _declarations(files, "resource", type_) == [], type_
+    application = _block(files["gateway_app.tf"], 'resource "azuread_application" "gateway"')
+    assert not re.search(r"^\s*password\s*\{", application, re.MULTILINE)
+    # No line of code may carry a secret out of either provider.
+    secrets = re.compile(r"client_secret|password|certificate")
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if secrets.search(line)], name
+
+
+def test_bootstrap_has_no_literal_client_id_in_the_gateway_app(repo_root):
+    files = _stack(repo_root, "bootstrap")
+    guid = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+    # The Azure CLI's ID comes from the published-app-IDs data source, and the role's and the
+    # scope's IDs are generated, so no GUID appears in the stack's code.
+    for name in ["gateway_app.tf", "monitoring.tf", "roles.tf"]:
+        assert not [line for line in _code_lines(files[name]) if guid.search(line)], name
+
+
+def test_gateway_monitoring_keeps_local_authentication_off(repo_root):
+    files = _stack(repo_root, "bootstrap")
+
+    for header in [
+        'resource "azurerm_log_analytics_workspace" "gateway"',
+        'resource "azurerm_application_insights" "gateway"',
+    ]:
+        local_auth = _setting(_block(files["monitoring.tf"], header), "local_authentication_enabled")
+        assert local_auth and local_auth.group(1) == "false", header
 
 
 def test_failover_account_keeps_keys_off(repo_root):

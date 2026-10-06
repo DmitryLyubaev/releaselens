@@ -474,6 +474,7 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | A second Azure OpenAI account in Southeast Asia, with `releaselens-chat` and `releaselens-chat-failover-test` deployments, and a tiny `releaselens-chat-failover-test` on the first account, all Global Standard | bootstrap | per token, and nothing idle (gateway spec §3.1) |
 | AI Search service, Basic | search | by the hour while it exists, US$3.19 a day; destroyed after each benchmark session (benchmark spec §6.4, §8) |
 | State storage account | bootstrap | a few cents a month (an estimate) |
+| The AI gateway's Entra app, Log Analytics workspace (30 days, 0.1 GB a day cap) and Application Insights | bootstrap | nothing idle; Log Analytics ingestion is billed per GB and capped (gateway spec §3.1) |
 | Managed identities, resource groups, budget | bootstrap | nothing |
 
 The budget, `budget-releaselens-monthly`, is in the long-lived stack, so it survives every
