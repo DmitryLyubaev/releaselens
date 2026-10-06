@@ -22,7 +22,7 @@ session.** The budget alert is the backstop, and it stops nothing.
 | API Management | `apim-releaselens-<suffix>` | `BasicV2_1`, `australiaeast`; the bootstrap's gateway identity, user-assigned, and no other |
 | Named values | `tenant-id`, `gateway-app-client-id`, `gateway-identity-client-id`, `tokens-per-minute`, `tokens-per-day`, `primary-backend-host` | what the policies refer to as `{{name}}`; none secret |
 | Version set and API | `azure-openai`, `azure-openai-v1` | segment scheme, version `v1`, path `openai`, HTTPS only, `subscription_required = false`; one operation, `POST /chat/completions` |
-| Policies | [`policies/api-v1.xml`](policies/api-v1.xml), [`policies/api-v1-rev2.xml`](policies/api-v1-rev2.xml) | loaded with `file()`; revision 1 and revision 2 |
+| Policies (azapi) | [`policies/api-v1.xml`](policies/api-v1.xml), [`policies/api-v1-rev2.xml`](policies/api-v1-rev2.xml) | loaded with `file()`, format `xml`; each on its own revision (`;rev=1`, `;rev=2`), never on "whichever is current" |
 | Revision 2 | `azure-openai-v1;rev=2` | non-current until `release_revision_2 = true` |
 | Backends (azapi) | `aoai-primary`, `aoai-secondary`, `aoai-pool` | two Single backends, each with one breaker rule (one 429 in 5 minutes trips it for 1 minute, or for the Retry-After); the pool, primary priority 1, secondary priority 2 |
 | Logger and diagnostic | `appi-releaselens`, `applicationinsights` | to the bootstrap's Application Insights, ingesting as the gateway identity; every request sampled, no body, no client IP; custom metrics on (azapi) |
@@ -105,11 +105,13 @@ terraform plan -var release_revision_2=true -out=tfplan
 terraform apply tfplan
 ```
 
-That plan adds the release, and replaces revision 2's policy with the same file: the provider
-reads the policy's API name back without its `;rev=2`. Every plan after the first shows that
-replacement. After the release, the next step is the destroy: revision 1's policy resource
-addresses the current revision, so another apply would write revision 1's policy over
-revision 2's.
+That plan should add the release and nothing else (see Live checks). The release changes which
+revision is current, not what either holds: each policy is pinned to its own revision, so a
+later apply leaves revision 2's policy on revision 2 and revision 1's on revision 1. The
+operation and the diagnostic address the current revision by name, so after the release they
+refer to revision 2's copies; if a later plan shows either of them created or replaced, revision
+2 did not inherit it, and the plan says what the apply would do. Even so, after the release the
+next step is the destroy: the session ends there.
 
 At the end of the session, whether it succeeded or not:
 
@@ -120,6 +122,16 @@ az apim deletedservice list --query "[?starts_with(name, 'apim-releaselens-')].n
 ```
 
 The first check must print `false`, and the second nothing.
+
+## Live checks
+
+The mocked tests cannot show these; the smoke test settles them:
+- **Revision 2 inherits the diagnostic.** Revision 2 is copied after the diagnostic and its
+  metrics switch exist, and before either policy. A call at `;rev=2` must appear in Application
+  Insights, and its tokens in the `releaselens-gateway` metric.
+- **The policies round-trip.** The second plan (the release's) must not show either policy
+  changed. If it does, API Management returned the XML in a different form from the file, and
+  the apply would write the same file again.
 
 ## Tests
 

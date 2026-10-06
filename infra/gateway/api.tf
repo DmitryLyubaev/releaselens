@@ -39,19 +39,16 @@ resource "azurerm_api_management_api_operation" "chat_completions" {
   url_template        = "/chat/completions"
 }
 
-# The policy is a file, so the static checks in tests/infra parse what is deployed. api_name
-# without a revision addresses the current revision, which is revision 1 until revision 2 is
-# released.
-resource "azurerm_api_management_api_policy" "v1" {
-  api_name            = azurerm_api_management_api.v1.name
-  resource_group_name = azurerm_resource_group.gateway.name
-  api_management_name = azurerm_api_management.gateway.name
-  xml_content         = file("${path.module}/policies/api-v1.xml")
-}
-
 # Revision 2 (spec §4.3): non-current, called at /openai/v1;rev=2/chat/completions in the smoke
 # test, then made current by the release below. Everything but the policy is revision 1's,
 # written out so that nothing is left for the service to choose.
+#
+# The creation order matters, because a revision is a copy of its source as it is at that moment:
+#   1. revision 1, its operation, its diagnostic and the diagnostic's metrics switch
+#   2. revision 2, copied from that, so it has the operation and, if the service copies it, the
+#      diagnostic with metrics on (a live check, in the README)
+#   3. only then the two policies, each written to its own revision, so neither is a copy of the
+#      other
 resource "azurerm_api_management_api" "v1_rev2" {
   name                  = azurerm_api_management_api.v1.name
   display_name          = azurerm_api_management_api.v1.display_name
@@ -66,26 +63,56 @@ resource "azurerm_api_management_api" "v1_rev2" {
   version_set_id        = azurerm_api_management_api.v1.version_set_id
   subscription_required = false
 
-  # A revision copies its source's operations when it is created, so the operation must exist
-  # first.
-  depends_on = [azurerm_api_management_api_operation.chat_completions]
+  depends_on = [
+    azurerm_api_management_api_operation.chat_completions,
+    azurerm_api_management_api_diagnostic.appi,
+    azapi_update_resource.diagnostic_metrics,
+  ]
 }
 
-# The provider reads api_name back without the ";rev=2" (azurerm 5.7, getApiName in the
-# policy resource's read), and api_name forces replacement, so every plan after the first shows
-# this policy replaced. That is noise, not drift: the replacement writes the same file to the
-# same revision. Ignoring the change instead would make a later update address the current
-# revision, which is the wrong one.
-resource "azurerm_api_management_api_policy" "v1_rev2" {
-  api_name            = "${azurerm_api_management_api.v1_rev2.name};rev=${azurerm_api_management_api.v1_rev2.revision}"
-  resource_group_name = azurerm_resource_group.gateway.name
-  api_management_name = azurerm_api_management.gateway.name
-  xml_content         = file("${path.module}/policies/api-v1-rev2.xml")
+# The policies are files, so the static checks in tests/infra parse what is deployed. They are
+# azapi, not azurerm_api_management_api_policy: in azurerm 5.7 that resource reads and deletes by
+# the API's name with the ";rev=n" stripped, so on a revision it is replaced on every plan, and
+# the replacement deletes the current revision's policy instead of its own. Here each policy's
+# parent is its own revision's id, which ends in ";rev=1" or ";rev=2", so it always addresses
+# that revision, current or not.
+#
+# format = "xml": the files are well-formed XML, with the generics in expressions escaped
+# (&lt;JObject&gt;), which is what "xml" means. "rawxml" is for unescaped expressions.
+resource "azapi_resource" "policy_v1" {
+  type      = "Microsoft.ApiManagement/service/apis/policies@2024-05-01"
+  name      = "policy"
+  parent_id = azurerm_api_management_api.v1.id
+
+  body = {
+    properties = {
+      format = "xml"
+      value  = file("${path.module}/policies/api-v1.xml")
+    }
+  }
+
+  # After revision 2 is copied (see above), so revision 2 starts with no policy of revision 1's.
+  depends_on = [azurerm_api_management_api.v1_rev2]
 }
 
-# Made only once revision 2 has passed the smoke test, with release_revision_2 = true. After it,
-# the next step is the destroy: revision 1's policy resource addresses the current revision, so
-# another apply would write revision 1's policy over revision 2's.
+resource "azapi_resource" "policy_v1_rev2" {
+  type      = "Microsoft.ApiManagement/service/apis/policies@2024-05-01"
+  name      = "policy"
+  parent_id = azurerm_api_management_api.v1_rev2.id
+
+  body = {
+    properties = {
+      format = "xml"
+      value  = file("${path.module}/policies/api-v1-rev2.xml")
+    }
+  }
+}
+
+# Made only once revision 2 has passed the smoke test, with release_revision_2 = true. The
+# release changes which revision is current, not what either holds: each policy stays on its own
+# revision, so a later apply rewrites neither onto the other. The operation and the diagnostic
+# address the current revision by name, so after the release they refer to revision 2's copies;
+# read any later plan for them. The session still ends with the destroy.
 resource "azurerm_api_management_api_release" "revision_2" {
   count = var.release_revision_2 ? 1 : 0
 
@@ -93,7 +120,7 @@ resource "azurerm_api_management_api_release" "revision_2" {
   api_id = azurerm_api_management_api.v1_rev2.id
   notes  = "Revision 2 passed the smoke test."
 
-  # Never make a revision current while its policy is being replaced (see above): without it,
-  # the revision has no token check.
-  depends_on = [azurerm_api_management_api_policy.v1_rev2]
+  # Never make a revision current before its policy is in place: without it, the revision has no
+  # token check.
+  depends_on = [azapi_resource.policy_v1_rev2]
 }
