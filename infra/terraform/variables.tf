@@ -33,6 +33,12 @@ variable "azure_openai_base_url" {
   description = "The Azure OpenAI account's v1 base URL. From AZURE_OPENAI_BASE_URL."
 }
 
+variable "azure_openai_token_scope" {
+  type        = string
+  description = "The scope the API asks Entra for a token for, set as AzureOpenAi__TokenScope. The default is the Azure OpenAI account's. To use the API Management AI gateway, set azure_openai_base_url to the gateway's /openai/v1/ and this to the gateway app's scope, api://<gateway app client ID>/.default."
+  default     = "https://ai.azure.com/.default"
+}
+
 variable "azure_openai_deployment" {
   type        = string
   description = "Name of the gpt-4.1-mini deployment. From AZURE_OPENAI_DEPLOYMENT."
