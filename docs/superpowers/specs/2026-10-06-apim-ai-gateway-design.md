@@ -437,4 +437,15 @@ callers, no XML policies, not in Australia); deploying the app stack during a ga
 
 ## 13. Changes after approval
 
-None yet.
+**2026-10-09, on the owner's decision.** Three details from plan 1's rulings, made while planning
+and confirmed in review. They supersede the text they name; nothing else in the design changes.
+
+- **The harness lives in `eval/app/gateway/`** (§7.1 said `eval/gateway/`), and runs as
+  `python -m app.gateway`, like every other harness package under `eval/app/`.
+- **The backend URLs end in `/openai/v1`** (§3.2 said `/openai`). The API's version set uses the
+  segment scheme, so clients call `/openai/v1/chat/completions` and the operation's template is
+  `/chat/completions`; API Management forwards only the operation path after the backend URL.
+- **Revision 2 is called at `/openai/v1;rev=2/chat/completions`** (§4.3 said
+  `/openai;rev=2/v1/chat/completions`), for the same reason.
+
+The smoke test (§10, step 3) checks the last two live.
