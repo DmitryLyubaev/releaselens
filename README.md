@@ -353,7 +353,7 @@ See [docs/architecture.md](docs/architecture.md).
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
 | Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
-| Infrastructure | Terraform in three stacks: a long-lived bootstrap stack, an app stack (Container Apps scale-to-zero, Postgres Flexible Server), and a short-lived search stack for the retrieval benchmark. A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
+| Infrastructure | Terraform in four stacks: a long-lived bootstrap stack, an app stack (Container Apps scale-to-zero, Postgres Flexible Server), and two short-lived stacks the owner applies for one session each, one for the retrieval benchmark and one for the AI gateway. A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it
@@ -439,13 +439,14 @@ nothing is deployed. The rest of this section is about what the code configures,
 Azure fact carries its source and date. The
 detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
-There are two Terraform stacks for the app, and a third for the retrieval benchmark:
+There are two Terraform stacks for the app, a third for the retrieval benchmark and a fourth for the AI gateway:
 
 | Stack | Applied by | Holds |
 |---|---|---|
-| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its three deployments, the chat model and two embedding models; a second account in Southeast Asia with two failover deployments, a third failover-test deployment on the first account, and the AI gateway's identity, Entra app and monitoring; the budget; the empty app resource group; every role assignment except the search stack's two |
+| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its four deployments, the chat model, two embedding models and a tiny `releaselens-chat-failover-test` deployment for the gateway test; a second account in Southeast Asia with two deployments (`releaselens-chat` and its own `releaselens-chat-failover-test`), and the AI gateway's identity, Entra app and monitoring; the budget; the empty app resource group; every role assignment except the search stack's two |
 | [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
 | [`infra/search`](infra/search/README.md) | the owner, locally, for one benchmark session, then destroyed | its own resource group, one keyless AI Search service on Basic, and the owner's two roles on it |
+| [`infra/gateway`](infra/gateway/README.md) | the owner, locally, for one gateway session, then destroyed | its own resource group and one API Management service, Basic v2, in front of the two accounts; see [AI gateway](#ai-gateway) |
 
 **Bootstrap once.** The owner follows the runbook in
 [infra/bootstrap/README.md](infra/bootstrap/README.md). The budget comes first: the first apply
@@ -455,7 +456,10 @@ providers every stack uses. One of them is `Microsoft.App`, which the 12 August 
 missing on a fresh subscription.
 
 **Then deploy and destroy through the workflows**,
-[`deploy.yml`](.github/workflows/deploy.yml) and [`destroy.yml`](.github/workflows/destroy.yml):
+[`deploy.yml`](.github/workflows/deploy.yml) and [`destroy.yml`](.github/workflows/destroy.yml).
+A third, [`gateway-check.yml`](.github/workflows/gateway-check.yml), makes one call as the deploy
+identity during an AI gateway session. Only these three may name the environment `azure`, and
+`scripts/check_workflows.py` fails the build if any other does:
 - **`deploy.yml`** runs only when dispatched by hand, from `main`, under the GitHub environment
   `azure`. It refuses to run while the destroy workflow is disabled. It pins the image to the
   digest of `sha-<commit>` and applies the app stack. Then it runs a smoke test, which passes
@@ -471,6 +475,12 @@ missing on a fresh subscription.
   `terraform destroy`, it lists what is left in `rg-releaselens` and fails if anything is. A
   resource created outside Terraform survives a destroy, so this check is needed. The check also
   runs after a failed or cancelled destroy, and names what is still billing.
+- **`gateway-check.yml`** runs only when dispatched by hand, from `main`, under the same
+  environment, and only during a gateway session. It signs in as the deploy identity, makes one
+  model call through the gateway and prints only the status code and the token count. The gateway's
+  address comes from two environment secrets that exist only for the session. Its pip install is
+  hash-locked and short, because the job holds an OIDC token (see the
+  [runbook](docs/runbook-gateway.md#maintenance-the-check-workflows-requirements)).
 - **The nightly destroy is best effort, not a guarantee.** GitHub disables scheduled workflows in
   a public repository after 60 days without activity, and scheduled runs can be delayed or
   dropped. The budget alert is the backstop, and it stops nothing.
@@ -589,6 +599,45 @@ without noticing:
 What the run did **not** establish: `/health` returns a literal, so it exercises neither Key
 Vault nor the database, and the deployed database was empty -- no migrations, no corpus. The
 deployment is proven; an end-to-end demo over real evidence is a separate exercise.
+
+## AI gateway
+
+**Built and tested offline; not yet applied or measured. The results come after the live
+session.** This section says what the code does, and nothing it has measured.
+
+The AI gateway puts Azure API Management, Basic v2, in front of ReleaseLens's model calls, so a
+small test can show what a gateway adds over calling the model directly:
+- **Failover.** When the primary deployment throttles, a second account in Southeast Asia serves
+  the request, and the client does nothing.
+- **A budget for each caller.** Every Entra identity has its own token budget, enforced before a
+  model is called, so one caller using its budget up does not block another.
+- **Usage for each caller,** recorded as token counts only. No prompt or response is logged.
+- **Keyless both ways.** Callers bring an Entra token with a role the gateway checks, and the
+  gateway calls the models with its own managed identity. No key exists anywhere.
+
+What to know before relying on it:
+- **Direct mode is the default.** The app calls Azure OpenAI directly, as before. Gateway mode is
+  two settings, `AzureOpenAi:BaseUrl` and `AzureOpenAi:TokenScope`, and no new code path.
+- **The gateway exists only during a session.** The owner applies the stack
+  [`infra/gateway`](infra/gateway/README.md) at the start and destroys it at the end, because API
+  Management bills by the hour (about US$0.21) whether or not anything calls it. Nothing real
+  calls it.
+- **A production setup would force traffic through it.** It would remove direct access to the
+  models, so no caller could go round the budgets. This repository does not do that.
+- **The endpoint is public.** It is reachable from anywhere and protected by the Entra token
+  alone, with no IP restriction.
+- **"Answered by Southeast Asia" means that account served it.** A Global Standard deployment may
+  process a prompt in any Azure region, so this is failover between accounts and their capacity,
+  not a statement about where the prompt was processed.
+
+The design is in the [spec](docs/superpowers/specs/2026-10-06-apim-ai-gateway-design.md). The
+live session is scripted in the [runbook](docs/runbook-gateway.md), which also holds the table of
+what has still to be verified. The stack's own page is
+[`infra/gateway/README.md`](infra/gateway/README.md). The measured test, with its result rule
+fixed before any run, is in `eval/app/gateway/`, and "failover held", "did not hold" and
+"inconclusive" are all publishable results.
+
+**Results:** none yet. They will be added here after the session.
 
 ## What this is not
 

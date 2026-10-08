@@ -217,8 +217,8 @@ commit message.
 
 ## Azure deployment
 
-All three Terraform stacks are built and tested with mocked plans, and the deploy and destroy
-workflows are built. **The app stack was deployed and destroyed twice on 1 October 2026**; the
+All four Terraform stacks are built and tested with mocked plans, and the deploy, destroy and
+gateway-check workflows are built. **The app stack was deployed and destroyed twice on 1 October 2026**; the
 [README's record](../README.md#two-stack-deployment-1-october-2026) has the runs. Apart from
 the verified items below, this section describes what the code configures. What the checks after the bootstrap apply showed is under
 [Verified by the bootstrap apply](#verified-by-the-bootstrap-apply). The owner's runbook is
@@ -234,7 +234,7 @@ GitHub Actions: environment "azure", whose only branch rule is main
   ▼
 ┌─ rg-releaselens-bootstrap · long-lived · applied by the owner · lock CanNotDelete ──────────┐
 │  strlstate<suffix>           shared keys off · tfstate-bootstrap (owner) · tfstate-app      │
-│                              · tfstate-search (owner)                                       │
+│                              · tfstate-search (owner) · tfstate-gateway (owner)             │
 │  id-releaselens-deploy       federated credential github-environment-azure (env azure)      │
 │  id-releaselens-app          the identity the Container App runs as                         │
 │  aoai-releaselens-<suffix>   kind AIServices · key authentication disabled                  │
@@ -257,7 +257,9 @@ The bootstrap stack is applied once by the owner, locally, and never destroyed. 
 holds only the Container App and Postgres. The embedding deployments serve only the retrieval
 benchmark, whose AI Search service is in a third stack, [`infra/search`](../infra/search/README.md):
 the owner applies it in its own group, `rg-releaselens-search`, for one measurement session, and
-destroys it at the end. The app stack reads nothing from bootstrap. The owner
+destroys it at the end. A fourth stack, [`infra/gateway`](../infra/gateway/README.md), is the AI
+gateway's, applied and destroyed the same way in `rg-releaselens-gateway` (see
+[The AI gateway path](#the-ai-gateway-path)). The app stack reads nothing from bootstrap. The owner
 copies four bootstrap outputs into the GitHub environment once, and the workflows pass them to
 Terraform as `TF_VAR_*`:
 - `APP_IDENTITY_ID`, a variable
@@ -269,8 +271,9 @@ The container's `AZURE_CLIENT_ID` is always the app identity's client ID.
 
 ### The workflows
 
-[`deploy.yml`](../.github/workflows/deploy.yml) and [`destroy.yml`](../.github/workflows/destroy.yml)
-are the only workflows that name the environment `azure`. Both ran on 1 October 2026.
+[`deploy.yml`](../.github/workflows/deploy.yml), [`destroy.yml`](../.github/workflows/destroy.yml)
+and [`gateway-check.yml`](../.github/workflows/gateway-check.yml) are the only workflows that name
+the environment `azure`. The first two ran on 1 October 2026. `gateway-check.yml` has not run.
 - **`deploy.yml`** is dispatched by hand. Its `preflight` job, with only `actions: read`, refuses
   to continue while `destroy.yml` is disabled. It also resolves the image tag `sha-<commit>` to
   its digest with an anonymous GHCR call. The `deploy` job applies the app stack with the image
@@ -285,10 +288,17 @@ are the only workflows that name the environment `azure`. Both ran on 1 October 
     Terraform stops on a polling error. The next run drops the deleted resource from state, so
     the workflow makes up to three attempts: one for each of those two resources, then a clean
     pass. Any other error fails the step at once.
-- **Both** have top-level `permissions: {}`, and give `id-token: write` and `contents: read`
+- **`gateway-check.yml`** is dispatched by hand, from `main` only (the job checks the ref as well
+  as the environment's branch rule), and only during a gateway session. It signs in as the deploy
+  identity, makes one call through the gateway and prints `status=<code>`, with `total_tokens=<n>`
+  after it on a 200. Nothing else is printed, so the public log names no gateway. Its two
+  secrets, `GATEWAY_BASE_URL` and `GATEWAY_SCOPE`, exist in the environment only for the session
+  and are deleted after it. It installs a short, hash-locked list of requirements, because the job
+  holds an OIDC token.
+- **All three** have top-level `permissions: {}`, and give `id-token: write` and `contents: read`
   only to the job with the environment. They pin every action to a commit SHA, and share the
-  concurrency group `releaselens-azure`, where runs queue and none is cancelled. Terraform signs
-  in through `ARM_USE_OIDC`, with no `azure/login` step.
+  concurrency group `releaselens-azure`, where runs queue and none is cancelled. In the deploy and
+  destroy workflows, Terraform signs in through `ARM_USE_OIDC`, with no `azure/login` step.
 
 **What the environment holds.** No credential: every value is an identifier.
 - **Four secrets,** which GitHub masks in the public run logs: `AZURE_TENANT_ID`,
@@ -299,6 +309,9 @@ are the only workflows that name the environment `azure`. Both ran on 1 October 
   `APP_IDENTITY_CLIENT_ID` and `AZURE_OPENAI_DEPLOYMENT`. `APP_IDENTITY_ID` contains the
   subscription ID, so it shows with that segment masked. `SMOKE_OPEN_RUNNER_IP` is added by hand,
   only if the smoke test needs it.
+- **Two more secrets, only during a gateway session:** `GATEWAY_BASE_URL` and `GATEWAY_SCOPE`,
+  for `gateway-check.yml`. The owner sets them before the check and deletes them in the session's
+  last step.
 
 The tenant and subscription IDs became secrets on 2026-09-30, and the other two on 2026-10-01,
 both by the owner's decision. The reason for the second pair, checked on 2026-09-30:
@@ -326,6 +339,51 @@ do not, setting the environment variable `SMOKE_OPEN_RUNNER_IP` to `true` makes 
 add a firewall rule for its own public IP, read from `api.ipify.org`, before the smoke test. A
 final step removes the rule again. It runs whenever the step that added the rule ran, even if
 the smoke test failed.
+
+### The AI gateway path
+
+The app's default path is direct: the Container App, or a local API, calls the Azure OpenAI
+account with a token for `https://ai.azure.com`. During a gateway session there is a second path,
+through API Management. Gateway mode is configuration, not a new code path: `AzureOpenAi:BaseUrl`
+is `https://<gateway-host>/openai/v1/` and `AzureOpenAi:TokenScope` is
+`api://<gateway-app-client-id>/.default`. The stack is [`infra/gateway`](../infra/gateway/README.md),
+and the design is the [gateway spec](superpowers/specs/2026-10-06-apim-ai-gateway-design.md).
+**Nothing on this path has been applied or measured yet.**
+
+```
+Direct (the default)
+  caller ──► token for https://ai.azure.com ──► aoai-releaselens-<suffix>  (australiaeast)
+             the account's own RBAC is the check
+
+Through the gateway (only during a session; the endpoint is public, protected by the token alone)
+  caller ──► token for api://<gateway-app-client-id> ──► apim-releaselens-<suffix> (Basic v2)
+               1 validate the token: audience, and the role Gateway.Invoke ──► 401 if not
+               2 llm-token-limit: 10,000 a minute, 50,000 a day, per caller (the token's oid)
+                                  ──► 429 with Retry-After, or 403, before any model is called
+               3 llm-emit-token-metric ──► appi-releaselens (counts only; no bodies)
+               4 swap the credential: the gateway identity's token, not the caller's
+               5 backend pool aoai-pool
+                   ├ aoai-primary    priority 1  ──► australiaeast account
+                   └ aoai-secondary  priority 2  ──► Southeast Asia account
+                 each backend has a circuit breaker on one 429; the model's 429 is re-sent once
+                 and the pool picks the secondary; both tripped is a 503
+```
+
+What sits where:
+- **Bootstrap (long-lived, nothing bills by the hour):** the Southeast Asia account and its two
+  deployments, `releaselens-chat-failover-test` on the first account (capacity 1, so it
+  throttles on purpose), `id-releaselens-gateway`, the Entra app `releaselens-ai-gateway` with its
+  role `Gateway.Invoke` (assigned to the owner and the two existing identities; assignment is
+  required), `log-releaselens` and `appi-releaselens`, and the state container `tfstate-gateway`.
+  Every role assignment is in `infra/bootstrap/roles.tf`.
+- **The gateway stack (per session):** `rg-releaselens-gateway` and API Management, with the API,
+  its two revisions, the backends, the logger and the policies in `infra/gateway/policies/`.
+  It creates no role assignment and no key.
+- **The harness:** `eval/app/gateway/`, with the result rule and the region signal frozen before
+  any measured run. `gateway-check.yml` is check B3 only: a second caller served while the first
+  is over its daily budget.
+- **Direct stays the default,** and a production setup would remove direct access so that all
+  traffic goes through the gateway. This repository does not.
 
 ### Identities and roles
 
@@ -380,7 +438,7 @@ any branch. The environment's branch rule is the only thing that binds the token
 two rules always hold:
 - **No workflow triggered by `pull_request_target`, `workflow_run` or `issue_comment` names the
   environment.** `scripts/check_workflows.py` enforces this in CI. It allows the environment only
-  in `deploy.yml` and `destroy.yml`, and checks their triggers, permissions, concurrency and
+  in `deploy.yml`, `destroy.yml` and `gateway-check.yml`, and checks their triggers, permissions, concurrency and
   SHA-pinned actions. The temporary `oidc-probe.yml`, which the bootstrap runbook ran in R7 and
   R11, was then removed, and taken out of that allowlist.
 - **The repository stays public.** On GitHub Free, a private repository's environment protection
@@ -484,6 +542,7 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | Azure OpenAI Global Standard deployment | bootstrap | per token. The Retail Prices API lists only per-token meters for it (read 2026-09-24 and 2026-09-27). The first invoice will confirm whether it charges anything while idle |
 | Two embedding deployments, Global Standard | bootstrap | per token, and nothing idle (benchmark spec §6.1) |
 | A second Azure OpenAI account in Southeast Asia, with `releaselens-chat` and `releaselens-chat-failover-test` deployments, and a tiny `releaselens-chat-failover-test` on the first account, all Global Standard | bootstrap | per token, and nothing idle (gateway spec §3.1) |
+| API Management, Basic v2 | gateway | by the hour while it exists, about US$0.21 (US$0.20548, Retail Prices API, 2026-10-06), so about US$5 a day if forgotten; destroyed at the end of every gateway session (gateway spec §3.2, §7.5) |
 | AI Search service, Basic | search | by the hour while it exists, US$3.19 a day; destroyed after each benchmark session (benchmark spec §6.4, §8) |
 | State storage account | bootstrap | a few cents a month (an estimate) |
 | The AI gateway's Entra app, Log Analytics workspace (30 days, 0.1 GB a day cap) and Application Insights | bootstrap | nothing idle; Log Analytics ingestion is billed per GB and capped (gateway spec §3.1) |
