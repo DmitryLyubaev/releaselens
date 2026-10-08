@@ -143,7 +143,11 @@ The mocked tests cannot show these. The smoke test settles the first two, and th
 third:
 - **Revision 2 inherits the diagnostic.** Revision 2 is copied after the diagnostic and its
   metrics switch exist, and before either policy. A call at `;rev=2` must appear in Application
-  Insights, and its tokens in the `releaselens-gateway` metric.
+  Insights, and its tokens in the `releaselens-gateway` metric. **If it does not** (the call is
+  missing from `requests`, or its tokens from `customMetrics`), revision 2 did not inherit the
+  diagnostic or its `metrics = true`: do not set `release_revision_2`, and run the measured steps
+  on revision 1, the current revision. The runbook's step 3, point 4 says so too, and the
+  findings table records it.
 - **The policies round-trip.** API Management may return a policy's XML normalised: different
   quoting or indentation, or without the leading comment. That is expected. azapi then shows an
   in-place update of both policies on every plan after the first, the release's included, and

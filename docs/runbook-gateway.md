@@ -17,20 +17,25 @@ table at the end, and in the report, after the session.
   are the eight in spec §10, and there are more yeses inside them: setting the session secrets
   (before step 6), the workflow dispatch (step 6), the destroy (step 8) and deleting the session
   secrets (step 8).
-- **Before any `az` command,** run `az account show`, and stop if a work account (the owner's
-  employer's, not the personal one) is signed in. Sign in with the personal account first. The
-  runbook does not name the work domain, because this file is public.
+- **Before any `az` command,** run the account check (`acctok`, defined in "Before the session"),
+  and stop unless it prints `True`. It prints nothing else: `az account show` would print the
+  account's email, which this runbook's own no-identifier rule forbids on a screen. The check is
+  `True` only when the signed-in user's name does not contain the work domain (the owner's
+  employer's, not the personal one) and the signed-in tenant is the bootstrap's `tenant_id`. The
+  runbook does not name the work domain, because this file is public: the owner holds it in the
+  user environment variable `WORK_DOMAIN`, set once in Windows' settings, outside every repository
+  and never typed into a command. WSL sees it when `WSLENV` lists it (`WSLENV=WORK_DOMAIN`). If it
+  is unset, the check prints `False`. Sign in with the personal account first.
 - **On Windows, `az` needs the Norton CA bundle for that process only.** Nothing is persisted.
   In the PowerShell window that runs `az`, the harness and `gh`:
 
   ```powershell
   $env:REQUESTS_CA_BUNDLE = "$env:USERPROFILE\.azure\ca-bundle-with-norton.pem"
-  az account show --query "{user: user.name, subscription: name}" -o table
   ```
 
   The harness starts `az` itself to get tokens, so it needs the same variable in the same window.
   WSL has its own `az` session (the [bootstrap README](../infra/bootstrap/README.md#r1-sign-in-inside-wsl)
-  has R1), and needs no bundle. Run `az account show` there as well before Terraform.
+  has R1), and needs no bundle. Run its own `acctok` (below) there as well before Terraform.
 - **Terraform runs only in WSL (Ubuntu),** with its own data directory for each stack:
   `TF_DATA_DIR=$HOME/tfdata/bootstrap-live` for the bootstrap and `$HOME/tfdata/gateway-live` for
   the gateway. Never plan or apply from Windows.
@@ -48,6 +53,12 @@ table at the end, and in the report, after the session.
   copy it into the table in step 7.
 - **Do not run a session across 00:00 UTC (10:00 Brisbane).** The daily budget's window starts
   then (spec §12 item 11, to be confirmed), and so does the harness's count of the day's tokens.
+- **Keep steps 5 and 6 clear of about 13:45 to 14:30 UTC (23:45 to 00:30 Brisbane).**
+  `destroy.yml` runs nightly at 14:00 UTC and shares the concurrency group `releaselens-azure`
+  with `gateway-check.yml`, so a B3 dispatch that lands then queues behind the destroy and can
+  miss its 5-minute window. Steps 5 and 6 take about 40 minutes, so this means not starting step 5
+  between about 13:05 and 14:30 UTC (23:05 and 00:30 Brisbane), as well as the one-hour rule in
+  the clock check at step 5.
 
 ## What it costs
 
@@ -73,8 +84,9 @@ nothing.
   bootstrap's runbook (R10), including the variable `AZURE_CLIENT_ID` and the secret
   `AZURE_TENANT_ID`. The check workflow reads both.
 - `eval/.venv` exists and `.venv/Scripts/python.exe -m pytest -q`, run from `eval/`, passes.
-- About 3 hours free, and at least one hour of the UTC day left when step 5 begins (see the clock
-  check there). The session must not cross 00:00 UTC (10:00 Brisbane).
+- About 3 hours free, and at least one hour of the UTC day left when step 5 begins, but not a
+  step 5 that starts between about 13:05 and 14:30 UTC (see the clock check there). The session
+  must not cross 00:00 UTC (10:00 Brisbane).
 
 Open two windows: PowerShell on Windows, from the repository root, and Ubuntu in WSL. In the
 PowerShell window, set the CA bundle as above, then this helper, which reads a Terraform output
@@ -88,6 +100,33 @@ function tfout($stack, $dir, $name) {
 
 The repository's path as WSL sees it is `/mnt/e/Projects/ReleaseLens`. Adjust it to the clone's.
 
+Then the account check, in each window. It reads the bootstrap's `tenant_id` output without
+printing it, and prints only `True` or `False`. PowerShell:
+
+```powershell
+function acctok {
+  $a = az account show --query "{user: user.name, tenant: tenantId}" -o json | ConvertFrom-Json
+  [bool]($env:WORK_DOMAIN -and ($a.user -notmatch [regex]::Escape($env:WORK_DOMAIN)) -and ($a.tenant -eq (tfout bootstrap bootstrap-live tenant_id)))
+}
+acctok      # must print True
+```
+
+and the same in WSL, where `REPO` is the repository's path as WSL sees it:
+
+```bash
+REPO=/mnt/e/Projects/ReleaseLens   # adjust to your clone
+acctok() {
+  local user tenant boot
+  user=$(az account show --query user.name -o tsv) && tenant=$(az account show --query tenantId -o tsv) || { echo False; return; }
+  boot=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir="$REPO/infra/bootstrap" output -raw tenant_id)
+  [[ -n "$WORK_DOMAIN" && "$user" != *"$WORK_DOMAIN"* && -n "$tenant" && "$tenant" == "$boot" ]] && echo True || echo False
+}
+acctok      # must print True
+```
+
+A `False` means the work account is signed in, the wrong tenant is, `az` is not signed in, or
+`WORK_DOMAIN` is not set. Do not go on: sign in with the personal account and run it again.
+
 ## Step 1. Apply the bootstrap
 
 **Ask first.** The second Azure OpenAI account, the new deployments, the gateway identity, the
@@ -95,7 +134,7 @@ Entra app registration, the monitoring and the state container. Cost: nothing by
 
 ### 1a. Read-only checks, before applying anything
 
-PowerShell, after `az account show`. These change nothing:
+PowerShell, after `acctok` prints `True`. These change nothing:
 
 ```powershell
 az cognitiveservices usage list --location southeastasia --query "[?contains(name.value, 'gpt-4.1-mini')]" -o table
@@ -124,7 +163,7 @@ goes into a variable and is not printed:
 ```bash
 cd /mnt/e/Projects/ReleaseLens/infra/bootstrap   # adjust to your clone
 export TF_DATA_DIR="$HOME/tfdata/bootstrap-live" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
-az account show --query "{user: user.name}" -o table      # the personal account, not the work one
+acctok                                                    # must print True: the personal account, not the work one
 ACCOUNT=$(terraform output -raw tfstate_storage_account)
 terraform init -input=false -backend-config=storage_account_name="$ACCOUNT"
 terraform plan -out=tfplan
@@ -300,7 +339,12 @@ must be `pass` (a 200 with no hostname in any body or header value). Then:
    content headers (spec §4.3).
 4. **Revision 2 reached Application Insights.** After a few minutes, in the portal's Logs for
    `appi-releaselens`, the `requests` table shows the revision 2 call, and the check in step 3,
-   point 8 shows its tokens. If the call is missing, revision 2 did not inherit the diagnostic.
+   point 8 shows its tokens. If the call is missing from `requests`, or is there but its tokens
+   are not in `customMetrics`, revision 2 did not inherit the diagnostic or its `metrics = true`.
+   **Then do not set `release_revision_2`** (point 9 is skipped). Revision 1 is the current
+   revision and serves the plain path, so run steps 4 to 6 on it, with the same settings. Record
+   it in finding row 17: revision 2 did not inherit the diagnostic, and the session ran on
+   revision 1.
 5. **No hostname in any body or header.** The three checks above fail if one appears. Also look at
    the error bodies in point 6 and in step 6's B4 run: a gateway error carries a fixed message and
    a status code, and nothing else.
@@ -321,30 +365,36 @@ must be `pass` (a 200 with no hostname in any body or header value). Then:
    "not provoked" and move on. Do not try harder prompts.
 7. **Which region signal, and the secondary.** The primary answers every call while its breaker
    is closed, so the first smoke shows only the primary's values. To see the secondary answer,
-   send the same three calls to the tiny deployment. Capacity 1 allows 1,000 tokens a minute,
-   and three calls of about 190 tokens each stay under that, so any throttle here comes from the
-   requests-per-minute limit that goes with the capacity, not from the token count. Whether three
-   calls reach it is not known: this is a try, not a certainty. The aim is a 429 from the primary,
-   which the gateway re-sends to the secondary. **`smoke-direct` printing `fail` on a 429 from the
-   tiny deployment is expected here:** it is the primary being throttled, not a fault, and the
-   "each must be `pass`" rule above is for the first smoke only:
+   send the same three calls to the tiny deployment. Capacity 1 allows 1,000 tokens a minute. A
+   call is about 330 to 350 tokens (a prompt of about 310 tokens and an answer of up to 40), so
+   three calls come to about 1,000 to 1,050 and may pass the limit by tokens, and the
+   requests-per-minute limit that goes with the capacity may stop them too. Either gives the 429.
+   Whether three calls reach a limit is not known: this is a try, not a certainty. The aim is a
+   429 from the primary, which the gateway re-sends to the secondary. **`smoke-direct` printing
+   `fail` on a 429 from the tiny deployment is expected here:** it is the primary being
+   throttled, not a fault, and the "each must be `pass`" rule above is for the first smoke only:
 
    ```powershell
    .venv/Scripts/python.exe -m app.gateway smoke --tenant $env:GW_TENANT --direct-url $env:GW_DIRECT_URL --gateway-url $env:GW_BASE --scope $env:GW_SCOPE --deployment releaselens-chat-failover-test --out reports/step3-b
    ```
 
-   Wait a minute first, so the first smoke's breaker has reset. Read the two signals for a call
-   that the secondary answered:
-   - **`x-ms-region` names the region** if it is present and its value is exactly `Australia
-     East` for the primary and `Southeast Asia` for the secondary. These are the two strings
-     the harness maps (spec §12 item 4). Then the rule uses `x-ms-region`.
-   - **Otherwise** it uses `x-releaselens-backend`, which the outbound policy sets to `primary` or
-     `secondary` from the host that answered.
-   - **Also record whether `x-releaselens-backend` agrees** with `x-ms-region` on the same call:
-     that is whether the label reflects the pool member that answered. If no call went to the
-     secondary after two tries, write that down, wait a minute and try once more. If the
-     secondary never answers, the failover itself is in doubt (spec §12 item 5): take it to the
-     controller before freezing.
+   Wait a minute first, so the first smoke's breaker has reset. Then read the two signals on
+   every `smoke-gateway` and `smoke-rev2` line of both smoke runs that carried a model's answer.
+   `x-releaselens-backend` is set by the outbound policy from the host the request went to, so it
+   names the account that answered. `x-ms-region` may name the region that processed the prompt
+   instead (spec §4.4), and on a Global Standard deployment that need not be the account's.
+   - **Freeze `x-ms-region` only if it agrees with the label on every one of those calls,
+     including at least one that the secondary answered.** Agreeing means `Australia East` with
+     `primary` and `Southeast Asia` with `secondary`, the two strings the harness maps (spec §12
+     item 4). A call with `x-ms-region` absent, or with another region's name, does not agree.
+   - **Otherwise freeze `x-releaselens-backend`.** One disagreement on one call is enough.
+   - **Write both down** whichever is frozen: whether they agreed, and on which calls (finding
+     rows 4 and 18). The harness records both raw values for every request in the measured runs
+     as well, and the report prints how many responses had the two disagree. The rule that
+     decides the verdict does not change with the signal.
+   - If no call went to the secondary after two tries, write that down, wait a minute and try
+     once more. If the secondary never answers, the failover itself is in doubt (spec §12 item 5):
+     take it to the controller before freezing.
 8. **The metric's name.** Wait a few minutes for ingestion, then in the portal's Logs for
    `appi-releaselens`:
 
@@ -358,7 +408,7 @@ must be `pass` (a 200 with no hostname in any body or header value). Then:
    `releaselens-gateway`, with `Caller` as a dimension. If any of the three differs, B5's query
    in `eval/app/gateway/metric.py` needs the change, which is a code change before the freeze.
    The number of calls and tokens here also tells you whether the smoke calls were counted.
-9. **Then make revision 2 current.** Only now, in WSL:
+9. **Then make revision 2 current,** only if point 4 passed. Only now, in WSL:
 
    ```bash
    terraform plan -var release_revision_2=true -out=tfplan
@@ -420,9 +470,16 @@ gh secret list --env azure
 
 The list must show the four secrets from the bootstrap's runbook and these two.
 
-Check the clock: **at least one hour of the UTC day must be left** (before 23:00 UTC, 09:00
-Brisbane), because steps 5 and 6 take about 40 minutes and B2 is invalid if they cross 00:00 UTC.
-If less is left, **stop before step 5** and resume another day. The gateway bills meanwhile, so
+Check the clock, in UTC. Two things must both hold:
+- **At least one hour of the UTC day must be left** (before 23:00 UTC, 09:00 Brisbane), because
+  steps 5 and 6 take about 40 minutes and B2 is invalid if they cross 00:00 UTC.
+- **Steps 5 and 6 must not meet the nightly destroy** (`destroy.yml`, 14:00 UTC, in the same
+  concurrency group as B3's workflow): do not start step 5 between about 13:05 and 14:30 UTC (23:05
+  and 00:30 Brisbane). Before 13:05 UTC, or after 14:30 UTC and before 23:00 UTC, is fine.
+  If B3 is queued behind a destroy anyway, let it run and write the delay in the findings; do not
+  dispatch a second one (B5).
+
+If either fails, **stop before step 5** and resume another day. The gateway bills meanwhile, so
 destroy it (step 8) and start a new session at step 2; the bootstrap stays as it is. Then note the
 start of B5's window. It is the moment before the first measured call through the gateway, and step 3's calls,
 which are in other directories, fall outside it:
@@ -441,10 +498,16 @@ Start-Sleep -Seconds 150
 
 Each run takes about 3 minutes (45 requests, one every 4 seconds) and writes
 `eval/reports/failover-<mode>.jsonl`, then prints the number of records and the status counts.
-- A measured run is never overwritten. If one is wrong, the harness will not repeat it into the
-  same directory. The rule was fixed before the run: a before-run with fewer than 14 failures out
-  of 45 means the test did not stress the primary, and the verdict is **inconclusive**, whatever
-  the after run shows. Report it as that.
+- A measured run is never overwritten. A run that crashes or is interrupted (Ctrl+C) still
+  writes the records of the requests that finished, and then reports the error. To repeat a run
+  that is wrong or crashed, **rename its file in place, keeping the start of its name**
+  (`failover-gateway.jsonl` to `failover-gateway-crashed.jsonl`), then run it again. Do not move
+  it to another directory, copy it or edit it: the gateway counted its tokens, and B2 and B5 find
+  the gateway's record files by name prefix and (B2) by modification time. A before-run
+  (`failover-direct*`) never reaches the gateway, and is not counted.
+- The rule was fixed before the run: a before-run with fewer than 14 failures out of 45 means
+  the test did not stress the primary, and the verdict is **inconclusive**, whatever the after
+  run shows. Report it as that.
 - **The Retry-After the tiny deployment sends (spec §12 item 6)** is not printed. Read it off the
   before-run: each record holds `waited_ms`. A request the client waited for (`waited_ms` above
   0) had a short advice. A 429 failure with `waited_ms` 0 had none or one over 3,000 ms. Write
@@ -466,7 +529,11 @@ B1 first, then B2, because B2 spends the day's budget. B1 sends until a request 
 ```
 
 It must print `B1: pass`: a 429 with `Retry-After` and no `x-ms-region`. That is the client's
-side. **B1's confirmation is in Application Insights:** the refused request must have no backend
+side, and its "no model call" half rests on `x-ms-region` being absent from a gateway refusal
+while present on an answer. **If step 3's smoke showed `x-ms-region` absent on normal answers too,
+that half proves nothing:** the harness's `B1: pass` then says only that a 429 with `Retry-After`
+came, and the Application Insights query below alone decides B1. Write that in finding row 22.
+**B1's confirmation is in Application Insights:** the refused request must have no backend
 dependency. After a few minutes of ingestion, in the portal's Logs for `appi-releaselens`:
 
 ```kusto
@@ -492,15 +559,18 @@ Then B2, which continues past the minute budget's resets until the daily budget 
 It waits out each 429 for the advised time, and takes several minutes. It passes only on a 403
 that comes after **at least 45,000 tokens** were recorded today (the daily quota is 50,000, and
 the floor allows for the policy's estimates). Its detail prints the figure.
-- The harness counts the day's tokens from this directory's records, by file modification time
-  since 00:00 UTC: `failover-gateway.jsonl`, `budget-minute.jsonl` and its own. Step 3's calls
-  are in other directories and spend about 3,000 of the 50,000, so a 403 comes sooner than the
-  records say. The floor leaves about 5,000 tokens of room for that: keep step 3 to what it lists.
-- **After a crash, B2 cannot simply be re-run.** Its records are saved even then, and a re-run
-  refuses to overwrite them. If you move `budget-day.jsonl` and `check-b2.json` away to run it
-  again, the moved file is not counted any more, and the 45,000 floor may fail a real 403. The
-  detail shows the figure. If it fails only for that reason, say so in the findings, and do not
-  re-run before 00:00 UTC. B5 will then also miss the moved file's tokens: say that too.
+- The harness counts the day's tokens from this directory's records of calls the gateway
+  answered, by file modification time since 00:00 UTC: every `failover-gateway*.jsonl` and
+  `budget-*.jsonl`, and any `smoke*.jsonl`. Step 3's calls are in other directories and spend
+  about 3,000 of the 50,000, so a 403 comes sooner than the records say. The floor leaves about
+  5,000 tokens of room for that: keep step 3 to what it lists. The run's own file does not count
+  twice: its 200s are counted as the run's own.
+- **After a crash, B2 can be re-run once the file is renamed.** Its records are saved even then,
+  and a re-run refuses to overwrite them. Rename `budget-day.jsonl` in place (to
+  `budget-day-crashed.jsonl`: keep the `budget-` start, and rename it, do not copy or move it) and
+  delete or rename `check-b2.json`, then run B2 again. The renamed file still counts toward the
+  45,000 floor and toward B5's totals, with its original modification time. The detail shows the
+  figure. If it fails, say so in the findings.
 
 **When B2 prints its result, go straight on to step 6.** B3 must start within 5 minutes of the
 403.
@@ -568,8 +638,9 @@ the runs used. The harness does not measure B3, so enter the workflow's outcome:
 ```
 
 (Use `--b3 failed` if it did not.) The report holds the verdict, both runs' counts and latencies,
-B1 to B5, the frozen signal and the commit, with labels instead of identifiers. The harness
-refuses to write it if it holds a GUID or an Azure hostname. Read it before committing.
+B1 to B5, the frozen signal, how many after-run responses had the two region signals disagree,
+and the commit, with labels instead of identifiers. The harness refuses to write it if it holds a
+GUID or an Azure hostname. Read it before committing.
 
 Then copy the scratch file's findings into the table below, change the README's
 [AI gateway section](../README.md#ai-gateway) to say what was measured, and change the status
@@ -595,7 +666,7 @@ terraform destroy
   inside it. Record whether it was needed (finding 26).
 - Each destroy's `purge_soft_delete_on_destroy` must purge the deleted service (spec §12 item 13).
 
-Then the two checks, in PowerShell after `az account show`:
+Then the two checks, in PowerShell after `acctok` prints `True`:
 
 ```powershell
 az group exists --name rg-releaselens-gateway
@@ -665,7 +736,7 @@ numbers are in the first column.
 | 1 | Spec §12.1: Basic v2 creates in about 5 to 10 minutes in australiaeast | 2 | |
 | 2 | Spec §12.2: Southeast Asia's Global Standard quota for gpt-4.1-mini `2025-04-14`, and whether quota is pooled across regions | 1a | |
 | 3 | Spec §12.3: capacity 1 is accepted for a Global Standard deployment | 1c | |
-| 4 | Spec §12.4: `x-ms-region` is present and names the region; which signal the rule uses | 3 | |
+| 4 | Spec §12.4: `x-ms-region` is present and names the region (the account, or the processing region); which signal the rule uses | 3 | |
 | 5 | Spec §12.5: within one request, the retry after the breaker trips goes to the secondary | 3, 5 | |
 | 6 | Spec §12.6: the Retry-After the tiny deployment sends is short, and how long the primary stays tripped | 5 | |
 | 7 | Spec §12.7: Cognitive Services OpenAI User is enough for the gateway identity | 3 | |
@@ -678,12 +749,12 @@ numbers are in the first column.
 | 14 | A filtered prompt's 400 passes through the gateway unchanged | 3 | |
 | 15 | No hostname in any body or header, including the gateway's own error bodies | 3, 6 | |
 | 16 | The backend URLs ending in `/openai/v1` work, and revision 2 answers at `/openai/v1;rev=2/chat/completions` | 3 | |
-| 17 | Revision 2 was created by the apply (it sets `version` and `version_set_id` beside `source_api_id`), and inherits the API diagnostic | 2, 3 | |
-| 18 | `x-releaselens-backend` reflects the pool member that answered | 3 | |
+| 17 | Revision 2 was created by the apply (it sets `version` and `version_set_id` beside `source_api_id`), and inherits the API diagnostic and its `metrics = true` (if not, `release_revision_2` stayed false and steps 4 to 6 ran on revision 1) | 2, 3 | |
+| 18 | `x-releaselens-backend` reflects the pool member that answered, and whether it agreed with `x-ms-region` on every smoke call (and, in the report, on how many measured responses it did not) | 3, 7 | |
 | 19 | The status and path of the 503 when both backends are tripped (whether it carries the label `secondary`) | 3, 5 | |
 | 20 | The status when a backend connection fails | 3, 5 | |
 | 21 | The metric's name `Total Tokens` and the dimension key `_MS.MetricNamespace`; whether refused calls (429, 403) emit token metrics | 3, 6 | |
-| 22 | B1's Application Insights check: the refused request has no backend dependency | 5 | |
+| 22 | B1's Application Insights check: the refused request has no backend dependency (and, if `x-ms-region` was absent on normal answers, that only this check decided B1) | 5 | |
 | 23 | B2: the 403 came after at least 45,000 recorded tokens (the figure), and the session did not cross 00:00 UTC | 5 | |
 | 24 | B5: the deploy identity's total is the `total_tokens` the workflow log printed, entered with `--client-total` | 6 | |
 | 25 | The first apply of the bootstrap returned a 409 on parallel deployment writes (and was re-run) | 1c | |
