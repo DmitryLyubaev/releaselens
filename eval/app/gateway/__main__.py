@@ -3,6 +3,8 @@
 `failover` runs the fixed workload (45 requests, one every 4 seconds) once, either straight to the
 primary account (`--mode direct`) or through the gateway (`--mode gateway`), and writes one record
 per request to `<out>/failover-<mode>.jsonl`. The verdict is Task 7's report, from the two files.
+A run that crashes or is interrupted still writes the records of the requests that finished, and
+raises the error that ended it afterwards.
 
 `smoke` (one call direct, one through the gateway, one at revision 2), `access` (B4), `minute-budget`
 (B1), `day-budget` (B2), `metric-totals` (B5) and `report --b3 passed|failed` are the rest of the
@@ -68,10 +70,11 @@ BUDGET_DEPLOYMENT = "releaselens-chat"
 BUDGET_RECORDS = {"minute-budget": "budget-minute.jsonl", "day-budget": "budget-day.jsonl"}
 CHECK_FILES = {"B1": "check-b1.json", "B2": "check-b2.json", "B4": "check-b4.json", "B5": "check-b5.json"}
 SMOKE_RECORDS = "smoke.jsonl"
-# The owner's calls the gateway answered, by file: what B5 sums for the owner's client totals, and
-# (all but the day's own) what B2 counts as spent before its run.
-EARLIER_GATEWAY_RECORDS = ("failover-gateway.jsonl", "budget-minute.jsonl", SMOKE_RECORDS)
-METRIC_RECORDS = (*EARLIER_GATEWAY_RECORDS, "budget-day.jsonl")
+# The owner's calls the gateway answered, found by prefix so that a file renamed in place (the
+# runbook's advice after a crash: keep it, give it another name) still counts. B5 sums them all for
+# the owner's client totals; B2 counts all but its own run's file as spent before its run. Direct
+# runs (`failover-direct*`) are not among them: the gateway never saw those.
+GATEWAY_RECORD_PATTERNS = ("failover-gateway*.jsonl", "budget-*.jsonl", "smoke*.jsonl")
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -96,7 +99,8 @@ def failover(args) -> int:
     destination = args.out / f"failover-{args.mode}.jsonl"
     if destination.exists():
         raise Refused(f"{destination.name} already exists in the output directory: a measured run is never "
-                      "overwritten; move it away first")
+                      "overwritten; rename it in place, keeping the start of its name, so the tokens it "
+                      "records are still counted")
 
     scope = args.scope or DIRECT_SCOPE
     tokens = TokenSource(scope, args.tenant)
@@ -107,22 +111,36 @@ def failover(args) -> int:
     def clock() -> float:
         return _now() - origin
 
+    finished: list[client.Record] = []
+
     async def go() -> list[client.Record]:
         async with _http_client() as http:
             async def send(seq: int) -> client.Record:
                 # A fresh read each time: the source refreshes a token that is about to lapse.
-                return await client.send_one(http, url, tokens.token(), args.deployment, seq, caller=CALLER,
-                                             region_signal=frozen.region_signal, clock=clock, sleep=_sleep)
+                record = await client.send_one(http, url, tokens.token(), args.deployment, seq, caller=CALLER,
+                                               region_signal=frozen.region_signal, clock=clock, sleep=_sleep)
+                finished.append(record)
+                return record
 
             return await workload.run(send, clock=clock, sleep=_sleep)
 
-    records = asyncio.run(go())
-
-    args.out.mkdir(parents=True, exist_ok=True)
-    _save(args, destination, "".join(json.dumps(asdict(r)) + "\n" for r in records))
+    try:
+        records = asyncio.run(go())
+    except BaseException:
+        # A crash or Ctrl+C mid-run still keeps what the gateway already counted, as `_budget` does:
+        # B2's floor and B5's totals read these records. The error that ended the run is raised
+        # again after the save; a run that finished no request writes nothing.
+        if finished:
+            _save(args, destination, _lines(sorted(finished, key=lambda r: r.seq)))
+        raise
+    _save(args, destination, _lines(records))
     statuses = Counter("none" if r.status is None else r.status for r in records)
     print(f"{destination.name}: {len(records)} records; statuses {dict(sorted(statuses.items(), key=str))}")
     return 0
+
+
+def _lines(records: list[client.Record]) -> str:
+    return "".join(json.dumps(asdict(r)) + "\n" for r in records)
 
 
 # --- the rest of the harness ------------------------------------------------------------------
@@ -192,7 +210,8 @@ def _budget(args, command: str, check_file: str, run_check: Callable[[checks.Sen
     for path in (records_path, args.out / check_file):
         if path.exists():
             raise Refused(f"{path.name} already exists in the output directory: a measured run is never "
-                          "overwritten; move it away first")
+                          "overwritten; rename it in place, keeping the start of its name, so the tokens "
+                          "it records are still counted")
     tokens = TokenSource(args.scope, args.tenant)
     log: list[dict] = []
     try:
@@ -210,13 +229,22 @@ def run_minute_budget(args) -> int:
     return _budget(args, "minute-budget", CHECK_FILES["B1"], checks.minute_budget)
 
 
+def _gateway_records(out: Path, *, leave_out: str | None = None) -> list[Path]:
+    """The records of the owner's gateway calls in `out`, by prefix, each file once."""
+    found = {path for pattern in GATEWAY_RECORD_PATTERNS for path in out.glob(pattern) if path.is_file()}
+    return sorted(path for path in found if path.name != leave_out)
+
+
 def _recorded_today(out: Path) -> int:
-    """Tokens in the owner's gateway 200s recorded in this directory since 00:00 UTC today."""
+    """Tokens in the owner's gateway 200s recorded in this directory since 00:00 UTC today.
+
+    Not the day-budget run's own file: its 200s are counted as the run's own, and a run that finds
+    it already there refuses to start.
+    """
     midnight = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     total = 0
-    for name in EARLIER_GATEWAY_RECORDS:
-        path = out / name
-        if not path.exists() or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < midnight:
+    for path in _gateway_records(out, leave_out=BUDGET_RECORDS["day-budget"]):
+        if datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < midnight:
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
@@ -288,7 +316,7 @@ def run_metric_totals(args) -> int:
     except ValueError as error:
         raise Refused(str(error)) from None
     labels = metric.labels_from_env(os.environ)
-    paths = [args.out / name for name in METRIC_RECORDS if (args.out / name).exists()]
+    paths = _gateway_records(args.out)
     recorded = _client_totals(paths, args.client_total)
     if not recorded:
         raise Refused("no client records: run the gateway failover and the budget checks first, "

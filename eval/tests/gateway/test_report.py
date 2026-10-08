@@ -132,3 +132,19 @@ def test_render_handles_a_run_with_no_responses_and_an_empty_run():
     assert "none" in text.lower()
     assert "n/a" in report.render(failover([], []), [], [], [], b3="passed", commit=COMMIT,
                                   region_signal="x-ms-region")
+
+
+def _signalled(seq: int, region: str | None, label: str | None) -> Record:
+    return Record(seq, seq * 4.0, 200, 100.0, None, region is not None, 0, 300, 20, "owner", region, label)
+
+
+def test_render_counts_the_responses_where_the_two_region_signals_disagree():
+    after = ([_signalled(n, "Australia East", "primary") for n in range(30)]
+             + [_signalled(30 + n, "Southeast Asia", "primary") for n in range(5)]     # processing region
+             + [_signalled(35 + n, "Southeast Asia", "secondary") for n in range(10)])
+    text = _render(after=after)
+    assert "disagreed on 5 of 45 responses" in text
+
+
+def test_render_says_zero_disagreements_and_none_for_records_that_carry_no_signals():
+    assert "disagreed on 0 of 0 responses" in _render()        # the helpers' records hold no raw values

@@ -2,6 +2,10 @@
 
 Request n is sent at n x spacing on the run's clock, whether or not the earlier ones have
 answered, so a slow or failing response never slows the load down.
+
+A bug in one request does not cancel the others: each one the gateway has counted should reach its
+record, so the rest finish, and the first error is raised after they have. An interrupt (Ctrl+C)
+cancels what is still in flight, which is all it can do.
 """
 
 from __future__ import annotations
@@ -30,7 +34,11 @@ async def run(
             # Let the send reach its first await, so it starts at its own time and not after the
             # next wait has been measured.
             await asyncio.sleep(0)
-        return list(await asyncio.gather(*tasks))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
     except BaseException:
         for task in tasks:
             task.cancel()

@@ -93,13 +93,48 @@ async def test_a_timeout_is_a_failed_request_not_a_crash(failure):
     assert "example.com" not in json.dumps([r.__dict__ for r in records])
 
 
-async def test_an_unexpected_error_cancels_the_rest_and_propagates():
+async def test_an_unexpected_error_lets_the_other_requests_finish_then_propagates():
+    # The gateway has counted every request that was sent, so each one's record must be able to
+    # reach the caller: a bug in one request does not cancel the others.
     clock = FakeClock()
+    finished: list[int] = []
 
     async def send(seq: int) -> Record:
         if seq == 2:
             raise RuntimeError("a bug")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        finished.append(seq)
         return _record(seq, clock())
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="a bug"):
         await workload.run(send, count=5, clock=clock, sleep=clock.sleep)
+
+    assert sorted(finished) == [0, 1, 3, 4]
+
+
+class _Stop(BaseException):
+    """Stands for Ctrl+C, which would end the test's own event loop."""
+
+
+async def test_an_interrupt_between_sends_cancels_what_is_still_in_flight():
+    clock = FakeClock()
+    cancelled: list[int] = []
+
+    async def send(seq: int) -> Record:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(seq)
+            raise
+        return _record(seq, clock())
+
+    async def interrupted(seconds: float) -> None:
+        if clock() >= 2.0:
+            raise _Stop
+        await clock.sleep(seconds)
+
+    with pytest.raises(_Stop):
+        await workload.run(send, count=5, spacing_s=1.0, clock=clock, sleep=interrupted)
+    await asyncio.sleep(0)
+    assert sorted(cancelled) == [0, 1, 2]

@@ -60,6 +60,12 @@ class Record:
     prompt_tokens: int
     completion_tokens: int
     caller: str
+    # Both raw signals, whichever is frozen: `region` maps only the frozen one. `x-ms-region` may
+    # name the region that processed the prompt rather than the account that answered (spec §4.4),
+    # and the report counts the responses where the two disagree. Region names and the labels are
+    # not identifiers. Defaults, so a record an earlier run wrote still loads.
+    x_ms_region: str | None = None
+    backend_label: str | None = None
 
 
 def region_of(headers: httpx.Headers, signal: str) -> str | None:
@@ -70,6 +76,18 @@ def region_of(headers: httpx.Headers, signal: str) -> str | None:
         value = headers.get(BACKEND_HEADER)
         return value if value in _BACKENDS else None
     raise ValueError(f"unknown region signal {signal!r}")
+
+
+def signals_disagree(record: Record) -> bool:
+    """The two raw signals name different roles for the account that answered.
+
+    A signal that is absent, or whose value the harness cannot map (a region it does not know, a
+    label that is not `primary` or `secondary`), names no role. The record of a gateway refusal has
+    neither signal, and they agree.
+    """
+    by_region = _REGIONS.get(record.x_ms_region or "")
+    by_label = record.backend_label if record.backend_label in _BACKENDS else None
+    return by_region != by_label
 
 
 def _usage(response: httpx.Response) -> tuple[int, int]:
@@ -125,4 +143,5 @@ async def send_one(
         seq, sent_at, response.status_code, latency_ms,
         region_of(response.headers, region_signal), REGION_HEADER in response.headers,
         waited_ms, prompt_tokens, completion_tokens, caller,
+        response.headers.get(REGION_HEADER), response.headers.get(BACKEND_HEADER),
     )

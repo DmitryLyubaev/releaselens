@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from app.gateway.client import PROMPT, Record, send_one
+from app.gateway.client import PROMPT, Record, send_one, signals_disagree
 
 URL = "https://gateway.example.com/openai/v1/chat/completions"
 BODY = {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 312, "completion_tokens": 28}}
@@ -178,3 +178,42 @@ async def test_a_record_holds_no_token_oid_url_or_hostname():
     text = json.dumps(dataclasses.asdict(record))
     for secret in ("fake-token", "example.com", "gateway", "11111111", URL):
         assert secret not in text
+
+
+@pytest.mark.parametrize(("signal", "region", "label"), [
+    ("x-ms-region", "Southeast Asia", "secondary"),
+    ("x-releaselens-backend", "Southeast Asia", "primary"),   # the two signals may disagree
+    ("x-ms-region", "East US 2", None),                        # a processing region, no label
+])
+async def test_both_raw_signals_are_recorded_whichever_is_frozen(signal, region, label):
+    extra = {} if label is None else {"x-releaselens-backend": label}
+    record, _, _ = await _send([_ok(region, **extra)], region_signal=signal)
+    assert (record.x_ms_region, record.backend_label) == (region, label)
+
+
+async def test_the_raw_signals_are_none_when_there_is_no_response_or_no_header():
+    record, _, _ = await _send([httpx.ReadTimeout("slow")])
+    assert (record.x_ms_region, record.backend_label) == (None, None)
+    record, _, _ = await _send([_ok(None)])
+    assert (record.x_ms_region, record.backend_label) == (None, None)
+
+
+def test_a_record_without_the_raw_signals_still_loads_as_an_older_run_wrote_it():
+    old = {"seq": 0, "sent_at": 0.0, "status": 200, "latency_ms": 1.0, "region": "primary", "model_called": True,
+           "waited_ms": 0, "prompt_tokens": 1, "completion_tokens": 1, "caller": "owner"}
+    record = Record(**old)
+    assert (record.x_ms_region, record.backend_label) == (None, None)
+
+
+@pytest.mark.parametrize(("region", "label", "disagree"), [
+    ("Australia East", "primary", False),
+    ("Southeast Asia", "secondary", False),
+    ("Southeast Asia", "primary", True),      # x-ms-region named a region, not the account
+    ("East US 2", "secondary", True),         # a region the harness cannot map
+    ("Australia East", None, True),           # one signal present, the other not
+    (None, "primary", True),
+    (None, None, False),                      # a gateway refusal: neither is expected
+])
+def test_signals_disagree_when_the_two_raw_values_name_different_roles(region, label, disagree):
+    record = Record(0, 0.0, 200, 1.0, None, region is not None, 0, 1, 1, "owner", region, label)
+    assert signals_disagree(record) is disagree

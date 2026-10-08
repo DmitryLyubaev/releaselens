@@ -223,3 +223,59 @@ def test_failover_records_pass_the_identifier_check_when_they_hold_labels_only(e
     monkeypatch.setenv("GATEWAY_CALLER_LABELS", json.dumps({TENANT: "owner"}))
     assert cli.main(_argv(env)) == 0
     assert (env.out / "failover-direct.jsonl").exists()
+
+
+# --- a run that does not finish keeps what the gateway already counted ---------------------------
+
+def test_a_crash_mid_run_still_writes_the_requests_that_finished(env, capsys):
+    ok = env.handler
+
+    def decoding_error_on_the_tenth(request: httpx.Request) -> httpx.Response:
+        if len(env.requests) == 9:
+            env.requests.append(request)
+            raise httpx.DecodingError("bad body")
+        return ok(request)
+
+    env.handler = decoding_error_on_the_tenth
+
+    assert cli.main(_argv(env, "--scope", SCOPE, mode="gateway")) == 1       # a bug: reported, exit 1
+
+    records = _lines(env.out / "failover-gateway.jsonl")
+    assert len(records) == 44 and 9 not in [r["seq"] for r in records]       # every other request finished
+    assert [r["seq"] for r in records] == sorted(r["seq"] for r in records)
+    assert "DecodingError" in capsys.readouterr().err
+
+
+def test_ctrl_c_mid_run_still_writes_the_requests_that_finished(env, monkeypatch):
+    sleeps = []
+    clock = cli._now
+
+    async def interrupted(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 6:
+            raise KeyboardInterrupt
+        clock.now += seconds
+
+    monkeypatch.setattr(cli, "_sleep", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(_argv(env, mode="direct"))
+
+    records = _lines(env.out / "failover-direct.jsonl")
+    assert [r["seq"] for r in records] == [0, 1, 2, 3, 4, 5]
+
+
+def test_a_crash_before_any_request_finished_writes_no_file_and_the_error_is_still_reported(env, capsys, monkeypatch):
+    seen = []
+
+    def boom(self, *args, **kwargs):
+        seen.append(1)
+        if len(seen) > 1:           # the first read, before the run, works
+            raise RuntimeError("a bug")
+        return TOKEN
+
+    monkeypatch.setattr(_Tokens, "token", boom)
+
+    assert cli.main(_argv(env)) == 1
+    assert not (env.out / "failover-direct.jsonl").exists()
+    assert "RuntimeError" in capsys.readouterr().err
