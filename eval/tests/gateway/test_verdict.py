@@ -71,3 +71,20 @@ def test_a_missing_status_is_a_failure_and_is_listed():
 def test_a_short_run_cannot_pass():
     assert failover(_before(14), _after(10, 5, total=10)).outcome == "did not hold"
     assert failover(_before(13, total=20), _after(45, 5)).outcome == "inconclusive"
+
+
+def _mixed_before(n429: int, none: int, n503: int, total: int = 45) -> list[Record]:
+    statuses = [429] * n429 + [None] * none + [503] * n503
+    return [_record(n, statuses[n] if n < len(statuses) else 200) for n in range(total)]
+
+
+def test_14_mixed_before_failures_are_enough_timeouts_and_5xx_count_too():
+    result = failover(_mixed_before(10, 2, 2), _after(43, 1))
+    assert result.outcome == "held"
+    assert result.before_failures == 14
+
+
+def test_13_mixed_before_failures_are_inconclusive():
+    result = failover(_mixed_before(9, 2, 2), _after(45, 20))
+    assert result.outcome == "inconclusive"
+    assert result.before_failures == 13
