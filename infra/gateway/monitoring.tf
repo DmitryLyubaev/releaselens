@@ -52,6 +52,7 @@ resource "azurerm_api_management_api_diagnostic" "appi" {
 
 # llm-emit-token-metric publishes only while the diagnostic's metrics switch is on. azurerm has
 # no argument for it (PR #28499 is open), so it is set here, on the diagnostic above.
+# An in-place update of the azurerm diagnostic would PUT it without `metrics`, switching them off.
 resource "azapi_update_resource" "diagnostic_metrics" {
   type        = "Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01"
   resource_id = azurerm_api_management_api_diagnostic.appi.id
