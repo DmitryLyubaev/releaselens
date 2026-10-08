@@ -73,7 +73,8 @@ nothing.
   bootstrap's runbook (R10), including the variable `AZURE_CLIENT_ID` and the secret
   `AZURE_TENANT_ID`. The check workflow reads both.
 - `eval/.venv` exists and `.venv/Scripts/python.exe -m pytest -q`, run from `eval/`, passes.
-- A free hour or more, not crossing 00:00 UTC.
+- About 3 hours free, and at least one hour of the UTC day left when step 5 begins (see the clock
+  check there). The session must not cross 00:00 UTC (10:00 Brisbane).
 
 Open two windows: PowerShell on Windows, from the repository root, and Ubuntu in WSL. In the
 PowerShell window, set the CA bundle as above, then this helper, which reads a Terraform output
@@ -320,8 +321,13 @@ must be `pass` (a 200 with no hostname in any body or header value). Then:
    "not provoked" and move on. Do not try harder prompts.
 7. **Which region signal, and the secondary.** The primary answers every call while its breaker
    is closed, so the first smoke shows only the primary's values. To see the secondary answer,
-   send the same three calls to the tiny deployment, which holds 1,000 tokens a minute, so its
-   third call within a minute is likely to be throttled and retried to the secondary:
+   send the same three calls to the tiny deployment. Capacity 1 allows 1,000 tokens a minute,
+   and three calls of about 190 tokens each stay under that, so any throttle here comes from the
+   requests-per-minute limit that goes with the capacity, not from the token count. Whether three
+   calls reach it is not known: this is a try, not a certainty. The aim is a 429 from the primary,
+   which the gateway re-sends to the secondary. **`smoke-direct` printing `fail` on a 429 from the
+   tiny deployment is expected here:** it is the primary being throttled, not a fault, and the
+   "each must be `pass`" rule above is for the first smoke only:
 
    ```powershell
    .venv/Scripts/python.exe -m app.gateway smoke --tenant $env:GW_TENANT --direct-url $env:GW_DIRECT_URL --gateway-url $env:GW_BASE --scope $env:GW_SCOPE --deployment releaselens-chat-failover-test --out reports/step3-b
@@ -414,8 +420,11 @@ gh secret list --env azure
 
 The list must show the four secrets from the bootstrap's runbook and these two.
 
-Check the clock: it must be UTC today and stay so until B2 is done. Then note the start of B5's
-window. It is the moment before the first measured call through the gateway, and step 3's calls,
+Check the clock: **at least one hour of the UTC day must be left** (before 23:00 UTC, 09:00
+Brisbane), because steps 5 and 6 take about 40 minutes and B2 is invalid if they cross 00:00 UTC.
+If less is left, **stop before step 5** and resume another day. The gateway bills meanwhile, so
+destroy it (step 8) and start a new session at step 2; the bootstrap stays as it is. Then note the
+start of B5's window. It is the moment before the first measured call through the gateway, and step 3's calls,
 which are in other directories, fall outside it:
 
 ```powershell
@@ -571,8 +580,9 @@ hold" and "inconclusive" are written up as plainly as "held".
 
 ## Step 8. Destroy the gateway
 
-**Ask first.** Do this whether the session succeeded or not. It ends the hourly billing. WSL, from
-`infra/gateway` with `TF_DATA_DIR=$HOME/tfdata/gateway-live`:
+**Ask first.** Do this whether the session succeeded or not. It ends the hourly billing. **If
+anything fails or goes wrong at any point, the session ends at step 8, and step 8 ends only when
+both checks below pass.** WSL, from `infra/gateway` with `TF_DATA_DIR=$HOME/tfdata/gateway-live`:
 
 ```bash
 terraform destroy
@@ -593,11 +603,44 @@ az apim deletedservice list --query "[?starts_with(name, 'apim-releaselens-')].n
 ```
 
 The first must print `false`. The second must print **nothing**: no gateway instance is left
-soft-deleted. If a name is listed, the purge did not succeed as the owner. Record it, and purge it
-by hand with the owner's yes, since its name would otherwise stay reserved for 48 hours.
+soft-deleted. If both pass, go on to the secrets. If not, use the fallback below, then run both
+checks again.
 
-**Delete the two session secrets,** the same day, even if the session was abandoned, and check
-that only the four remain:
+### If the destroy fails, or a check does not pass
+
+**Ask first.** This applies when `terraform destroy` fails for any reason other than revision 2
+(after the `state rm` fallback above, if that was the reason), when `az group exists` prints
+`true`, or when the second check lists a name. Do not leave API Management running: it bills about
+US$5 a day. Record the error text, without any identifier.
+
+1. **Delete the resource group,** which removes the service and everything in it:
+
+   ```powershell
+   az group delete --name rg-releaselens-gateway --yes
+   ```
+
+2. **Purge the soft-deleted service,** if the second check lists a name. Read the name into the
+   shell without printing it. It must not be pasted anywhere:
+
+   ```powershell
+   $apim = az apim deletedservice list --query "[?starts_with(name, 'apim-releaselens-')].name | [0]" -o tsv
+   az apim deletedservice purge --service-name $apim --location australiaeast
+   $apim = $null
+   ```
+
+   A purge by hand is needed because the name stays reserved for 48 hours otherwise. Record that
+   the destroy's own purge did not succeed as the owner (finding 13).
+3. **Run both checks again.** The first must print `false` and the second nothing. If either does
+   not, repeat the fallback or stop and take it to the owner now: step 8 is not finished.
+
+After a group delete the stack's state still lists the deleted resources. Before the next session,
+run `terraform destroy` again in `infra/gateway`: it finds nothing left and clears the state. If it
+cannot, take it to the owner before the next apply.
+
+### Delete the two session secrets
+
+**Ask first.** Do it the same day, even if the session was abandoned, and check that only the four
+remain:
 
 ```powershell
 gh secret delete GATEWAY_BASE_URL --env azure
