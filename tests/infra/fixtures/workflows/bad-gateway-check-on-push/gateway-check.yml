@@ -43,8 +43,12 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Install eval requirements
-        run: pip install -r eval/requirements.txt
+      # Only what ci_check imports, by hash, as wheels, with no dependency resolution: this job
+      # holds an OIDC token for the deploy identity, so no install-time code from a package that
+      # was not pinned and hashed here may run in it.
+      - name: Install the check's requirements
+        run: |
+          pip install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
 
       # From eval/, because the harness is the top-level package `app`. The program prints one
       # line, status=<code> with total_tokens=<n> after it on a 200, and exits 1 unless it got 200.
