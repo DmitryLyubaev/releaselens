@@ -208,6 +208,46 @@ def test_day_budget_leaves_out_records_from_before_00_00_utc_today(env):
     assert "320 tokens recorded today before the 403" in detail
 
 
+def test_day_budget_counts_earlier_gateway_records_by_prefix_so_a_renamed_file_still_counts(env):
+    # What the runbook tells the owner after a crash: keep the file, give it another name.
+    _gateway_records(env, "failover-gateway-crashed.jsonl", [320] * 100)     # 32,000
+    _gateway_records(env, "failover-gateway.jsonl", [320] * 20)              #  6,400
+    _gateway_records(env, "budget-minute-2.jsonl", [320] * 20)               #  6,400
+    _gateway_records(env, "budget-day-crashed.jsonl", [320])                 #    320: 45,120 earlier
+    _day_responses(env, answers={1: _403})
+
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 0
+
+    detail = json.loads((env.out / "check-b2.json").read_text(encoding="utf-8"))["detail"]
+    assert "45120 tokens recorded today before the 403 (45120 earlier, 0 in this run)" in detail
+
+
+def test_day_budget_does_not_count_direct_runs_or_other_files(env):
+    _gateway_records(env, "failover-direct.jsonl", [45000])
+    _gateway_records(env, "failover-direct-1.jsonl", [45000])
+    _gateway_records(env, "notes-budget-minute.jsonl", [45000])
+    _gateway_records(env, "failover-gateway.jsonl", [320])
+    _day_responses(env, answers={1: _403})
+
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1
+
+    detail = json.loads((env.out / "check-b2.json").read_text(encoding="utf-8"))["detail"]
+    assert "320 tokens recorded today before the 403" in detail
+
+
+def test_day_budget_counts_its_own_file_once(env, capsys):
+    # The run's own 200s are counted as `in this run`, and its file is written after: a rerun that
+    # finds budget-day.jsonl refuses, so the file is never both earlier and current.
+    _day_responses(env, answers={4: _403})
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1
+    detail = json.loads((env.out / "check-b2.json").read_text(encoding="utf-8"))["detail"]
+    assert "960 tokens recorded today before the 403 (0 earlier, 960 in this run)" in detail
+
+    (env.out / "check-b2.json").unlink()                       # budget-day.jsonl stays in place
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_day_budget_counts_only_the_200_rows_of_the_earlier_records(env):
     _gateway_records(env, "failover-gateway.jsonl", [45000, 45000], statuses=[200, 429])
     _day_responses(env, answers={1: _403})
@@ -363,6 +403,19 @@ def test_metric_totals_compares_the_clients_records_with_the_metric_by_label(env
     assert "owner" in out and "deploy" in out and "B5: pass" in out
     assert OWNER_OID not in out and APP not in out
     assert json.loads((env.out / "check-b5.json").read_text(encoding="utf-8"))["passed"] is True
+
+
+def test_metric_totals_counts_gateway_records_by_prefix_but_not_direct_ones(env):
+    _record_file(env, "failover-gateway.jsonl", [500])
+    _record_file(env, "failover-gateway-crashed.jsonl", [300])
+    _record_file(env, "budget-minute-1.jsonl", [200])
+    _record_file(env, "budget-day.jsonl", [100])
+    _record_file(env, "budget-day-crashed.jsonl", [40])
+    _record_file(env, "smoke-2.jsonl", [20])
+    _record_file(env, "failover-direct.jsonl", [9999])
+    env.respond = _metric_response(1160.0)
+
+    assert cli.main(_argv(env, "metric-totals", *METRIC_ARGS)) == 0
 
 
 def test_metric_totals_counts_the_smoke_calls_the_gateway_answered(env):

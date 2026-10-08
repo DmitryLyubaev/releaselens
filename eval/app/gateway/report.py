@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .checks import HOSTNAME, CheckResult
-from .client import Record
+from .client import Record, signals_disagree
 from .verdict import Verdict
 
 _GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
@@ -48,18 +48,25 @@ def _percentile(sorted_values: list[float], percent: int) -> str:
     return f"{sorted_values[rank - 1]:.0f} ms"
 
 
-def _run_lines(name: str, records: list[Record]) -> list[str]:
+def _run_lines(name: str, records: list[Record], *, compare_signals: bool = False) -> list[str]:
     failed = [r for r in records if r.status != 200]
     statuses = Counter("none" if r.status is None else str(r.status) for r in failed)
     shown = ", ".join(f"{status} x{count}" for status, count in sorted(statuses.items())) or "none"
     latencies = sorted(r.latency_ms for r in records)
     secondary = sum(r.status == 200 and r.region == "secondary" for r in records)
     primary = sum(r.status == 200 and r.region == "primary" for r in records)
+    signals = []
+    if compare_signals:
+        # Only a run through the gateway has both signals: the label is the gateway's own header.
+        carrying = [r for r in records if r.x_ms_region is not None or r.backend_label is not None]
+        signals = [f"- the two region signals (`x-ms-region` and `x-releaselens-backend`) disagreed on "
+                   f"{sum(signals_disagree(r) for r in carrying)} of {len(carrying)} responses that carried either"]
     return [
         f"**{name} run**",
         f"- succeeded {len(records) - len(failed)} of {len(records)}; failed {len(failed)} of {len(records)}",
         f"- failure statuses: {shown}",
         f"- answered by the primary: {primary}; by Southeast Asia: {secondary}",
+        *signals,
         f"- latency, all {len(records)} requests including failures: p50 {_percentile(latencies, 50)}, "
         f"p95 {_percentile(latencies, 95)}",
         "",
@@ -93,7 +100,7 @@ def render(
         verdict.reason[:1].upper() + verdict.reason[1:] + ".",
         "",
         *_run_lines("Before (direct to the primary)", before),
-        *_run_lines("After (through the gateway)", after),
+        *_run_lines("After (through the gateway)", after, compare_signals=True),
     ]
     if verdict.after_failure_statuses:
         shown = ", ".join("none" if s is None else str(s) for s in verdict.after_failure_statuses)
