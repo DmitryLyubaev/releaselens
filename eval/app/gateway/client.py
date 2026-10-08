@@ -85,16 +85,21 @@ def _usage(response: httpx.Response) -> tuple[int, int]:
     return prompt, completion
 
 
-async def send_one(
-    http: httpx.AsyncClient, url: str, token: str, deployment: str, seq: int, *,
-    caller: str, region_signal: str, clock: Callable[[], float], sleep: Callable[[float], Awaitable[None]],
-) -> Record:
-    body = {
+def chat_body(deployment: str) -> dict:
+    """The one request body every call of every run sends."""
+    return {
         "model": deployment,
         "messages": [{"role": "user", "content": PROMPT}],
         "max_tokens": MAX_TOKENS,
         "temperature": TEMPERATURE,
     }
+
+
+async def send_one(
+    http: httpx.AsyncClient, url: str, token: str, deployment: str, seq: int, *,
+    caller: str, region_signal: str, clock: Callable[[], float], sleep: Callable[[float], Awaitable[None]],
+) -> Record:
+    body = chat_body(deployment)
     headers = {"Authorization": f"Bearer {token}"}
     sent_at = clock()
     waited_ms = 0
