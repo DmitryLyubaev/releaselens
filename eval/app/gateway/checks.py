@@ -17,6 +17,10 @@ from .rule import advised_wait_ms
 
 MAX_MINUTE_REQUESTS = 60     # about 330 tokens each against 10,000 a minute: a 429 comes by the 31st
 MAX_DAY_REQUESTS = 400       # about 330 tokens each against 50,000 a day: a 403 comes by the 152nd
+DAY_BUDGET_TOKENS = 50_000   # the policy's daily quota (spec §4.1)
+# A 403 counts as the daily budget's only once this much has been recorded: 90% of the quota, which
+# allows for the policy's estimate of each prompt being more than the model's own count.
+DAY_FLOOR_TOKENS = 45_000
 DEFAULT_WAIT_S = 60          # a 429 that does not say how long: one minute window
 
 REGION_HEADER = "x-ms-region"
@@ -84,14 +88,25 @@ def minute_budget(send: Send, *, max_requests: int = MAX_MINUTE_REQUESTS) -> Che
     return CheckResult("B1", False, f"{max_requests} requests were sent and none was refused with a 429")
 
 
-def day_budget(send: Send, *, sleep: Callable[[float], None] = time.sleep,
+def day_budget(send: Send, *, sleep: Callable[[float], None] = time.sleep, recorded_tokens: int = 0,
                max_requests: int = MAX_DAY_REQUESTS) -> CheckResult:
-    """B2: send until the day's tokens are spent, waiting out each minute budget's 429; pass on a 403."""
+    """B2: send until a 403 arrives, waiting out each minute budget's 429.
+
+    Passes only if the 403 comes after at least 45,000 tokens were recorded today: `recorded_tokens`
+    (the owner's earlier gateway answers since 00:00 UTC) plus this run's own 200s. A 403 sooner
+    than that is not the daily budget's.
+    """
     waits = 0
+    spent = 0
     for sent in range(1, max_requests + 1):
         reply = send()
         if reply.status == 403:
-            return CheckResult("B2", True, f"request {sent} got a 403 after {waits} minute-budget waits")
+            total = recorded_tokens + spent
+            figure = f"{total} tokens recorded today before the 403 ({recorded_tokens} earlier, {spent} in this run)"
+            if total >= DAY_FLOOR_TOKENS:
+                return CheckResult("B2", True, f"request {sent} got a 403 after {waits} minute-budget waits; {figure}")
+            return CheckResult("B2", False, f"request {sent} got a 403, but only {figure}: at least "
+                                            f"{DAY_FLOOR_TOKENS} are needed to take it for the daily budget's")
         if reply.status == 429:
             advised = advised_wait_ms(reply.headers)
             sleep(DEFAULT_WAIT_S if advised is None else advised / 1000)
@@ -99,6 +114,7 @@ def day_budget(send: Send, *, sleep: Callable[[float], None] = time.sleep,
             continue
         if reply.status != 200:
             return CheckResult("B2", False, f"request {sent} got {_describe(reply)}, not a 200, 429 or 403")
+        spent += reply.prompt_tokens + reply.completion_tokens
     return CheckResult("B2", False, f"{max_requests} requests were sent and none got a 403")
 
 

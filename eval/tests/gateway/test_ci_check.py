@@ -1,8 +1,11 @@
 """`python -m app.gateway.ci_check`: one call as the workflow's identity, and nothing printed but a status."""
 
 import json
+import logging
 
 import httpx
+import pytest
+from azure.identity import ClientAssertionCredential
 
 from app.gateway import ci_check
 
@@ -32,7 +35,8 @@ def _run(gateway_status: int, capsys, env=None, raises: Exception | None = None)
             return httpx.Response(200, json={"value": GITHUB_JWT})
         if raises:
             raise raises
-        return httpx.Response(gateway_status, json={})
+        return httpx.Response(gateway_status, json={"usage": {"prompt_tokens": 300, "completion_tokens": 20}}
+                              if gateway_status == 200 else {})
 
     class Credential:
         def __init__(self, tenant_id, client_id, assertion) -> None:
@@ -48,9 +52,26 @@ def _run(gateway_status: int, capsys, env=None, raises: Exception | None = None)
     return code, capsys.readouterr(), seen, record
 
 
-def test_a_200_prints_status_200_and_returns_0(capsys):
+def test_a_200_prints_the_status_and_the_total_tokens_and_returns_0(capsys):
     code, out, _, _ = _run(200, capsys)
-    assert (code, out.out, out.err) == (0, "status=200\n", "")
+    assert (code, out.out, out.err) == (0, "status=200 total_tokens=320\n", "")
+
+
+def test_a_200_without_a_usable_usage_block_prints_the_status_alone(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "pipelines.example.com":
+            return httpx.Response(200, json={"value": GITHUB_JWT})
+        return httpx.Response(200, json={"usage": {"prompt_tokens": "x"}})
+
+    class Credential:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_token(self, *scopes):
+            return type("AccessToken", (), {"token": ACCESS})()
+
+    code = ci_check.main(ENV, httpx.Client(transport=httpx.MockTransport(handler)), Credential)
+    assert (code, capsys.readouterr().out) == (0, "status=200\n")
 
 
 def test_a_403_prints_status_403_and_returns_1(capsys):
@@ -89,4 +110,43 @@ def test_any_exception_prints_status_error_and_nothing_else(capsys):
 def test_a_missing_variable_prints_status_error(capsys):
     env = {k: v for k, v in ENV.items() if k != "GATEWAY_SCOPE"}
     code, out, _, _ = _run(200, capsys, env=env)
+    assert (code, out.out, out.err) == (1, "status=error\n", "")
+
+
+# --- the libraries' own logging ---------------------------------------------------------------
+
+@pytest.fixture
+def last_resort_only(monkeypatch):
+    """What the workflow's process has: no handler anywhere, so a library's warning goes to stderr."""
+    monkeypatch.setattr(logging, "lastResort", logging.lastResort)     # restored after silence_logging
+    yield monkeypatch
+    logging.disable(logging.NOTSET)
+
+
+def _real_credential_run(monkeypatch, capsys, assertion_status: int = 500):
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The OIDC endpoint fails; the exception text azure-identity logs then names this URL.
+        return httpx.Response(assertion_status, json={})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def factory(tenant_id, client_id, assertion):
+        return ClientAssertionCredential(tenant_id, client_id, assertion, additionally_allowed_tenants=["*"])
+
+    # Taken off just before the run: pytest installs its capturing handlers per test phase.
+    monkeypatch.setattr(logging.root, "handlers", [])
+    code = ci_check.main(ENV, http, factory)
+    return code, capsys.readouterr()
+
+
+def test_without_the_silencing_the_real_credential_leaks_the_oidc_url_to_stderr(last_resort_only, capsys):
+    # The control: it shows the test below would catch the leak, and is the reason for the silencing.
+    code, out = _real_credential_run(last_resort_only, capsys)
+    assert code == 1 and "pipelines.example.com" in out.err
+
+
+def test_with_the_entry_points_silencing_the_real_credential_prints_status_error_and_nothing_else(
+        last_resort_only, capsys):
+    ci_check.silence_logging()      # exactly what `python -m app.gateway.ci_check` runs first
+    code, out = _real_credential_run(last_resort_only, capsys)
     assert (code, out.out, out.err) == (1, "status=error\n", "")
