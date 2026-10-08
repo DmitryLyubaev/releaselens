@@ -180,6 +180,27 @@ def test_on_error_body_is_fixed(repo_root: Path, name: str) -> None:
         assert forbidden not in serialized, f"on-error mentions {forbidden}"
 
 
+@pytest.mark.parametrize("name", FILES)
+def test_on_error_never_leaves_a_success_status_on_the_error_body(repo_root: Path, name: str) -> None:
+    # If an error leaves the response on a 2xx or 3xx, the caller would get an error body with a
+    # success status, and the measured test would count it as a success. A failure status the
+    # error already carries (a 429 with its Retry-After, a 403, a 503) is kept; anything else is a 502.
+    on_error = _section(_root(repo_root, name), "on-error")
+    steps = [child.tag for child in on_error]
+    assert steps.count("set-status") == 1
+    assert steps.index("set-status") < steps.index("set-body")
+    status = on_error.find("set-status")
+    assert status is not None
+    code = status.get("code") or ""
+    assert code.startswith("@(")
+    assert "context.Response.StatusCode >= 400" in code
+    assert code.count("context.Response.StatusCode") == 2
+    assert re.search(r"\?\s*context\.Response\.StatusCode\s*:\s*502\s*\)$", code), code
+    # The reason is fixed: no host or error detail can reach it.
+    reason = status.get("reason") or ""
+    assert reason and "@(" not in reason and "{{" not in reason
+
+
 def test_rev2_differs_only_by_stripping_headers(repo_root: Path) -> None:
     rev1 = _root(repo_root, "api-v1.xml")
     rev2 = _root(repo_root, "api-v1-rev2.xml")

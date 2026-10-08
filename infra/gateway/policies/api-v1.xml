@@ -59,7 +59,9 @@
     <base />
     <!-- A fixed message and the status code only: no backend host or error detail leaves the
          gateway. The body is set on the existing response, not a new one, so headers such as
-         Retry-After on a 429 are kept. -->
+         Retry-After on a 429 are kept. If the error left a status below 400, the caller would get
+         an error body with a success status, so that becomes a 502; a failure status stays. -->
+    <set-status code="@(context.Response.StatusCode &gt;= 400 ? context.Response.StatusCode : 502)" reason="Gateway error" />
     <set-header name="Content-Type" exists-action="override">
       <value>application/json</value>
     </set-header>
