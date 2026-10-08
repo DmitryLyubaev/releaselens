@@ -2,13 +2,17 @@
 
 Runs in GitHub Actions as `id-releaselens-deploy`: it takes GitHub's OIDC token for the audience
 `api://AzureADTokenExchange`, exchanges it through `ClientAssertionCredential` for a token for the
-gateway's scope, makes one chat-completions call, and prints `status=<code>` and nothing else.
-No URL, scope, token or exception message is ever printed, because the log is public: on any
-failure it prints `status=error`.
+gateway's scope, makes one chat-completions call, and prints `status=<code>`, with
+` total_tokens=<n>` after it on a 200 (the figure B5 compares, which the owner enters by hand).
+Nothing else is printed: no URL, scope, token or exception message, because the log is public. On
+any failure it prints `status=error`. The libraries' own logging is switched off first, since
+azure-identity logs a failed token request's exception text, and with no handler configured
+Python's last-resort handler writes it to stderr.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -20,6 +24,21 @@ from .client import TIMEOUT_S, chat_body
 
 AUDIENCE = "api://AzureADTokenExchange"
 DEPLOYMENT = "releaselens-chat"
+
+
+def silence_logging() -> None:
+    """No library may log in this process: the workflow's log is public."""
+    logging.disable(logging.CRITICAL)
+    logging.lastResort = None
+
+
+def _total_tokens(response: httpx.Response) -> int | None:
+    try:
+        usage = response.json()["usage"]
+        prompt, completion = usage["prompt_tokens"], usage["completion_tokens"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return prompt + completion if type(prompt) is int and type(completion) is int else None
 
 
 def _assertion(env: Mapping[str, str], http: httpx.Client) -> str:
@@ -44,11 +63,13 @@ def main(env: Mapping[str, str], http: httpx.Client, credential_factory: Callabl
         # Not even its type: an exception's text can carry the URL, the scope or a token.
         print("status=error")
         return 1
-    print(f"status={response.status_code}")
+    tokens = _total_tokens(response) if response.status_code == 200 else None
+    print(f"status={response.status_code}" + ("" if tokens is None else f" total_tokens={tokens}"))
     return 0 if response.status_code == 200 else 1
 
 
 if __name__ == "__main__":
+    silence_logging()       # before anything else, the imports included
     try:
         from azure.identity import ClientAssertionCredential
     except Exception:

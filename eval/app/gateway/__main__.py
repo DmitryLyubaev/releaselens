@@ -32,7 +32,8 @@ import time
 import traceback
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -58,10 +59,19 @@ _now = time.monotonic
 _sleep = asyncio.sleep
 _sleep_sync = time.sleep
 
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 BUDGET_DEPLOYMENT = "releaselens-chat"
 BUDGET_RECORDS = {"minute-budget": "budget-minute.jsonl", "day-budget": "budget-day.jsonl"}
 CHECK_FILES = {"B1": "check-b1.json", "B2": "check-b2.json", "B4": "check-b4.json", "B5": "check-b5.json"}
-METRIC_RECORDS = ("failover-gateway.jsonl", "budget-minute.jsonl", "budget-day.jsonl")
+SMOKE_RECORDS = "smoke.jsonl"
+# The owner's calls the gateway answered, by file: what B5 sums for the owner's client totals, and
+# (all but the day's own) what B2 counts as spent before its run.
+EARLIER_GATEWAY_RECORDS = ("failover-gateway.jsonl", "budget-minute.jsonl", SMOKE_RECORDS)
+METRIC_RECORDS = (*EARLIER_GATEWAY_RECORDS, "budget-day.jsonl")
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -109,7 +119,7 @@ def failover(args) -> int:
     records = asyncio.run(go())
 
     args.out.mkdir(parents=True, exist_ok=True)
-    destination.write_text("".join(json.dumps(asdict(r)) + "\n" for r in records), encoding="utf-8")
+    _save(args, destination, "".join(json.dumps(asdict(r)) + "\n" for r in records))
     statuses = Counter("none" if r.status is None else r.status for r in records)
     print(f"{destination.name}: {len(records)} records; statuses {dict(sorted(statuses.items(), key=str))}")
     return 0
@@ -185,9 +195,13 @@ def _budget(args, command: str, check_file: str, run_check: Callable[[checks.Sen
                           "overwritten; move it away first")
     tokens = TokenSource(args.scope, args.tenant)
     log: list[dict] = []
-    with _sync_client() as http:
-        result = run_check(_sender(http, _url(args.base_url), tokens.token, args.deployment, log))
-    _save(args, records_path, "".join(json.dumps(line) + "\n" for line in log))
+    try:
+        with _sync_client() as http:
+            result = run_check(_sender(http, _url(args.base_url), tokens.token, args.deployment, log))
+    finally:
+        # A crash or Ctrl+C mid-run still keeps what was paid for: B2 cannot be re-run until 00:00 UTC.
+        if log:
+            _save(args, records_path, "".join(json.dumps(line) + "\n" for line in log))
     return _finish(args, [result], check_file)
 
 
@@ -196,9 +210,25 @@ def run_minute_budget(args) -> int:
     return _budget(args, "minute-budget", CHECK_FILES["B1"], checks.minute_budget)
 
 
+def _recorded_today(out: Path) -> int:
+    """Tokens in the owner's gateway 200s recorded in this directory since 00:00 UTC today."""
+    midnight = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    total = 0
+    for name in EARLIER_GATEWAY_RECORDS:
+        path = out / name
+        if not path.exists() or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < midnight:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if row["status"] == 200:
+                total += row["prompt_tokens"] + row["completion_tokens"]
+    return total
+
+
 def run_day_budget(args) -> int:
     """B2: requests through the gateway, past the minute budget's resets, until the day's tokens are spent."""
-    return _budget(args, "day-budget", CHECK_FILES["B2"], lambda send: checks.day_budget(send, sleep=_sleep_sync))
+    return _budget(args, "day-budget", CHECK_FILES["B2"], lambda send: checks.day_budget(
+        send, sleep=_sleep_sync, recorded_tokens=_recorded_today(args.out)))
 
 
 def run_access(args) -> int:
@@ -217,12 +247,17 @@ def run_smoke(args) -> int:
     freeze.require_output_ignored(args.out, _run)
     direct_tokens = TokenSource(DIRECT_SCOPE, args.tenant)
     gateway_tokens = TokenSource(args.scope, args.tenant)
-    with _sync_client() as http:
-        results = checks.smoke(
-            _sender(http, _url(args.direct_url), direct_tokens.token, args.deployment),
-            _sender(http, _url(args.gateway_url), gateway_tokens.token, args.deployment),
-            _sender(http, checks.rev2_url(args.gateway_url), gateway_tokens.token, args.deployment),
-        )
+    log: list[dict] = []        # the two calls the gateway answered: their usage is in the metric (B5)
+    try:
+        with _sync_client() as http:
+            results = checks.smoke(
+                _sender(http, _url(args.direct_url), direct_tokens.token, args.deployment),
+                _sender(http, _url(args.gateway_url), gateway_tokens.token, args.deployment, log),
+                _sender(http, checks.rev2_url(args.gateway_url), gateway_tokens.token, args.deployment, log),
+            )
+    finally:
+        if log:
+            _save(args, args.out / SMOKE_RECORDS, "".join(json.dumps(line) + "\n" for line in log))
     return _finish(args, results, "check-smoke.json", as_list=True)
 
 
@@ -232,11 +267,16 @@ def _client_totals(paths: list[Path], extra: list[str]) -> dict[str, int]:
         for line in path.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
             totals[row["caller"]] = totals.get(row["caller"], 0) + row["prompt_tokens"] + row["completion_tokens"]
+    entered: set[str] = set()
     for item in extra:
         label, _, number = item.partition("=")
         if not label or not number.isdigit():
             raise Refused("--client-total takes LABEL=N, N a whole number of tokens")
-        totals[label] = totals.get(label, 0) + int(number)
+        if label in totals or label in entered:
+            raise Refused(f"--client-total {label}: that caller already has recorded totals (or was entered "
+                          "twice); a figure entered by hand is only for a caller with no records")
+        totals[label] = int(number)
+        entered.add(label)
     return totals
 
 
@@ -257,6 +297,9 @@ def run_metric_totals(args) -> int:
     with _sync_client() as http:
         measured = metric.totals(metric.query(args.app_id, token, args.since, http), labels)
     result = metric.matches(recorded, measured)
+    if args.client_total:
+        by_hand = ", ".join(sorted(item.partition("=")[0] for item in args.client_total))
+        result = replace(result, detail=f"{result.detail}; {by_hand}: from the workflow log, entered by hand")
     _save(args, args.out / CHECK_FILES["B5"], json.dumps(asdict(result), indent=2) + "\n")
     print(f"clients' totals: {dict(sorted(recorded.items()))}")
     print(f"metric totals:   {dict(sorted(measured.items()))}")

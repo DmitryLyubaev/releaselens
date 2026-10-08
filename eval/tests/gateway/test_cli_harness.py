@@ -5,7 +5,9 @@ fake, sleep is a fake, git is a stub, and truststore is not injected.
 """
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import httpx
@@ -148,16 +150,74 @@ def test_a_failed_check_still_writes_its_result_and_exits_1(env, capsys):
     assert "B1: fail" in capsys.readouterr().out
 
 
-def test_day_budget_waits_out_each_429_and_stops_at_the_403(env):
-    answers = {2: _gateway_429, 4: lambda r, n: httpx.Response(403, json={})}
+def _gateway_records(env: _Env, name: str, tokens: list[int], statuses: list[int] | None = None) -> Path:
+    env.out.mkdir(exist_ok=True)
+    statuses = statuses or [200] * len(tokens)
+    path = env.out / name
+    path.write_text("".join(json.dumps({"seq": i, "status": s, "prompt_tokens": t - 20 if t else 0,
+                                        "completion_tokens": 20 if t else 0, "caller": "owner"}) + "\n"
+                            for i, (t, s) in enumerate(zip(tokens, statuses, strict=True))), encoding="utf-8")
+    return path
+
+
+def _403(request, n):
+    return httpx.Response(403, json={})
+
+
+def _day_responses(env: _Env, *, answers: dict) -> None:
     env.respond = lambda request, n: answers.get(n, lambda r, k: httpx.Response(
         200, headers={"x-ms-region": "Australia East"}, json=USAGE))(request, n)
+
+
+def test_day_budget_waits_out_each_429_and_stops_at_the_403_counting_the_sessions_earlier_records(env, capsys):
+    _gateway_records(env, "failover-gateway.jsonl", [320] * 100)        # 32,000
+    _gateway_records(env, "budget-minute.jsonl", [320] * 30)            #  9,600
+    _gateway_records(env, "smoke.jsonl", [320, 320])                    #    640: 42,240 earlier
+    # 200s at requests 1 and 3..10: 9 x 320 = 2,880 more, 45,120 in all, then the 403
+    _day_responses(env, answers={2: _gateway_429, 11: _403})
 
     assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 0
 
     assert env.sleeps == [9]
-    assert [r["status"] for r in _lines(env.out / "budget-day.jsonl")] == [200, 429, 200, 403]
-    assert _files(env) == ["budget-day.jsonl", "check-b2.json"]
+    out = capsys.readouterr().out
+    assert "B2: pass" in out and "45120 tokens recorded today before the 403" in out
+    assert [r["status"] for r in _lines(env.out / "budget-day.jsonl")][-2:] == [200, 403]
+    assert {"check-b2.json", "budget-day.jsonl"} <= set(_files(env))
+
+
+def test_day_budget_fails_a_403_that_comes_too_early_and_still_writes_its_records_and_result(env, capsys):
+    _gateway_records(env, "failover-gateway.jsonl", [320] * 10)
+    _day_responses(env, answers={3: _403})
+
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1
+
+    assert "B2: fail" in capsys.readouterr().out
+    assert json.loads((env.out / "check-b2.json").read_text(encoding="utf-8"))["passed"] is False
+    assert len(_lines(env.out / "budget-day.jsonl")) == 3
+
+
+def test_day_budget_leaves_out_records_from_before_00_00_utc_today(env):
+    stale = _gateway_records(env, "failover-gateway.jsonl", [45000])
+    three_days_ago = time.time() - 3 * 86400
+    os.utime(stale, (three_days_ago, three_days_ago))
+    _day_responses(env, answers={2: _403})
+
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1         # the stale 45,000 did not count
+
+    detail = json.loads((env.out / "check-b2.json").read_text(encoding="utf-8"))["detail"]
+    assert "320 tokens recorded today before the 403" in detail
+
+
+def test_day_budget_counts_only_the_200_rows_of_the_earlier_records(env):
+    _gateway_records(env, "failover-gateway.jsonl", [45000, 45000], statuses=[200, 429])
+    _day_responses(env, answers={1: _403})
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 0
+
+    _gateway_records(env, "failover-gateway.jsonl", [30000, 30000], statuses=[429, 429])
+    (env.out / "budget-day.jsonl").unlink()
+    (env.out / "check-b2.json").unlink()
+    env.requests.clear()
+    assert cli.main(_argv(env, "day-budget", *BUDGET_ARGS)) == 1
 
 
 @pytest.mark.parametrize("command", ["minute-budget", "day-budget"])
@@ -168,6 +228,32 @@ def test_a_budget_run_never_overwrites_an_earlier_one(env, capsys, command):
     assert cli.main(_argv(env, command, *BUDGET_ARGS)) == 1
     assert "already exists" in capsys.readouterr().err
     assert existing.read_text(encoding="utf-8") == "earlier\n" and env.requests == []
+
+
+def test_a_crash_during_a_budget_run_keeps_the_records_already_paid_for(env):
+    def answer(request, n):
+        if n == 3:
+            raise RuntimeError("a bug on the third request")
+        return httpx.Response(200, headers={"x-ms-region": "Australia East"}, json=USAGE)
+
+    env.respond = answer
+    assert cli.main(_argv(env, "minute-budget", *BUDGET_ARGS)) == 1       # a bug: reported, exit 1
+    assert [r["status"] for r in _lines(env.out / "budget-minute.jsonl")] == [200, 200]
+    assert not (env.out / "check-b1.json").exists()
+
+
+def test_ctrl_c_during_a_retry_after_sleep_keeps_the_records_already_paid_for(env, monkeypatch):
+    def interrupted(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_sleep_sync", interrupted)
+    _day_responses(env, answers={3: _gateway_429})
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(_argv(env, "day-budget", *BUDGET_ARGS))
+
+    assert [r["status"] for r in _lines(env.out / "budget-day.jsonl")] == [200, 200, 429]
+    assert not (env.out / "check-b2.json").exists()
 
 
 # --- access -----------------------------------------------------------------------------------
@@ -221,6 +307,17 @@ def test_smoke_calls_direct_then_the_gateway_then_revision_2_before_any_freeze(e
     assert [r["check"] for r in results] == ["smoke-direct", "smoke-gateway", "smoke-rev2"]
 
 
+def test_smoke_records_its_two_gateway_calls_usage_but_not_the_direct_one(env):
+    env.respond = _labelled
+    cli.main(_argv(env, "smoke", *SMOKE_ARGS))
+    records = _lines(env.out / "smoke.jsonl")
+    assert [(r["status"], r["prompt_tokens"] + r["completion_tokens"], r["caller"]) for r in records] == [
+        (200, 320, "owner")] * 2
+    text = (env.out / "smoke.jsonl").read_text(encoding="utf-8")
+    for secret in (TOKEN, "example.com", TENANT, OWNER_OID):
+        assert secret not in text
+
+
 def test_smoke_fails_and_withholds_a_hostname_in_the_gateways_answer(env, capsys):
     host = "aoai-releaselens-sea-a1b2c3.openai.azure.com"
     env.respond = lambda request, n: httpx.Response(200, json={"error": host}) if n == 2 else _labelled(request, n)
@@ -266,6 +363,49 @@ def test_metric_totals_compares_the_clients_records_with_the_metric_by_label(env
     assert "owner" in out and "deploy" in out and "B5: pass" in out
     assert OWNER_OID not in out and APP not in out
     assert json.loads((env.out / "check-b5.json").read_text(encoding="utf-8"))["passed"] is True
+
+
+def test_metric_totals_counts_the_smoke_calls_the_gateway_answered(env):
+    _record_file(env, "failover-gateway.jsonl", [1000])
+    _record_file(env, "smoke.jsonl", [320, 320])
+    env.respond = _metric_response(1640.0)
+    assert cli.main(_argv(env, "metric-totals", *METRIC_ARGS)) == 0
+
+
+def test_a_hand_entered_total_is_labelled_as_from_the_workflow_log_in_the_result(env, capsys):
+    _record_file(env, "failover-gateway.jsonl", [1000])
+    env.respond = _metric_response(1000.0, 320.0)
+
+    assert cli.main(_argv(env, "metric-totals", *METRIC_ARGS, "--client-total", "deploy=320")) == 0
+
+    detail = json.loads((env.out / "check-b5.json").read_text(encoding="utf-8"))["detail"]
+    assert "deploy: from the workflow log, entered by hand" in detail
+    assert "owner: from the workflow log" not in detail
+    assert "from the workflow log, entered by hand" in capsys.readouterr().out
+
+
+def test_a_total_entered_by_hand_for_a_caller_that_has_records_is_refused_before_any_request(env, capsys):
+    _record_file(env, "failover-gateway.jsonl", [1000])
+    assert cli.main(_argv(env, "metric-totals", *METRIC_ARGS, "--client-total", "owner=5")) == 1
+    assert "owner" in capsys.readouterr().err
+    assert env.requests == [] and _Tokens.created == []
+
+
+def test_the_same_label_entered_twice_by_hand_is_refused(env):
+    _record_file(env, "failover-gateway.jsonl", [1000])
+    assert cli.main(_argv(env, "metric-totals", *METRIC_ARGS, "--client-total", "deploy=1",
+                          "--client-total", "deploy=2")) == 1
+    assert env.requests == []
+
+
+def test_the_report_shows_the_hand_entered_label_from_the_b5_result(env):
+    _both_runs(env)
+    env.respond = _metric_response(1000.0, 320.0)
+    _record_file(env, "failover-gateway.jsonl", [1000])
+    cli.main(_argv(env, "metric-totals", *METRIC_ARGS, "--client-total", "deploy=320"))
+    _both_runs(env)
+    assert cli.main(_report_argv(env, "--b3", "passed")) == 0
+    assert "deploy: from the workflow log, entered by hand" in (env.out / "report.md").read_text(encoding="utf-8")
 
 
 def test_metric_totals_fails_outside_two_percent(env):

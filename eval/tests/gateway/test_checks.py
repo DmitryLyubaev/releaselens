@@ -67,12 +67,16 @@ def test_b1_stops_and_fails_on_any_other_refusal():
 
 # --- B2 ---------------------------------------------------------------------------------------
 
+def _big(tokens: int) -> Reply:
+    return Reply(200, MODEL, prompt_tokens=tokens - 20, completion_tokens=20)
+
+
 def test_b2_keeps_going_past_minute_budget_429s_waiting_their_retry_after():
-    send = _Feed([_ok(), _gateway_429("7"), _ok(), _gateway_429("11"), _ok(), Reply(403)])
+    send = _Feed([_big(30000), _gateway_429("7"), _big(20000), _gateway_429("11"), Reply(403)])
     sleeps = _Sleeps()
     result = day_budget(send, sleep=sleeps)
     assert (result.check, result.passed) == ("B2", True)
-    assert sleeps.seconds == [7, 11] and send.sent == 6
+    assert sleeps.seconds == [7, 11] and send.sent == 5
 
 
 def test_b2_waits_a_minute_when_a_429_does_not_say_how_long():
@@ -81,8 +85,32 @@ def test_b2_waits_a_minute_when_a_429_does_not_say_how_long():
     assert sleeps.seconds == [60]
 
 
-def test_b2_passes_on_a_403_even_when_it_is_the_first_answer():
-    assert day_budget(_Feed([Reply(403)]), sleep=_Sleeps()).passed is True
+def test_b2_passes_a_403_that_arrives_once_45000_tokens_are_recorded():
+    result = day_budget(_Feed([_big(45000), Reply(403)]), sleep=_Sleeps())
+    assert result.passed is True and "45000 tokens recorded today before the 403" in result.detail
+
+
+def test_b2_fails_a_403_below_45000_and_states_the_figure():
+    result = day_budget(_Feed([_big(44999), Reply(403)]), sleep=_Sleeps())
+    assert result.passed is False
+    assert "44999 tokens recorded today before the 403" in result.detail and "45000" in result.detail
+
+
+def test_b2_fails_a_403_that_is_the_first_answer_with_nothing_recorded():
+    result = day_budget(_Feed([Reply(403)]), sleep=_Sleeps())
+    assert result.passed is False and "0 tokens recorded today before the 403" in result.detail
+
+
+def test_b2_counts_the_tokens_recorded_earlier_in_the_session():
+    assert day_budget(_Feed([_big(1000), Reply(403)]), sleep=_Sleeps(), recorded_tokens=44000).passed is True
+    below = day_budget(_Feed([_big(1000), Reply(403)]), sleep=_Sleeps(), recorded_tokens=43999)
+    assert below.passed is False and "44999 tokens recorded today before the 403" in below.detail
+
+
+def test_b2_counts_only_the_tokens_of_200_answers():
+    refused = Reply(429, {"Retry-After": "1"}, prompt_tokens=99999)
+    result = day_budget(_Feed([_big(40000), refused, Reply(403)]), sleep=_Sleeps())
+    assert result.passed is False and "40000 tokens" in result.detail
 
 
 def test_b2_fails_when_the_cap_is_reached_without_a_403():

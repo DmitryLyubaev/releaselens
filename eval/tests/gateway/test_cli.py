@@ -207,3 +207,19 @@ def test_a_failure_that_is_a_bug_is_reported_with_its_traceback_and_a_nonzero_ex
     monkeypatch.setattr(_Tokens, "token", boom)
     assert cli.main(_argv(env)) == 1
     assert "RuntimeError" in capsys.readouterr().err
+
+
+def test_failover_records_go_through_the_identifier_check_like_every_other_file(env, capsys, monkeypatch):
+    # A labels variable whose oid is spelled like the records' caller label: the writer must refuse.
+    monkeypatch.setenv("GATEWAY_CALLER_LABELS", json.dumps({"owner": "someone"}))
+
+    assert cli.main(_argv(env)) == 1
+
+    assert "forbidden list" in capsys.readouterr().err
+    assert not (env.out / "failover-direct.jsonl").exists()
+
+
+def test_failover_records_pass_the_identifier_check_when_they_hold_labels_only(env, monkeypatch):
+    monkeypatch.setenv("GATEWAY_CALLER_LABELS", json.dumps({TENANT: "owner"}))
+    assert cli.main(_argv(env)) == 0
+    assert (env.out / "failover-direct.jsonl").exists()
