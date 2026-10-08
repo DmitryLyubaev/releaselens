@@ -78,7 +78,7 @@ describes, with its own data directory:
 
 ```bash
 cd /mnt/e/Projects/ReleaseLens/infra/gateway   # the clone, as WSL sees it; adjust to yours
-export TF_DATA_DIR="$HOME/tfdata/gateway" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
+export TF_DATA_DIR="$HOME/tfdata/gateway-live" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
 terraform init -backend-config=storage_account_name=<state storage account>
 ```
 
@@ -111,8 +111,8 @@ either holds: each policy is pinned to its own revision, so a later apply leaves
 policy on revision 2 and revision 1's on revision 1. The operation and the diagnostic address
 the current revision by name, so after the release they refer to revision 2's copies; if a later
 plan shows either of them created or replaced, revision 2 did not inherit it, and the plan says
-what the apply would do. Even so, after the release the next step is the destroy: the session
-ends there.
+what the apply would do. After the release there is no further apply until the destroy: the
+measured commands and the report call the gateway, and apply no Terraform.
 
 At the end of the session, whether it succeeded or not:
 
