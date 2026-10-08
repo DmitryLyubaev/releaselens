@@ -69,6 +69,17 @@ jobs:
       - name: Check workflows
         run: python scripts/check_workflows.py .github/workflows
 
+      # The gateway-check workflow installs only this short, hash-locked list, with an OIDC token in
+      # reach and one dispatch in a 5-minute window, and prints status=error for any failure. So a
+      # package the list lacks must show here: a clean venv, the same flags, then the import.
+      - name: Gateway check requirements install and import
+        run: |
+          VENV="$RUNNER_TEMP/gateway-check-venv"
+          python -m venv "$VENV"
+          "$VENV/bin/pip" install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
+          cd eval
+          "$VENV/bin/python" -c "import app.gateway.ci_check, azure.identity"
+
       - name: Install eval requirements
         run: pip install -r eval/requirements.txt
 

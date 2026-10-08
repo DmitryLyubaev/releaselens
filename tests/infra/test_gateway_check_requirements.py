@@ -60,3 +60,29 @@ def test_gateway_check_workflow_installs_by_hash_from_binary_wheels_without_depe
     for flag in ("--require-hashes", "--only-binary=:all:", "--no-deps"):
         assert flag in install
     assert install[install.index("-r") + 1] == "eval/requirements-gateway-check.txt"
+
+
+def test_ci_installs_the_same_list_the_same_way_in_a_clean_venv_and_imports_the_check(repo_root):
+    # B3's workflow has one dispatch inside a short window and prints status=error for any failure,
+    # so a package the lock file lacks must show up here, in a job with no environment and no secret.
+    workflow = yaml.safe_load((repo_root / ".github" / "workflows" / "ci.yml").read_bytes())
+    job = workflow["jobs"]["build-and-test"]
+    assert "environment" not in job
+    steps = [step for step in job["steps"] if "requirements-gateway-check.txt" in step.get("run", "")]
+    assert len(steps) == 1
+    run = steps[0]["run"]
+    assert "-m venv" in run
+    install = next(line for line in run.splitlines() if "--require-hashes" in line).split()
+    for flag in ("--require-hashes", "--only-binary=:all:", "--no-deps"):
+        assert flag in install
+    assert install[install.index("-r") + 1] == "eval/requirements-gateway-check.txt"
+    assert "-c \"import app.gateway.ci_check, azure.identity\"" in run
+    # The import runs from eval/, where the harness is the top-level package `app`, and with the
+    # venv's own interpreter, not the one that has every eval requirement.
+    assert steps[0].get("working-directory") is None
+    lines = run.splitlines()
+    assert "cd eval" in [line.strip() for line in lines]
+    assert lines.index(next(line for line in lines if line.strip() == "cd eval")) < lines.index(
+        next(line for line in lines if "import app.gateway.ci_check" in line))
+    assert "/bin/python" in next(line for line in lines if "import app.gateway.ci_check" in line)
+    assert "/bin/pip" in " ".join(install[:1])
