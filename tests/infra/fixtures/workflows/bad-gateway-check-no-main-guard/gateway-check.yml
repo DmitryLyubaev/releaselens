@@ -1,0 +1,54 @@
+name: Gateway check
+
+# Check B3 (spec §7.3): a second caller, id-releaselens-deploy, is served by the AI gateway while
+# the owner is over its daily token budget. Dispatched by hand only, on the owner's yes, within
+# five minutes of the owner's 403. It makes one model call, a few hundred tokens, and prints only
+# the status code and the token count, so nothing in this public log names the gateway.
+#
+# Its two secrets, GATEWAY_BASE_URL and GATEWAY_SCOPE, exist in the environment azure only during
+# a gateway session and are deleted after it. Without them the run fails. The environment admits
+# only runs from main, and the job checks the ref as well.
+
+on: workflow_dispatch
+
+permissions: {}
+
+# Shared with deploy.yml and destroy.yml, so that this check queues behind them.
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The eval harness's interpreter (eval/Dockerfile), as in ci.yml.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+
+      - name: Install eval requirements
+        run: pip install -r eval/requirements.txt
+
+      # From eval/, because the harness is the top-level package `app`. The program prints one
+      # line, status=<code> with total_tokens=<n> after it on a 200, and exits 1 unless it got 200.
+      - name: One call as the deploy identity
+        working-directory: eval
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          GATEWAY_SCOPE: ${{ secrets.GATEWAY_SCOPE }}
+        run: python -m app.gateway.ci_check

@@ -22,13 +22,17 @@ from pathlib import Path
 
 import yaml
 
-ALLOWED_AZURE = {"deploy.yml", "destroy.yml"}
+ALLOWED_AZURE = {"deploy.yml", "destroy.yml", "gateway-check.yml"}
 
 TRIGGERS = {
     "deploy.yml": {"workflow_dispatch"},
     "destroy.yml": {"workflow_dispatch", "schedule"},
+    "gateway-check.yml": {"workflow_dispatch"},
 }
 DESTROY_CRON = "0 14 * * *"
+# gateway-check.yml runs one model call as the deploy identity. Its `main` guard backs up the
+# environment's branch rule, which a dispatch from another ref would not pass.
+MAIN_GUARD = "github.ref == 'refs/heads/main'"
 AZURE_JOB_PERMISSIONS = {"id-token": "write", "contents": "read"}
 PREFLIGHT_PERMISSIONS = {"actions": "read"}
 CONCURRENCY = {"group": "releaselens-azure", "cancel-in-progress": False, "queue": "max"}
@@ -101,7 +105,14 @@ def _check_allowed(name, workflow, jobs):
     if permissions != {}:
         found.append(f"{name}: top-level permissions must be {{}} (found: {_show(permissions)})")
 
-    if name in {"deploy.yml", "destroy.yml"}:
+    if name == "gateway-check.yml":
+        for job_id, job in jobs.items():
+            guard = job.get("if", _ABSENT)
+            if guard != MAIN_GUARD:
+                found.append(f"{name}: job '{job_id}': if must be {_show(MAIN_GUARD)} "
+                             f"(found: {_show(guard)})")
+
+    if name in {"deploy.yml", "destroy.yml", "gateway-check.yml"}:
         found += _job_permissions(name, jobs)
         concurrency = workflow.get("concurrency", _ABSENT)
         if concurrency != CONCURRENCY:

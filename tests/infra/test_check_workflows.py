@@ -55,6 +55,11 @@ BAD = {
         "destroy.yml: top-level concurrency must be "
         '{"group": "releaselens-azure", "cancel-in-progress": false, "queue": "max"} '
         '(found: {"group": "releaselens-azure", "cancel-in-progress": true, "queue": "max"})',
+    "bad-gateway-check-on-push":
+        "gateway-check.yml: triggers must be exactly workflow_dispatch (found: push, workflow_dispatch)",
+    "bad-gateway-check-no-main-guard":
+        "gateway-check.yml: job 'check': if must be \"github.ref == 'refs/heads/main'\" "
+        "(found: absent)",
     "bad-unpinned-action":
         "deploy.yml: job 'deploy': 'hashicorp/setup-terraform@v3' must be pinned to a 40-hex "
         "commit SHA",
@@ -81,10 +86,10 @@ def test_good_fixtures_pass():
     assert cw.check(FIXTURES / "good") == []
 
 
-@pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml"])
+@pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml", "gateway-check.yml"])
 def test_good_fixture_is_a_byte_copy_of_the_repository_workflow(repo_root, name):
     # Otherwise the good set could keep passing while the real workflow drifts from it. So every
-    # change to either workflow, a Dependabot pin bump included, must be copied into
+    # change to any of these workflows, a Dependabot pin bump included, must be copied into
     # tests/infra/fixtures/workflows/good/, or CI fails here.
     fixture = (FIXTURES / "good" / name).read_bytes()
     assert fixture == (repo_root / ".github" / "workflows" / name).read_bytes()
