@@ -554,8 +554,8 @@ in [`../terraform`](../terraform/README.md#deployed-and-destroyed-by-the-workflo
 - **No workflow triggered by `pull_request_target`, `workflow_run` or `issue_comment` references
   `environment: azure`.** Those runs carry the default branch's ref, so they would pass the
   `main` rule. `scripts/check_workflows.py` runs in CI and fails the build in these cases:
-  - a workflow names the environment and is not `deploy.yml` or `destroy.yml`
-  - one of those two gains a trigger it should not have
+  - a workflow names the environment and is not `deploy.yml`, `destroy.yml` or `gateway-check.yml`
+  - one of those three gains a trigger it should not have
   - a job outside them calls an external reusable workflow
 - **Key authentication stays off.** CI has no role on the Azure OpenAI account, so only the owner
   could turn it back on.
