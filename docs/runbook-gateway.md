@@ -226,16 +226,15 @@ for o in gateway_identity_client_id gateway_app_client_id failover_openai_backen
 done
 ```
 
-### 1d. The portal step: custom metrics with dimensions
+### 1d. Custom metrics with dimensions (no portal step any more)
 
-Terraform cannot set this (spec §12 item 8, the plan's ruling). In the Azure portal, open
-`appi-releaselens`, then **Configure**, **Usage and estimated costs**, **Custom metrics
-(Preview)**, choose **With dimensions**, and save. Without it the `Caller` dimension of the
-usage metric is dropped, and B5 cannot work. The menu names are as the portal showed them when
-this was written, not checked; if they differ, search the resource's settings for "custom
-metrics".
+The bootstrap sets it: `azapi_update_resource.appi_custom_metrics` sets Application Insights'
+`CustomMetricsOptedInType` to `WithDimensions`, the property the portal's switch sets (seen on
+9 October 2026, when the switch was clicked by hand). Without it the usage metric's `Caller`
+dimension is dropped and B5 cannot work. The first plan after this change shows that one update
+to add; on an account where the switch was already clicked it changes nothing that Azure holds.
 
-**Where results go:** findings rows 2 and 3 (the quota, capacity 1), 8 (the portal step), 9 (the
+**Where results go:** findings rows 2 and 3 (the quota, capacity 1), 8 (custom metrics), 9 (the
 pre-authorisation), 25 (the 409) and 27 (the plan check).
 
 ## Step 2. Apply the gateway

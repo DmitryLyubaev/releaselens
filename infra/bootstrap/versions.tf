@@ -10,6 +10,12 @@ terraform {
       source  = "hashicorp/azuread"
       version = "~> 3.0"
     }
+    # For the one thing azurerm cannot set: Application Insights' custom metrics with dimensions
+    # (monitoring.tf).
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.13"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -52,4 +58,9 @@ provider "azurerm" {
       purge_soft_delete_on_destroy = true
     }
   }
+}
+
+# The same sign-in as azurerm: the owner's az session, in the same subscription.
+provider "azapi" {
+  subscription_id = var.subscription_id
 }

@@ -19,6 +19,10 @@ mock_provider "azuread" {
 # The two accounts get distinct IDs, so a deployment placed on the wrong account fails its
 # assertion instead of passing on a shared mock value. The mock default is the australiaeast
 # account's; the override gives the Southeast Asia account its own.
+# The Application Insights custom-metrics switch (monitoring.tf) is an azapi update; mocked here
+# like every other provider, so no test reaches Azure.
+mock_provider "azapi" {}
+
 mock_provider "azurerm" {
   override_during = plan
 
