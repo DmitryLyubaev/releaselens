@@ -341,9 +341,11 @@ must be `pass` (a 200 with no hostname in any body or header value). Then:
    content headers (spec §4.3).
 4. **Revision 2 reached Application Insights.** After a few minutes, in the portal's Logs for
    `appi-releaselens`, the `requests` table shows the revision 2 call, and the check in step 3,
-   point 8 shows its tokens. If the call is missing from `requests`, or is there but its tokens
-   are not in `customMetrics`, revision 2 did not inherit the diagnostic or its `metrics = true`.
-   **Then do not set `release_revision_2`** (point 9 is skipped). Revision 1 is the current
+   point 8 shows its tokens. Revision 2 inherits the diagnostic but not its `metrics = true` (seen
+   on 9 October 2026), so the stack sets revision 2's own switch
+   (`azapi_update_resource.diagnostic_metrics_rev2`), and its tokens are expected now. If the call
+   is missing from `requests`, or is there but its tokens are not in `customMetrics`, that switch
+   did not take. **Then do not set `release_revision_2`** (point 9 is skipped). Revision 1 is the current
    revision and serves the plain path, so run steps 4 to 6 on it, with the same settings. Record
    it in finding row 17: revision 2 did not inherit the diagnostic, and the session ran on
    revision 1.
@@ -524,13 +526,15 @@ Each run takes about 3 minutes (45 requests, one every 4 seconds) and writes
 
 **Test 2, up to B2.**
 
-B1 first, then B2, because B2 spends the day's budget. B1 sends until a request is refused:
+B1 first, then B2, because B2 spends the day's budget. B1 sends one burst of 40 requests at once,
+about 14,000 tokens against the 10,000-token bucket (one at a time, a token bucket lets them
+through: 60 did on 9 October 2026). The refused ones cost nothing:
 
 ```powershell
 .venv/Scripts/python.exe -m app.gateway minute-budget --tenant $env:GW_TENANT --base-url $env:GW_BASE --scope $env:GW_SCOPE
 ```
 
-It must print `B1: pass`: a 429 with `Retry-After` and no `x-ms-region`. That is the client's
+It must print `B1: pass`: at least one 429 in the burst, with `Retry-After` and no `x-ms-region`. That is the client's
 side, and its "no model call" half rests on `x-ms-region` being absent from a gateway refusal
 while present on an answer. **If step 3's smoke showed `x-ms-region` absent on normal answers too,
 that half proves nothing:** the harness's `B1: pass` then says only that a 429 with `Retry-After`

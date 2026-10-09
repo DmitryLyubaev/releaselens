@@ -449,3 +449,17 @@ and confirmed in review. They supersede the text they name; nothing else in the 
   `/openai;rev=2/v1/chat/completions`), for the same reason.
 
 The smoke test (§10, step 3) checks the last two live.
+
+**2026-10-10, on the owner's decision.** The three follow-ups from the live session of
+9 October 2026. They supersede the text they name.
+
+- **B1 sends one burst of 40 requests at once** (§7.3 said "sent until one is refused"). On the
+  v2 tiers `llm-token-limit` is a token bucket, and 60 requests sent one at a time all got through
+  on 9 October. 40 at once is about 14,000 tokens against the 10,000-token bucket. B1 passes when
+  the burst meets at least one 429 with `Retry-After` and no `x-ms-region`, and fails on any other
+  refusal. The 9 October result stays as recorded; a re-measurement is added as a dated amendment.
+- **The bootstrap sets custom metrics with dimensions** (§3.1, §12 item 8, and plan 1's ruling
+  that kept azapi out of the bootstrap): `azapi_update_resource` sets Application Insights'
+  `CustomMetricsOptedInType` to `WithDimensions`, the property the portal's switch sets.
+- **Revision 2 gets its own `metrics = true`** (§3.2), because it inherits the diagnostic but not
+  the switch. The release waits for it.
