@@ -47,14 +47,21 @@ def _is_placeholder_guid(guid: str) -> bool:
     return len(set(digits[:-2])) == 1
 
 
+def _bare(host: str) -> str:
+    """The name after its last template part or markup: `<account>.openai.azure.com` leaves
+    `.openai.azure.com`, and `<code>real.azure-api.net` or `{{real.azure-api.net` leaves the real
+    name, so only a template part inside the name lets it through, not a tag or a brace next to it."""
+    cut = max(host.rfind(">"), host.rfind("}"))
+    return host[cut + 1:].lstrip("<{$")
+
+
 def _is_allowed_host(host: str) -> bool:
-    lowered = host.lower()
+    lowered = _bare(host.lower())
     return (
         lowered in PUBLIC_ENDPOINTS
         or lowered in EXAMPLE_HOSTS
         or PLACEHOLDER_SUFFIX in lowered
-        or lowered.startswith(".")                 # a suffix on its own, such as `.openai.azure.com`
-        or any(mark in lowered for mark in "<>{}$")  # a template: `<account>.openai.azure.com`
+        or lowered.startswith(".")                 # a suffix on its own, or a template's remainder
     )
 
 
@@ -97,6 +104,10 @@ def test_no_public_document_holds_an_identifier(repo_root: Path) -> None:
     "vault kv-releaselens.vault.azure.net",
     "search srch-releaselens-8k3d2f.search.windows.net",
     "the first account: aoai-releaselens-q7x9k2.openai.azure.com",
+    # A real name next to markup or braces is still a real name: only a template part counts.
+    "<code>apim-releaselens-x7k2p9.azure-api.net</code>",
+    "<apim-releaselens-x7k2p9.azure-api.net>",
+    "{{apim-releaselens-x7k2p9.azure-api.net}}",
 ])
 def test_the_scan_catches_a_real_looking_identifier(text: str) -> None:
     assert identifiers_in(text), text
