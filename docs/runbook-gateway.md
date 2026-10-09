@@ -7,8 +7,8 @@ decides the result are in the [gateway spec](superpowers/specs/2026-10-06-apim-a
 [`infra/gateway/README.md`](../infra/gateway/README.md), whose "Live checks" section and destroy
 fallback this runbook points to and does not repeat.
 
-**Nothing in this runbook has been run.** Every step below is a plan. Results go in the findings
-table at the end, and in the report, after the session.
+**Run once, on 9 October 2026.** Every step below was run as written, apart from the deviations in
+the session notes after the findings table. The result is in the [report](gateway-report.md).
 
 ## Rules
 
@@ -137,8 +137,8 @@ Entra app registration, the monitoring and the state container. Cost: nothing by
 PowerShell, after `acctok` prints `True`. These change nothing:
 
 ```powershell
-az cognitiveservices usage list --location southeastasia --query "[?contains(name.value, 'gpt-4.1-mini')]" -o table
-az cognitiveservices usage list --location australiaeast --query "[?contains(name.value, 'gpt-4.1-mini')]" -o table
+az cognitiveservices usage list --location southeastasia --query "[?contains(name.value, '4.1-mini')]" -o table
+az cognitiveservices usage list --location australiaeast --query "[?contains(name.value, '4.1-mini')]" -o table
 az cognitiveservices model list --location southeastasia --query "[?model.name=='gpt-4.1-mini'].{version: model.version, skus: model.skus[].name}" -o json
 ```
 
@@ -163,9 +163,12 @@ goes into a variable and is not printed:
 ```bash
 cd /mnt/e/Projects/ReleaseLens/infra/bootstrap   # adjust to your clone
 export TF_DATA_DIR="$HOME/tfdata/bootstrap-live" TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
-acctok                                                    # must print True: the personal account, not the work one
-ACCOUNT=$(terraform output -raw tfstate_storage_account)
+# terraform output fails until init has fetched the new azuread provider, and acctok reads an
+# output, so the first time: check the account by name only, read the state account from az, init.
+[[ "$(az account show --query user.name -o tsv | tr A-Z a-z)" != *"${WORK_DOMAIN,,}"* && -n "$WORK_DOMAIN" ]] && echo True || echo False
+ACCOUNT=$(az storage account list --resource-group rg-releaselens-bootstrap --query "[?starts_with(name, 'strl')].name | [0]" -o tsv)
 terraform init -input=false -backend-config=storage_account_name="$ACCOUNT"
+acctok                                                    # must print True: the personal account, not the work one
 terraform plan -out=tfplan
 terraform show -no-color tfplan | grep -E 'kind |local_auth_enabled|local_authentication_enabled|app_role_assignment_required|version_upgrade_option|capacity|GlobalStandard|2025-04-14'
 ```
@@ -733,33 +736,41 @@ numbers are in the first column.
 
 | # | Item | Step | Finding |
 |---|---|---|---|
-| 1 | Spec §12.1: Basic v2 creates in about 5 to 10 minutes in australiaeast | 2 | |
-| 2 | Spec §12.2: Southeast Asia's Global Standard quota for gpt-4.1-mini `2025-04-14`, and whether quota is pooled across regions | 1a | |
-| 3 | Spec §12.3: capacity 1 is accepted for a Global Standard deployment | 1c | |
-| 4 | Spec §12.4: `x-ms-region` is present and names the region (the account, or the processing region); which signal the rule uses | 3 | |
-| 5 | Spec §12.5: within one request, the retry after the breaker trips goes to the secondary | 3, 5 | |
-| 6 | Spec §12.6: the Retry-After the tiny deployment sends is short, and how long the primary stays tripped | 5 | |
-| 7 | Spec §12.7: Cognitive Services OpenAI User is enough for the gateway identity | 3 | |
-| 8 | Spec §12.8: the logger ingests with Entra on Basic v2, and custom metrics with dimensions (the portal step) | 1d, 3 | |
-| 9 | Spec §12.9: the key `MicrosoftAzureCli` in `azuread_application_published_app_ids`; the first bootstrap plan resolves the pre-authorisation | 1b | |
-| 10 | Spec §12.10: a user's app-role assignment appears in the `roles` claim of the token `az` gets | 3 | |
-| 11 | Spec §12.11: the daily quota's window starts at 00:00 UTC, which fixes when B2 can run | 5 | |
-| 12 | Spec §12.12: `llm-token-limit` sends `Retry-After` in seconds | 5 | |
-| 13 | Spec §12.13: the purge on destroy succeeds as the owner | 8 | |
-| 14 | A filtered prompt's 400 passes through the gateway unchanged | 3 | |
-| 15 | No hostname in any body or header, including the gateway's own error bodies | 3, 6 | |
-| 16 | The backend URLs ending in `/openai/v1` work, and revision 2 answers at `/openai/v1;rev=2/chat/completions` | 3 | |
-| 17 | Revision 2 was created by the apply (it sets `version` and `version_set_id` beside `source_api_id`), and inherits the API diagnostic and its `metrics = true` (if not, `release_revision_2` stayed false and steps 4 to 6 ran on revision 1) | 2, 3 | |
-| 18 | `x-releaselens-backend` reflects the pool member that answered, and whether it agreed with `x-ms-region` on every smoke call (and, in the report, on how many measured responses it did not) | 3, 7 | |
-| 19 | The status and path of the 503 when both backends are tripped (whether it carries the label `secondary`) | 3, 5 | |
-| 20 | The status when a backend connection fails | 3, 5 | |
-| 21 | The metric's name `Total Tokens` and the dimension key `_MS.MetricNamespace`; whether refused calls (429, 403) emit token metrics | 3, 6 | |
-| 22 | B1's Application Insights check: the refused request has no backend dependency (and, if `x-ms-region` was absent on normal answers, that only this check decided B1) | 5 | |
-| 23 | B2: the 403 came after at least 45,000 recorded tokens (the figure), and the session did not cross 00:00 UTC | 5 | |
-| 24 | B5: the deploy identity's total is the `total_tokens` the workflow log printed, entered with `--client-total` | 6 | |
-| 25 | The first apply of the bootstrap returned a 409 on parallel deployment writes (and was re-run) | 1c | |
-| 26 | Every later plan showed an in-place update of both policies (harmless), and the destroy after the release did or did not stop on revision 2 | 2, 8 | |
-| 27 | The bootstrap plan check found `local_authentication_enabled = false` and `app_role_assignment_required = true`, which R8's grep misses | 1b | |
+| 1 | Spec §12.1: Basic v2 creates in about 5 to 10 minutes in australiaeast | 2 | Yes, and faster: API Management `BasicV2_1` was created in 1 min 29 s (the whole apply took 138 s), on 2026-10-09. |
+| 2 | Spec §12.2: Southeast Asia's Global Standard quota for gpt-4.1-mini `2025-04-14`, and whether quota is pooled across regions | 1a | Southeast Asia offers Global Standard gpt-4.1-mini `2025-04-14`, with a limit of 5,000 (thousand tokens a minute). The quota is pooled: both regions showed the same 300 in use, which is the existing chat deployment; the new deployments added 201. The quota line is spelled `gpt4.1-mini` (no hyphen after `gpt`), so 1a's query must match `4.1-mini`. |
+| 3 | Spec §12.3: capacity 1 is accepted for a Global Standard deployment | 1c | Yes: capacity 1 was accepted, and that deployment throttled as intended. |
+| 4 | Spec §12.4: `x-ms-region` is present and names the region (the account, or the processing region); which signal the rule uses | 3 | Present on every answer, and on every smoke and measured answer it named the region of the account that answered (`Australia East` for the primary, `Southeast Asia` for the secondary). Frozen: `x-ms-region` (commit 344ed07). |
+| 5 | Spec §12.5: within one request, the retry after the breaker trips goes to the secondary | 3, 5 | Yes. In the second smoke the tiny primary throttled and the same request was answered by Southeast Asia; in the after run 41 of 45 were. |
+| 6 | Spec §12.6: the Retry-After the tiny deployment sends is short, and how long the primary stays tripped | 5 | Mostly not usable: 41 of the before run's 45 calls ended in a 429 with no advice the client could wait within 3 s; 2 waited about 585 ms and were throttled again. Through the gateway the primary was tried again about every 16 requests (about 64 s), which matches the breaker's one-minute trip. |
+| 7 | Spec §12.7: Cognitive Services OpenAI User is enough for the gateway identity | 3 | Yes: every call through the gateway was answered under the gateway identity's Cognitive Services OpenAI User role. |
+| 8 | Spec §12.8: the logger ingests with Entra on Basic v2, and custom metrics with dimensions (the portal step) | 1d, 3 | Yes: requests, dependencies and token metrics arrived with local authentication off. Custom metrics with dimensions was set in the portal (Usage and estimated costs, Custom metrics (Preview), With dimensions), where the runbook said. It sets the component property `CustomMetricsOptedInType = WithDimensions`, so Terraform could set it instead. |
+| 9 | Spec §12.9: the key `MicrosoftAzureCli` in `azuread_application_published_app_ids`; the first bootstrap plan resolves the pre-authorisation | 1b | Yes: the first plan resolved `azuread_application_pre_authorized.azure_cli`, and the apply created it. |
+| 10 | Spec §12.10: a user's app-role assignment appears in the `roles` claim of the token `az` gets | 3 | Yes: the owner's `az` token was accepted, so its `roles` claim carried `Gateway.Invoke`. |
+| 11 | Spec §12.11: the daily quota's window starts at 00:00 UTC, which fixes when B2 can run | 5 | Not settled separately. The whole session ran within one UTC day (19:43 to 21:04 UTC), and the 403 came at 48,300 recorded tokens (about 49,700 counting step 3's calls), which fits a 50,000 window that started at 00:00 UTC. |
+| 12 | Spec §12.12: `llm-token-limit` sends `Retry-After` in seconds | 5 | Yes: all 16 of the gateway's own 429s carried `Retry-After` in whole seconds (1 or 2). |
+| 13 | Spec §12.13: the purge on destroy succeeds as the owner | 8 | Yes: after the destroy, `az apim deletedservice list` was empty. |
+| 14 | A filtered prompt's 400 passes through the gateway unchanged | 3 | Not provoked: skipped by the owner's choice. |
+| 15 | No hostname in any body or header, including the gateway's own error bodies | 3, 6 | None found: the three smoke calls passed the hostname check on every body and header, and the 401s were the gateway's fixed bodies. |
+| 16 | The backend URLs ending in `/openai/v1` work, and revision 2 answers at `/openai/v1;rev=2/chat/completions` | 3 | Yes: `/openai/v1/chat/completions` and `/openai/v1;rev=2/chat/completions` both answered 200. |
+| 17 | Revision 2 was created by the apply (it sets `version` and `version_set_id` beside `source_api_id`), and inherits the API diagnostic and its `metrics = true` (if not, `release_revision_2` stayed false and steps 4 to 6 ran on revision 1) | 2, 3 | Revision 2 was created on the first apply. It inherited the request logging but not `metrics = true`: its calls are in `requests`, and none emitted a token metric. So `release_revision_2` stayed false, and steps 4 to 6 ran on revision 1. |
+| 18 | `x-releaselens-backend` reflects the pool member that answered, and whether it agreed with `x-ms-region` on every smoke call (and, in the report, on how many measured responses it did not) | 3, 7 | Yes: the label named the pool member that answered, and it agreed with `x-ms-region` on all four smoke answers and on all 45 after-run responses (0 disagreed). |
+| 19 | The status and path of the 503 when both backends are tripped (whether it carries the label `secondary`) | 3, 5 | Not observed: the secondary never tripped. |
+| 20 | The status when a backend connection fails | 3, 5 | Not observed. |
+| 21 | The metric's name `Total Tokens` and the dimension key `_MS.MetricNamespace`; whether refused calls (429, 403) emit token metrics | 3, 6 | The name is `Total Tokens` (with `Prompt Tokens`, `Completion Tokens` and six zero-valued categories). There is no `_MS.MetricNamespace` dimension: the dimensions are `API ID`, `Deployment`, `Caller`, `Region` and the service fields. So B5's query was changed before the freeze to pick the metric by `API ID` (commit af07a75). Refused calls emit no token metric: the 139 samples in B5's window match the 139 gateway 200s. |
+| 22 | B1's Application Insights check: the refused request has no backend dependency (and, if `x-ms-region` was absent on normal answers, that only this check decided B1) | 5 | Yes: all 16 of the gateway's 429s, the 403 and both 401s had no backend dependency. B1 itself failed: its 60 requests, one at a time, never met a 429 (see the session notes). `x-ms-region` was present on normal answers, so the harness half was meaningful. |
+| 23 | B2: the 403 came after at least 45,000 recorded tokens (the figure), and the session did not cross 00:00 UTC | 5 | Yes: 48,300 tokens recorded before the 403 (36,750 earlier, 11,550 in B2), and the session did not cross 00:00 UTC. |
+| 24 | B5: the deploy identity's total is the `total_tokens` the workflow log printed, entered with `--client-total` | 6 | Yes: the workflow log printed `status=200 total_tokens=350`, and B5 used `--client-total deploy=350`. |
+| 25 | The first apply of the bootstrap returned a 409 on parallel deployment writes (and was re-run) | 1c | No: the first bootstrap apply finished with no 409. |
+| 26 | Every later plan showed an in-place update of both policies (harmless), and the destroy after the release did or did not stop on revision 2 | 2, 8 | No later plan was needed in the session (revision 2 was not released), and the destroy did not stop. |
+| 27 | The bootstrap plan check found `local_authentication_enabled = false` and `app_role_assignment_required = true`, which R8's grep misses | 1b | Yes: the plan showed `local_authentication_enabled = false` on both monitoring resources and `app_role_assignment_required = true`. |
+
+### Session notes, 9 October 2026
+
+- **The session.** The bootstrap was applied first, on 9 October. The gateway was applied at 19:43 UTC and destroyed at 21:04 UTC: about 1 h 21 min, so two started hours, about US$0.41. Tokens were well under US$0.10. The B5 window started at 20:26:10 UTC.
+- **Step 1b's order needs a fix.** `terraform output` in the bootstrap's live directory fails until `terraform init` has run with the new `azuread` provider ("Required plugins are not installed"). But 1b reads the state account's name from `terraform output` before running `init`, and `acctok` and `tfout` read outputs too. The session read the name with `az storage account list --resource-group rg-releaselens-bootstrap` instead, then ran `init`.
+- **B1's harness is too small for a token bucket.** On the v2 tiers, `llm-token-limit` is a token bucket: it starts full at 10,000 tokens and refills 10,000 a minute. B1 sends one request at a time and stops at 60. At about 350 tokens a request, that took about 80 s, inside the bucket's allowance of about 23,000 tokens. B1 is recorded as failed, as the rule says. The minute budget itself works: B2 met 16 of its 429s, with `Retry-After`, as soon as the bucket was empty. B1 needs a higher cap, or concurrent sends, before it can show the 429 by itself.
+- **Application Insights created a smart-detection alert rule of its own** ("Failure Anomalies") in the bootstrap's resource group. Terraform does not manage it.
+- **Records and the report** are in `eval/reports/` (git-ignored). The published report is [gateway-report.md](gateway-report.md).
 
 ## Maintenance: the check workflow's requirements
 

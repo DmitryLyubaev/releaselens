@@ -8,7 +8,9 @@ at the end. CI never applies it. The design and its reasons are in the
 [gateway spec](../../docs/superpowers/specs/2026-10-06-apim-ai-gateway-design.md), §3.2, §4
 and §8.
 
-**Not yet applied.** This page describes what the code configures.
+**Applied and destroyed once, on 9 October 2026,** for the measured session (the
+[report](../../docs/gateway-report.md)). It is not running. This page describes what the code
+configures.
 
 **It bills by the hour, called or not:** about US$0.21 an hour for Basic v2 (US$0.20548, Retail
 Prices API, 2026-10-06), so about US$5 a day if it is forgotten. **Destroy it at the end of every
