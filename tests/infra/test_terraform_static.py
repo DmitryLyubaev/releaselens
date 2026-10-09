@@ -323,3 +323,14 @@ def test_gateway_policies_are_saved_after_what_they_refer_to(repo_root):
     pool = _block(files["backends.tf"], 'resource "azapi_resource" "pool"')
     for backend in ["aoai-primary", "aoai-secondary"]:
         assert f'azapi_resource.backend["{backend}"].id' in pool, backend
+
+
+def test_revision_2_is_released_only_after_its_own_metrics_switch(repo_root):
+    # Revision 2 inherits the API diagnostic but not metrics = true (seen live on 2026-10-09). The
+    # release must wait for revision 2's own switch, or the current revision emits no token metric.
+    files = _stack(repo_root, "gateway")
+    update = _block(files["monitoring.tf"], 'resource "azapi_update_resource" "diagnostic_metrics_rev2"')
+    assert "azurerm_api_management_api.v1_rev2.id" in update
+    release = _block(files["api.tf"], 'resource "azurerm_api_management_api_release" "revision_2"')
+    depends = re.search(r"^  depends_on = \[(.*?)\]", release, re.MULTILINE | re.DOTALL)
+    assert depends and "azapi_update_resource.diagnostic_metrics_rev2" in depends.group(1)

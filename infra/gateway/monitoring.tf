@@ -63,3 +63,18 @@ resource "azapi_update_resource" "diagnostic_metrics" {
     }
   }
 }
+
+# Revision 2 is copied from revision 1 with the diagnostic, so its calls are logged, but the copy
+# does not carry metrics = true: on 2026-10-09 its calls emitted no token metric. This sets the
+# switch on revision 2's own diagnostic, by revision 2's own ID, so azurerm's revision handling
+# (which addresses the current revision) never comes into it. The release waits for it.
+resource "azapi_update_resource" "diagnostic_metrics_rev2" {
+  type        = "Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01"
+  resource_id = "${azurerm_api_management_api.v1_rev2.id}/diagnostics/applicationinsights"
+
+  body = {
+    properties = {
+      metrics = true
+    }
+  }
+}
