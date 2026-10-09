@@ -18,9 +18,10 @@ from .rule import advised_wait_ms
 
 # B1 sends one burst at once. The v2 tiers' llm-token-limit is a token bucket (capacity 10,000,
 # refilled 10,000 a minute), so one request at a time, at about 1.3 s each, is let through for a
-# long while (60 of them were, on 2026-10-09). 40 at once is about 14,000 tokens: more than a full
-# bucket. The refused ones cost nothing, because the policy estimates a prompt before forwarding.
-BURST_REQUESTS = 40
+# long while (60 of them were, on 2026-10-09). Only a request's prompt estimate (about 300 tokens)
+# is taken before it is forwarded, so 60 at once ask for about 18,000 against a full bucket of
+# 10,000. About 33 get through, whatever the burst's size; the refused ones cost nothing.
+BURST_REQUESTS = 60
 MAX_DAY_REQUESTS = 400       # about 330 tokens each against 50,000 a day: a 403 comes by the 152nd
 DAY_BUDGET_TOKENS = 50_000   # the policy's daily quota (spec §4.1)
 # A 403 counts as the daily budget's only once this much has been recorded: 90% of the quota, which
@@ -105,9 +106,11 @@ def minute_budget(send: Send, *, burst: int = BURST_REQUESTS,
                                         "present), not from the gateway's budget")
     if any(r.header("retry-after") is None for r in from_gateway):
         return CheckResult("B1", False, "a gateway 429 in the burst came without Retry-After")
+    from_model = len(refused) - len(from_gateway)
+    model_note = f"; {from_model} got a model's 429 (x-ms-region present)" if from_model else ""
     return CheckResult("B1", True, f"{len(from_gateway)} of {burst} requests sent at once were refused with a "
-                                   "429 that has Retry-After and no model call (the client side only: the "
-                                   "Application Insights request record was not read by the harness)")
+                                   f"429 that has Retry-After and no model call{model_note} (the client side "
+                                   "only: the Application Insights request record was not read by the harness)")
 
 
 def day_budget(send: Send, *, sleep: Callable[[float], None] = time.sleep, recorded_tokens: int = 0,

@@ -130,19 +130,19 @@ def test_a_budget_run_refuses_an_output_directory_git_would_see(env, capsys, com
 
 
 def test_minute_budget_sends_one_burst_and_writes_every_record_and_its_result(env, capsys):
-    env.respond = lambda request, n: _gateway_429(request, n) if n > 30 else httpx.Response(
+    env.respond = lambda request, n: _gateway_429(request, n) if n > 45 else httpx.Response(
         200, headers={"x-ms-region": "Australia East"}, json=USAGE)
 
     assert cli.main(_argv(env, "minute-budget", *BUDGET_ARGS)) == 0
 
-    assert len(env.requests) == 40 and _Tokens.created == [(SCOPE, TENANT)]
+    assert len(env.requests) == 60 and _Tokens.created == [(SCOPE, TENANT)]
     assert {str(r.url) for r in env.requests} == {BASE + "chat/completions"}
     assert {json.loads(r.content)["model"] for r in env.requests} == {"releaselens-chat"}
     assert _files(env) == ["budget-minute.jsonl", "check-b1.json"]
     records = _lines(env.out / "budget-minute.jsonl")
-    assert sorted(r["seq"] for r in records) == list(range(40))      # one line each, no seq twice
-    assert sorted(r["status"] for r in records) == [200] * 30 + [429] * 10
-    assert sum(r["prompt_tokens"] for r in records) == 300 * 30 and {r["caller"] for r in records} == {"owner"}
+    assert sorted(r["seq"] for r in records) == list(range(60))      # one line each, no seq twice
+    assert sorted(r["status"] for r in records) == [200] * 45 + [429] * 15
+    assert sum(r["prompt_tokens"] for r in records) == 300 * 45 and {r["caller"] for r in records} == {"owner"}
     assert json.loads((env.out / "check-b1.json").read_text(encoding="utf-8"))["passed"] is True
     assert "B1: pass" in capsys.readouterr().out
 
@@ -282,8 +282,8 @@ def test_a_crash_during_a_budget_run_keeps_the_records_already_paid_for(env):
 
     env.respond = answer
     assert cli.main(_argv(env, "minute-budget", *BUDGET_ARGS)) == 1       # a bug: reported, exit 1
-    # B1's burst is sent at once, so the other 39 still went out and were paid for: all are kept.
-    assert [r["status"] for r in _lines(env.out / "budget-minute.jsonl")] == [200] * 39
+    # B1's burst is sent at once, so the other 59 still went out and were paid for: all are kept.
+    assert [r["status"] for r in _lines(env.out / "budget-minute.jsonl")] == [200] * 59
     assert not (env.out / "check-b1.json").exists()
 
 

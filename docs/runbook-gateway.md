@@ -526,9 +526,13 @@ Each run takes about 3 minutes (45 requests, one every 4 seconds) and writes
 
 **Test 2, up to B2.**
 
-B1 first, then B2, because B2 spends the day's budget. B1 sends one burst of 40 requests at once,
-about 14,000 tokens against the 10,000-token bucket (one at a time, a token bucket lets them
-through: 60 did on 9 October 2026). The refused ones cost nothing:
+B1 first, then B2, because B2 spends the day's budget. B1 sends one burst of 60 requests at once.
+Only each prompt's estimate (about 300 tokens) is taken before forwarding, so that is about 18,000
+against the 10,000-token bucket (one at a time, a token bucket lets them through: 60 did on
+9 October 2026). About 33 get through whatever the burst's size; the refused ones cost nothing.
+The burst may also make the primary throttle, which trips its breaker for a minute, so a B2
+started within that minute may be answered by the secondary. That changes nothing B2 checks.
+B1's result says how many got a model's 429, if any:
 
 ```powershell
 .venv/Scripts/python.exe -m app.gateway minute-budget --tenant $env:GW_TENANT --base-url $env:GW_BASE --scope $env:GW_SCOPE
