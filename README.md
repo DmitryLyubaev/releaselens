@@ -602,8 +602,8 @@ deployment is proven; an end-to-end demo over real evidence is a separate exerci
 
 ## AI gateway
 
-**Built and tested offline; not yet applied or measured. The results come after the live
-session.** This section says what the code does, and nothing it has measured.
+**Measured once, on 9 October 2026.** The result is below; the gateway was destroyed at the end
+of the session.
 
 The AI gateway puts Azure API Management, Basic v2, in front of ReleaseLens's model calls, so a
 small test can show what a gateway adds over calling the model directly:
@@ -637,7 +637,27 @@ what has still to be verified. The stack's own page is
 fixed before any run, is in `eval/app/gateway/`, and "failover held", "did not hold" and
 "inconclusive" are all publishable results.
 
-**Results:** none yet. They will be added here after the session.
+**Results, 9 October 2026** ([full report](docs/gateway-report.md)):
+
+| Test | Result |
+|---|---|
+| **Failover** | **Held.** Straight to the throttled primary, 4 of 45 requests succeeded. Through the gateway, 45 of 45 did, 41 of them answered by Southeast Asia. |
+| **B1, the minute budget refuses** | **Failed as measured.** The harness's 60 requests, sent one at a time, never met a 429. API Management's token bucket allows that much at that pace. The budget does refuse: the next check met 16 of its 429s. |
+| **B2, the daily budget refuses** | Passed: a 403 after 48,300 recorded tokens. |
+| **B3, another caller is still served** | Passed: the deploy identity got a 200, 20 seconds after the owner's 403. |
+| **B4, no token or the wrong audience** | Passed: both got 401. |
+| **B5, usage per caller** | Passed: the metric matched the clients' totals exactly (48,300 and 350). |
+
+**Also confirmed:**
+- None of the gateway's refusals reached a model.
+- Refused calls emit no token metric.
+- Revision 2 emitted no token metric, so the measured runs used revision 1.
+
+**Latency** is descriptive only: p50 1.28 s and p95 1.70 s through the gateway. The other live checks are in the [runbook's findings](docs/runbook-gateway.md#findings).
+
+**What this does not show:**
+- **One session, one model and 45 requests.** It is not a load test.
+- **No processing-region claim.** "Southeast Asia" is the account that answered, not where the prompt was processed.
 
 ## What this is not
 
