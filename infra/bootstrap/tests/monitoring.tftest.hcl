@@ -17,6 +17,10 @@ mock_provider "azuread" {
   }
 }
 
+# The Application Insights custom-metrics switch (monitoring.tf) is an azapi update; mocked here
+# like every other provider, so no test reaches Azure.
+mock_provider "azapi" {}
+
 mock_provider "azurerm" {
   override_during = plan
 
@@ -157,5 +161,27 @@ run "monitoring_outputs" {
   assert {
     condition     = output.app_insights_connection_string == "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.com/"
     error_message = "app_insights_connection_string must be Application Insights' connection string."
+  }
+}
+
+# "Custom metrics with dimensions": without it the usage metric's Caller dimension is dropped and
+# B5 cannot work. azurerm has no argument for it; the portal sets this property (seen live on
+# 2026-10-09), so Terraform sets it the same way and the runbook loses its portal step.
+run "custom_metrics_with_dimensions" {
+  command = plan
+
+  assert {
+    condition     = azapi_update_resource.appi_custom_metrics.type == "Microsoft.Insights/components@2020-02-02"
+    error_message = "The update must target an Application Insights component."
+  }
+
+  assert {
+    condition     = azapi_update_resource.appi_custom_metrics.resource_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Insights/components/appi-releaselens"
+    error_message = "The update must target appi-releaselens."
+  }
+
+  assert {
+    condition     = azapi_update_resource.appi_custom_metrics.body.properties.CustomMetricsOptedInType == "WithDimensions"
+    error_message = "Custom metrics must be sent with dimensions."
   }
 }

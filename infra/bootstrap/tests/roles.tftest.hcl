@@ -20,6 +20,10 @@ mock_provider "azuread" {
 # principal or scope fails its assertion instead of passing on a shared mock value. The mock
 # defaults give the bootstrap group, the bootstrap container and the deploy identity their
 # values; the override_resource blocks give the other instance of each type its own.
+# The Application Insights custom-metrics switch (monitoring.tf) is an azapi update; mocked here
+# like every other provider, so no test reaches Azure.
+mock_provider "azapi" {}
+
 mock_provider "azurerm" {
   override_during = plan
 

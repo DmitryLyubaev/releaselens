@@ -21,6 +21,10 @@ mock_provider "azuread" {
   }
 }
 
+# The Application Insights custom-metrics switch (monitoring.tf) is an azapi update; mocked here
+# like every other provider, so no test reaches Azure.
+mock_provider "azapi" {}
+
 mock_provider "azurerm" {
   override_during = plan
 

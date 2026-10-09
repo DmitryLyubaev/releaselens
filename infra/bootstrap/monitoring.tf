@@ -28,3 +28,18 @@ resource "azurerm_application_insights" "gateway" {
   local_authentication_enabled = false
   tags                         = local.tags
 }
+
+# Custom metrics with dimensions. Without it Application Insights drops the usage metric's Caller
+# dimension, and the gateway's per-caller check (B5) cannot work. azurerm has no argument for it.
+# The portal's switch (Usage and estimated costs, Custom metrics) sets this one property, seen
+# live on 2026-10-09, so Terraform sets it the same way and the runbook needs no portal step.
+resource "azapi_update_resource" "appi_custom_metrics" {
+  type        = "Microsoft.Insights/components@2020-02-02"
+  resource_id = azurerm_application_insights.gateway.id
+
+  body = {
+    properties = {
+      CustomMetricsOptedInType = "WithDimensions"
+    }
+  }
+}
