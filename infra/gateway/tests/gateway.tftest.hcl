@@ -340,6 +340,28 @@ run "monitoring" {
   }
 }
 
+# Revision 2 inherits the API's diagnostic when it is created, but not its metrics switch (seen
+# live on 2026-10-09: its calls were logged and emitted no token metric). So revision 2's own
+# diagnostic gets metrics = true, addressed by revision 2's own ID.
+run "revision_2_metrics" {
+  command = plan
+
+  assert {
+    condition     = azapi_update_resource.diagnostic_metrics_rev2.type == "Microsoft.ApiManagement/service/apis/diagnostics@2024-05-01"
+    error_message = "Revision 2's metrics update must target an API diagnostic."
+  }
+
+  assert {
+    condition     = azapi_update_resource.diagnostic_metrics_rev2.resource_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3/apis/azure-openai-v1;rev=2/diagnostics/applicationinsights"
+    error_message = "Revision 2's metrics update must target revision 2's own Application Insights diagnostic."
+  }
+
+  assert {
+    condition     = azapi_update_resource.diagnostic_metrics_rev2.body.properties.metrics == true
+    error_message = "Revision 2's diagnostic must have metrics = true."
+  }
+}
+
 run "outputs" {
   command = plan
 

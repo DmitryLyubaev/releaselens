@@ -132,7 +132,7 @@ resource "azurerm_api_management_api_release" "revision_2" {
   api_id = azurerm_api_management_api.v1_rev2.id
   notes  = "Revision 2 passed the smoke test."
 
-  # Never make a revision current before its policy is in place: without it, the revision has no
-  # token check.
-  depends_on = [azapi_resource.policy_v1_rev2]
+  # Never make a revision current before its policy and its metrics switch are in place: without
+  # the policy it has no token check, and without the switch it emits no token metric.
+  depends_on = [azapi_resource.policy_v1_rev2, azapi_update_resource.diagnostic_metrics_rev2]
 }
