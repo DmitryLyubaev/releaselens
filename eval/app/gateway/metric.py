@@ -18,7 +18,9 @@ from .checks import CheckResult
 
 SCOPE = "https://api.applicationinsights.io/.default"
 QUERY_URL = "https://api.applicationinsights.io/v1/apps/{app_id}/query"
-NAMESPACE = "releaselens-gateway"
+# customMetrics rows carry no metric namespace (seen live on 2026-10-09), so the gateway's token
+# metric is picked out by its name and the API it was emitted for.
+API_ID = "azure-openai-v1"
 METRIC_NAME = "Total Tokens"
 LABELS_VARIABLE = "GATEWAY_CALLER_LABELS"
 OTHER = "other"
@@ -88,7 +90,7 @@ def _kql(since: str) -> str:
         "customMetrics\n"
         f"| where timestamp >= datetime({since})\n"
         f'| where name == "{METRIC_NAME}"\n'
-        f'| where tostring(customDimensions["_MS.MetricNamespace"]) == "{NAMESPACE}"\n'
+        f'| where tostring(customDimensions["API ID"]) == "{API_ID}"\n'
         '| extend Caller = tostring(customDimensions["Caller"])\n'
         "| summarize total = sum(valueSum) by Caller"
     )
