@@ -1,5 +1,6 @@
 """B1, B2, B4 and the smoke check, on fixtures: no network, no real sleep."""
 
+import inspect
 import threading
 
 from app.gateway import checks
@@ -46,34 +47,38 @@ def _in_order(send, n):
 
 
 def test_b1_passes_when_the_burst_meets_a_429_with_retry_after_and_no_model_call():
-    send = _Feed([_ok()] * 30 + [_gateway_429()] * 10)
+    send = _Feed([_ok()] * 33 + [_gateway_429()] * 25 + [Reply(429, {"Retry-After": "5", **MODEL})] * 2)
     result = minute_budget(send, run_burst=_in_order)
     assert (result.check, result.passed) == ("B1", True)
-    assert send.sent == checks.BURST_REQUESTS == 40
-    assert "10 of 40" in result.detail
+    assert send.sent == checks.BURST_REQUESTS == 60
+    assert "25 of 60" in result.detail and "2 got a model's 429" in result.detail
 
 
 def test_b1_fails_when_no_request_in_the_burst_is_refused():
-    send = _Feed([_ok()] * 40)
+    send = _Feed([_ok()] * 60)
     result = minute_budget(send, run_burst=_in_order)
-    assert result.passed is False and "none of the 40" in result.detail
+    assert result.passed is False and "none of the 60" in result.detail
 
 
 def test_b1_fails_when_the_only_429s_came_from_a_model():
-    result = minute_budget(_Feed([_ok()] * 39 + [Reply(429, {"Retry-After": "5", **MODEL})]), run_burst=_in_order)
+    result = minute_budget(_Feed([_ok()] * 59 + [Reply(429, {"Retry-After": "5", **MODEL})]), run_burst=_in_order)
     assert result.passed is False and "model" in result.detail
 
 
 def test_b1_fails_when_a_gateway_429_has_no_retry_after():
-    result = minute_budget(_Feed([_ok()] * 38 + [_gateway_429(), _gateway_429(retry_after=None)]),
+    result = minute_budget(_Feed([_ok()] * 58 + [_gateway_429(), _gateway_429(retry_after=None)]),
                            run_burst=_in_order)
     assert result.passed is False and "Retry-After" in result.detail
 
 
 def test_b1_fails_on_any_other_refusal_in_the_burst():
     for status in (401, 403, 503, None):
-        result = minute_budget(_Feed([_ok()] * 20 + [_gateway_429()] * 19 + [Reply(status)]), run_burst=_in_order)
+        result = minute_budget(_Feed([_ok()] * 30 + [_gateway_429()] * 29 + [Reply(status)]), run_burst=_in_order)
         assert result.passed is False, status
+
+
+def test_b1_sends_its_burst_concurrently_by_default():
+    assert inspect.signature(minute_budget).parameters["run_burst"].default is checks.concurrently
 
 
 def test_the_burst_is_sent_concurrently():

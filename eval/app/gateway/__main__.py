@@ -230,7 +230,7 @@ def _budget(args, command: str, check_file: str, run_check: Callable[[checks.Sen
 
 
 def run_minute_budget(args) -> int:
-    """B1: requests through the gateway until the minute budget refuses one."""
+    """B1: one burst of requests at once through the gateway, which the minute budget must refuse in part."""
     return _budget(args, "minute-budget", CHECK_FILES["B1"], checks.minute_budget)
 
 
@@ -403,7 +403,7 @@ def _parser() -> argparse.ArgumentParser:
         return sub
 
     for name, handler, help in (
-        ("minute-budget", run_minute_budget, "B1: requests until the gateway's minute budget refuses one"),
+        ("minute-budget", run_minute_budget, "B1: one burst at once, which the gateway's minute budget must refuse in part"),
         ("day-budget", run_day_budget, "B2: requests until the gateway's daily budget answers 403"),
     ):
         sub = checked(name, handler, help)
