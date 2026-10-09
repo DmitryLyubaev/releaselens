@@ -26,10 +26,11 @@ def _git(stdout: str = "", returncode: int = 0):
     return run
 
 
-def test_the_committed_file_is_not_frozen_yet():
-    assert json.loads(freeze.FREEZE_FILE.read_text(encoding="utf-8")) == {"region_signal": None}
-    with pytest.raises(freeze.FreezeError, match="freeze.json"):
-        freeze.load()
+def test_the_committed_file_holds_the_signal_the_session_froze():
+    # Frozen on 2026-10-09 (commit 344ed07) before the first measured request, and cited by the
+    # published report. Nothing about the rule changes after that, so a later edit fails here.
+    assert json.loads(freeze.FREEZE_FILE.read_text(encoding="utf-8")) == {"region_signal": "x-ms-region"}
+    assert freeze.load().region_signal == "x-ms-region"
 
 
 @pytest.mark.parametrize("signal", ["x-ms-region", "x-releaselens-backend"])
