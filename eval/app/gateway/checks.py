@@ -11,11 +11,16 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 from .rule import advised_wait_ms
 
-MAX_MINUTE_REQUESTS = 60     # about 330 tokens each against 10,000 a minute: a 429 comes by the 31st
+# B1 sends one burst at once. The v2 tiers' llm-token-limit is a token bucket (capacity 10,000,
+# refilled 10,000 a minute), so one request at a time, at about 1.3 s each, is let through for a
+# long while (60 of them were, on 2026-10-09). 40 at once is about 14,000 tokens: more than a full
+# bucket. The refused ones cost nothing, because the policy estimates a prompt before forwarding.
+BURST_REQUESTS = 40
 MAX_DAY_REQUESTS = 400       # about 330 tokens each against 50,000 a day: a 403 comes by the 152nd
 DAY_BUDGET_TOKENS = 50_000   # the policy's daily quota (spec §4.1)
 # A 403 counts as the daily budget's only once this much has been recorded: 90% of the quota, which
@@ -69,23 +74,40 @@ def _describe(reply: Reply) -> str:
     return "no response" if reply.status is None else f"status {reply.status}"
 
 
-def minute_budget(send: Send, *, max_requests: int = MAX_MINUTE_REQUESTS) -> CheckResult:
-    """B1: send until one is refused; pass on a 429 with Retry-After and no model call."""
-    for sent in range(1, max_requests + 1):
-        reply = send()
-        if reply.status == 200:
-            continue
-        if reply.status != 429:
-            return CheckResult("B1", False, f"request {sent} got {_describe(reply)}, not a 429")
-        if reply.model_called:
-            return CheckResult("B1", False, f"request {sent} got a 429 from a model (x-ms-region present), "
-                                            "not from the gateway's budget")
-        if reply.header("retry-after") is None:
-            return CheckResult("B1", False, f"request {sent} got a 429 without Retry-After")
-        return CheckResult("B1", True, f"request {sent} was refused with a 429 that has Retry-After and no model "
-                                       "call (the client side only: the Application Insights request record was "
-                                       "not read by the harness)")
-    return CheckResult("B1", False, f"{max_requests} requests were sent and none was refused with a 429")
+def concurrently(send: Send, n: int) -> list[Reply]:
+    """`n` sends at once, each on its own thread; the replies in the order they were started.
+
+    Every send finishes before anything is raised, so a crash in one does not cut the others short:
+    they were sent, and their records (which the caller keeps) are paid for.
+    """
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        futures = [pool.submit(send) for _ in range(n)]
+        wait(futures)
+    for future in futures:
+        if future.exception() is not None:
+            raise future.exception()
+    return [future.result() for future in futures]
+
+
+def minute_budget(send: Send, *, burst: int = BURST_REQUESTS,
+                  run_burst: Callable[[Send, int], list[Reply]] = concurrently) -> CheckResult:
+    """B1: one burst at once; pass when it meets a 429 with Retry-After and no model call."""
+    replies = run_burst(send, burst)
+    for reply in replies:
+        if reply.status not in (200, 429):
+            return CheckResult("B1", False, f"a request in the burst got {_describe(reply)}, not a 200 or a 429")
+    refused = [r for r in replies if r.status == 429]
+    if not refused:
+        return CheckResult("B1", False, f"none of the {burst} requests sent at once was refused with a 429")
+    from_gateway = [r for r in refused if not r.model_called]
+    if not from_gateway:
+        return CheckResult("B1", False, f"{len(refused)} of {burst} got a 429, all from a model (x-ms-region "
+                                        "present), not from the gateway's budget")
+    if any(r.header("retry-after") is None for r in from_gateway):
+        return CheckResult("B1", False, "a gateway 429 in the burst came without Retry-After")
+    return CheckResult("B1", True, f"{len(from_gateway)} of {burst} requests sent at once were refused with a "
+                                   "429 that has Retry-After and no model call (the client side only: the "
+                                   "Application Insights request record was not read by the harness)")
 
 
 def day_budget(send: Send, *, sleep: Callable[[float], None] = time.sleep, recorded_tokens: int = 0,

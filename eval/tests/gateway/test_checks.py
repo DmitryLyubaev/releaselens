@@ -1,5 +1,8 @@
 """B1, B2, B4 and the smoke check, on fixtures: no network, no real sleep."""
 
+import threading
+
+from app.gateway import checks
 from app.gateway.checks import Reply, access, day_budget, minute_budget, rev2_url, smoke
 
 MODEL = {"x-ms-region": "Australia East"}
@@ -34,35 +37,55 @@ class _Sleeps:
 
 
 # --- B1 ---------------------------------------------------------------------------------------
+# B1 sends one burst at once (the v2 tiers' token bucket lets a one-at-a-time trickle through: seen
+# live on 2026-10-09). The tests run the burst in order through `_in_order`, so they are
+# deterministic; `test_the_burst_is_sent_concurrently` shows the default really is concurrent.
 
-def test_b1_passes_on_a_429_with_retry_after_and_no_model_call():
-    send = _Feed([_ok(), _ok(), _gateway_429()])
-    result = minute_budget(send)
+def _in_order(send, n):
+    return [send() for _ in range(n)]
+
+
+def test_b1_passes_when_the_burst_meets_a_429_with_retry_after_and_no_model_call():
+    send = _Feed([_ok()] * 30 + [_gateway_429()] * 10)
+    result = minute_budget(send, run_burst=_in_order)
     assert (result.check, result.passed) == ("B1", True)
-    assert send.sent == 3
+    assert send.sent == checks.BURST_REQUESTS == 40
+    assert "10 of 40" in result.detail
 
 
-def test_b1_fails_when_the_429_came_from_a_model():
-    result = minute_budget(_Feed([_ok(), Reply(429, {"Retry-After": "5", **MODEL})]))
+def test_b1_fails_when_no_request_in_the_burst_is_refused():
+    send = _Feed([_ok()] * 40)
+    result = minute_budget(send, run_burst=_in_order)
+    assert result.passed is False and "none of the 40" in result.detail
+
+
+def test_b1_fails_when_the_only_429s_came_from_a_model():
+    result = minute_budget(_Feed([_ok()] * 39 + [Reply(429, {"Retry-After": "5", **MODEL})]), run_burst=_in_order)
     assert result.passed is False and "model" in result.detail
 
 
-def test_b1_fails_when_the_429_has_no_retry_after():
-    result = minute_budget(_Feed([_ok(), _gateway_429(retry_after=None)]))
+def test_b1_fails_when_a_gateway_429_has_no_retry_after():
+    result = minute_budget(_Feed([_ok()] * 38 + [_gateway_429(), _gateway_429(retry_after=None)]),
+                           run_burst=_in_order)
     assert result.passed is False and "Retry-After" in result.detail
 
 
-def test_b1_fails_when_nothing_is_refused_within_the_cap():
-    send = _Feed([_ok() for _ in range(5)])
-    result = minute_budget(send, max_requests=5)
-    assert result.passed is False and send.sent == 5
-
-
-def test_b1_stops_and_fails_on_any_other_refusal():
+def test_b1_fails_on_any_other_refusal_in_the_burst():
     for status in (401, 403, 503, None):
-        send = _Feed([_ok(), Reply(status), _ok()])
-        result = minute_budget(send)
-        assert result.passed is False and send.sent == 2, status
+        result = minute_budget(_Feed([_ok()] * 20 + [_gateway_429()] * 19 + [Reply(status)]), run_burst=_in_order)
+        assert result.passed is False, status
+
+
+def test_the_burst_is_sent_concurrently():
+    # Every send waits at a barrier for all the others: one at a time, the first would time out.
+    barrier = threading.Barrier(checks.BURST_REQUESTS, timeout=10)
+
+    def send():
+        barrier.wait()
+        return _gateway_429()
+
+    replies = checks.concurrently(send, checks.BURST_REQUESTS)
+    assert len(replies) == checks.BURST_REQUESTS and all(r.status == 429 for r in replies)
 
 
 # --- B2 ---------------------------------------------------------------------------------------

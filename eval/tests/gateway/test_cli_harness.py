@@ -7,6 +7,7 @@ fake, sleep is a fake, git is a stub, and truststore is not injected.
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -42,6 +43,7 @@ class _Tokens:
 class _Env:
     def __init__(self, tmp_path: Path) -> None:
         self.requests: list[httpx.Request] = []
+        self.lock = threading.Lock()
         self.sleeps: list[float] = []
         self.porcelain = ""
         self.ignored = True
@@ -60,8 +62,10 @@ class _Env:
         return subprocess.CompletedProcess(command, 0 if self.ignored else 1, "", "")
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        return self.respond(request, len(self.requests))
+        with self.lock:     # B1's burst calls this from many threads at once
+            self.requests.append(request)
+            n = len(self.requests)
+        return self.respond(request, n)
 
 
 @pytest.fixture
@@ -125,20 +129,20 @@ def test_a_budget_run_refuses_an_output_directory_git_would_see(env, capsys, com
     assert env.requests == [] and not inside.exists()
 
 
-def test_minute_budget_sends_until_the_429_and_writes_its_records_and_result(env, capsys):
-    env.respond = lambda request, n: _gateway_429(request, n) if n == 4 else httpx.Response(
+def test_minute_budget_sends_one_burst_and_writes_every_record_and_its_result(env, capsys):
+    env.respond = lambda request, n: _gateway_429(request, n) if n > 30 else httpx.Response(
         200, headers={"x-ms-region": "Australia East"}, json=USAGE)
 
     assert cli.main(_argv(env, "minute-budget", *BUDGET_ARGS)) == 0
 
-    assert len(env.requests) == 4 and _Tokens.created == [(SCOPE, TENANT)]
+    assert len(env.requests) == 40 and _Tokens.created == [(SCOPE, TENANT)]
     assert {str(r.url) for r in env.requests} == {BASE + "chat/completions"}
     assert {json.loads(r.content)["model"] for r in env.requests} == {"releaselens-chat"}
     assert _files(env) == ["budget-minute.jsonl", "check-b1.json"]
     records = _lines(env.out / "budget-minute.jsonl")
-    assert [r["status"] for r in records] == [200, 200, 200, 429]
-    assert [r["prompt_tokens"] for r in records] == [300, 300, 300, 0] and {r["caller"] for r in records} == {"owner"}
-    assert records[-1]["model_called"] is False
+    assert sorted(r["seq"] for r in records) == list(range(40))      # one line each, no seq twice
+    assert sorted(r["status"] for r in records) == [200] * 30 + [429] * 10
+    assert sum(r["prompt_tokens"] for r in records) == 300 * 30 and {r["caller"] for r in records} == {"owner"}
     assert json.loads((env.out / "check-b1.json").read_text(encoding="utf-8"))["passed"] is True
     assert "B1: pass" in capsys.readouterr().out
 
@@ -278,7 +282,8 @@ def test_a_crash_during_a_budget_run_keeps_the_records_already_paid_for(env):
 
     env.respond = answer
     assert cli.main(_argv(env, "minute-budget", *BUDGET_ARGS)) == 1       # a bug: reported, exit 1
-    assert [r["status"] for r in _lines(env.out / "budget-minute.jsonl")] == [200, 200]
+    # B1's burst is sent at once, so the other 39 still went out and were paid for: all are kept.
+    assert [r["status"] for r in _lines(env.out / "budget-minute.jsonl")] == [200] * 39
     assert not (env.out / "check-b1.json").exists()
 
 

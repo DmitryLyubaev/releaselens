@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections import Counter
@@ -171,6 +172,8 @@ def _announce(result: checks.CheckResult) -> None:
 def _sender(http: httpx.Client, url: str, token: Callable[[], str] | None, deployment: str,
             log: list[dict] | None = None) -> checks.Send:
     """One call as the owner (or with no token): the reply, and one line in `log` that holds numbers only."""
+    lock = threading.Lock()     # B1's burst sends from many threads at once: one line, one seq, each
+
     def send() -> checks.Reply:
         headers = {} if token is None else {"Authorization": f"Bearer {token()}"}
         try:
@@ -181,9 +184,10 @@ def _sender(http: httpx.Client, url: str, token: Callable[[], str] | None, deplo
             prompt, completion = client._usage(response)
             reply = checks.Reply(response.status_code, dict(response.headers), response.text, prompt, completion)
         if log is not None:
-            log.append({"seq": len(log), "status": reply.status, "model_called": reply.model_called,
-                        "retry_after": reply.header("retry-after"), "prompt_tokens": reply.prompt_tokens,
-                        "completion_tokens": reply.completion_tokens, "caller": CALLER})
+            with lock:
+                log.append({"seq": len(log), "status": reply.status, "model_called": reply.model_called,
+                            "retry_after": reply.header("retry-after"), "prompt_tokens": reply.prompt_tokens,
+                            "completion_tokens": reply.completion_tokens, "caller": CALLER})
         return reply
 
     return send
@@ -213,6 +217,7 @@ def _budget(args, command: str, check_file: str, run_check: Callable[[checks.Sen
                           "overwritten; rename it in place, keeping the start of its name, so the tokens "
                           "it records are still counted")
     tokens = TokenSource(args.scope, args.tenant)
+    tokens.token()      # one token before any send: a burst's threads would otherwise each start `az`
     log: list[dict] = []
     try:
         with _sync_client() as http:
