@@ -94,12 +94,17 @@ def test_query_makes_one_post_with_the_token_and_returns_rows_as_dicts():
     assert rows == [{"Caller": OWNER, "total": 1234.0}, {"Caller": DEPLOY, "total": 321.0}]
 
 
-def test_the_kql_names_the_namespace_the_window_and_groups_by_caller():
+def test_the_kql_names_the_metric_the_api_the_window_and_groups_by_caller():
     seen: list[httpx.Request] = []
     metric.query(APP, TOKEN, SINCE, _http(seen, TABLE))
     body = json.loads(seen[0].content)
     assert "customMetrics" in body["query"]
-    assert "releaselens-gateway" in body["query"]
+    assert 'name == "Total Tokens"' in body["query"]
+    # Application Insights' customMetrics rows carry no metric namespace (seen live on 2026-10-09:
+    # the dimensions are API ID, Deployment, Caller, Region and the service fields), so the
+    # gateway's metrics are picked out by the API they were emitted for.
+    assert 'tostring(customDimensions["API ID"]) == "azure-openai-v1"' in body["query"]
+    assert "_MS.MetricNamespace" not in body["query"]
     assert f"datetime({SINCE})" in body["query"]
     assert 'customDimensions["Caller"]' in body["query"] and "by Caller" in body["query"]
     assert body["timespan"].startswith(SINCE)
