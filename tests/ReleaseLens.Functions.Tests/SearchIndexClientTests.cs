@@ -157,6 +157,31 @@ public class SearchIndexClientTests
     }
 
     [Fact]
+    public async Task KeysForArtefact_NextPagesKeepTheOriginalFilterAndSelect_TakingOnlyTheSkipFromTheReply()
+    {
+        // The reply's next-page parameters drop the filter and name another select: were they sent
+        // as given, the page would hold every artefact's keys, and the caller deletes what it reads.
+        var stub = new StubHttpHandler()
+            .EnqueueJson(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["value"] = new[] { new { chunk_id = "a-0" } },
+                ["@odata.nextLink"] = PostNextLink,
+                ["@search.nextPageParameters"] = new { search = "*", select = "chunk_id,artefact,content", skip = 50 },
+            }))
+            .EnqueueJson(Page(["a-1"], nextSkip: null));
+
+        var keys = await Client(stub).KeysForArtefactAsync("issue:it's", Ct);
+
+        Assert.Equal(["a-0", "a-1"], keys);
+        Assert.Equal(2, stub.Requests.Count);
+        var second = JsonNode.Parse(stub.Requests[1].Body)!;
+        Assert.Equal("artefact eq 'issue:it''s'", (string?)second["filter"]);
+        Assert.Equal("chunk_id", (string?)second["select"]);
+        Assert.Equal("*", (string?)second["search"]);
+        Assert.Equal(50, (int?)second["skip"]);
+    }
+
+    [Fact]
     public async Task KeysForArtefact_SendsNoTopSoTheServiceAlwaysSaysWhereTheNextPageIs()
     {
         var stub = new StubHttpHandler().EnqueueJson(Page(["a-0"], nextSkip: null));
