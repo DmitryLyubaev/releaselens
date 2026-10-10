@@ -275,7 +275,8 @@ What the harness refuses, before any token is asked for or any file is written:
   interrupted watch leaves that upload unjudged:** upload it again under a new name, with
   `--new-session` (the old record is kept as `functions-session-<id>.json`), and let `upload`
   finish;
-- a poison queue holding more than 32 messages, which one peek cannot see past;
+- a poison queue holding more than 32 messages, which one peek cannot see past (I4 checks at every
+  peek, so a queue that starts near 32 is refused once I4's own message lands: step 6a);
 - a T4 whose metric window would hold T1's tool calls. T4 itself waits, before its handshake,
   until 15 seconds past the next whole minute (16 to 75 seconds), so that the whole minute its
   burst lands in holds only its own calls;
@@ -588,8 +589,22 @@ terraform apply tfplan
      tree: `Set-Location (git rev-parse --show-toplevel)`, `git add infra/functions/mcp_api.tf
      infra/functions/tests/functions.tftest.hcl`, then `git commit -m "fix(infra): the MCP API's
      diagnostic without the largeLanguageModel block the service refused"`.
-  5. Back in the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan, check and apply
-     again as above.
+  5. Back in the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan again with
+     `terraform plan -out=tfplan`. The failed apply created everything before the diagnostic, so
+     this plan will **not** show `Plan: 18 to add`: it adds only what the failed apply left undone.
+     Read the whole plan and check that it adds only the diagnostic (or the resource the error
+     named, and anything that depends on it), with nothing changed or destroyed. This prints the
+     `Plan:` line and one `# ... will be created` (or `updated`, `destroyed`) line per resource:
+
+     ```bash
+     terraform show -no-color tfplan | grep -E '^Plan:|^  # '
+     ```
+
+     The one change allowed is `azapi_resource.mcp_policy` updated in place, if it appears: API
+     Management may hand the policy's XML back normalised, and the update writes the same file
+     again (the stack README's [Live checks](../infra/functions/README.md#live-checks)). Anything
+     else changed, or anything destroyed: stop, do not apply, and take the plan to the controller.
+     Only then `terraform apply tfplan`.
 
   The azapi bodies were checked only against mocks, so the first apply is where any other body
   error shows: record its text, without any identifier, and take it to the controller.
@@ -715,13 +730,70 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
 ```
 
 1. **`initialize` answers `200 releaselens-search`.** That one line shows the MCP pass-through
-   path (the API's service URL ending `/runtime/webhooks` plus the endpoint `/mcp` reaches the
-   app's `/runtime/webhooks/mcp`), App Service authentication accepting the gateway identity's v2
-   token (audience the client ID), and the host honouring
+   path (by default the API's service URL ending `/runtime/webhooks` plus the endpoint `/mcp`
+   reaches the app's `/runtime/webhooks/mcp`), App Service authentication accepting the gateway
+   identity's v2 token (audience the client ID), and the host honouring
    `extensions.mcp.system.webhookAuthorizationLevel = "Anonymous"` with no `mcp_extension` key.
-   - A **404** is the path split: change it as the stack README's
-     [Live checks](../infra/functions/README.md#live-checks) says, commit, apply again, and repeat
-     this step.
+   - A **404** is most likely the path split. Microsoft's "expose an existing MCP server"
+     walkthrough takes the server's full endpoint as the base URL, so the gateway may forward the
+     call to the service URL alone, the app's `/runtime/webhooks`, which answers 404. Neither shape
+     below touches `tool_mcp_url`, the gateway-side URL that the harness and Claude Code call
+     (`<gateway host>/releaselens-search/mcp`, built from the API's path): `$env:FN_MCP_URL` stays
+     as it is. First record whether the 404 is the gateway's own or the app's, from Application
+     Insights as for a 401 below. Then:
+     1. **Shape A: the service URL is the app's whole MCP endpoint.** In
+        `infra/functions/mcp_api.tf`, in `azapi_resource.mcp_api`, change
+        `serviceUrl           = "https://${local.tool_host}/runtime/webhooks"` to
+        `serviceUrl           = "https://${local.tool_host}/runtime/webhooks/mcp"`. Leave the
+        endpoint (`name = "message"`, `uriTemplate = "/mcp"`) as it is: it is the path callers use
+        after the API's path, as in the walkthrough's client URL `<path>/mcp`.
+     2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_api"`'s third assert, line
+        383, change the end of
+        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks"`
+        to `.../runtime/webhooks/mcp"`. Line 387 (`uriTemplate == "/mcp"`) stays.
+     3. Run the stack's tests in WSL, from `infra/functions`, with their own data directory, as in
+        step 4a's fallback:
+
+        ```bash
+        TF_DATA_DIR="$HOME/tfdata/test-functions" terraform init -backend=false -input=false
+        TF_DATA_DIR="$HOME/tfdata/test-functions" terraform test
+        terraform fmt -check mcp_api.tf tests/functions.tftest.hcl
+        ```
+
+        The test must end `Success! 9 passed, 0 failed.` and `fmt` must print nothing.
+     4. Commit both files in PowerShell, because the measured commands refuse a dirty tree:
+        `Set-Location (git rev-parse --show-toplevel)`, `git add infra/functions/mcp_api.tf
+        infra/functions/tests/functions.tftest.hcl`, then `git commit -m "fix(infra): the MCP API's
+        service URL is the tool app's whole MCP endpoint"`.
+     5. In the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan and check:
+
+        ```bash
+        terraform plan -out=tfplan
+        terraform show -no-color tfplan | grep -E '^Plan:|^  # |serviceUrl|uriTemplate'
+        ```
+
+        It must show `azapi_resource.mcp_api will be updated in place`, the `serviceUrl` (and for
+        Shape B the `uriTemplate`) changing, and `Plan: 0 to add, 1 to change, 0 to destroy.` The
+        only other change allowed is `azapi_resource.mcp_policy` updated in place (`2 to change`),
+        the normalised XML step 4a's fallback describes. Anything added, destroyed or replaced:
+        stop, do not apply, and take the plan to the controller. Only then
+        `terraform apply tfplan`.
+     6. Run this step again from the top, with `$script:McpSessionId = $null` first. A `200`
+        settles the split: record the shape that worked in findings row 22.
+     7. **Shape B, if Shape A also gets a 404: the service URL is the app's root and the endpoint
+        carries the whole path.** In `mcp_api.tf`, set
+        `serviceUrl           = "https://${local.tool_host}"` and
+        `uriTemplate = "/runtime/webhooks/mcp"`. In the tftest, line 383 becomes
+        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com" &&` and line 387
+        becomes `uriTemplate == "/runtime/webhooks/mcp"`. Then steps 3 to 6 again, committing with
+        `git commit -m "fix(infra): the MCP API's service URL is the tool app's root, and its
+        endpoint the whole MCP path"`. If the gateway also takes the endpoint's template as the
+        callers' path, this shape moves the gateway side to `/releaselens-search/runtime/webhooks/mcp`
+        and the call at `$env:FN_MCP_URL` gets the gateway's own 404: do not change the output to
+        follow it.
+     8. **If both shapes get a 404,** stop. Record each shape's status, and whether each 404 was
+        the gateway's own or the app's, and take it to the controller: T1 to T4 cannot run without
+        the path.
    - A **401** comes either from the gateway (the owner's token: check `$env:GW_SCOPE` and the
      owner's `Gateway.Invoke`) or from App Service authentication behind it (the gateway's token
      for the tool: the allowed audiences or the allowed application). Application Insights tells
@@ -804,9 +876,13 @@ Pop-Location
 poisonpeek
 ```
 
-It should print `0 message(s)`. Messages left from an earlier session do not stop the session: I4
-matches its own upload's unique name and refuses only a queue of more than 32, and the owner can
-only read the queue, not clear it. Record the count. It also reads the queue's metadata first, as I4
+It should print `0 message(s)`. Messages left from an earlier session do not stop the session, up
+to a point: I4 matches its own upload's unique name, but it refuses the queue whenever it holds more
+than 32, at every peek, including the peeks after its own message (or two: see 6c) has landed. So
+**leftover messages up to about 30 are fine and are recorded; nearer 32, I4 will refuse.** The owner
+can only read the queue, not clear it: leftover messages expire after the queue's message
+time-to-live (7 days by default), and clearing them sooner needs a role the owner does not hold.
+Record the count. It also reads the queue's metadata first, as I4
 does, so an answer other than an error shows that Storage Queue Data Reader allows Get Queue
 Metadata under Entra. A `QueueReadError` with `403` means it does not: record it and take it to the
 controller.
@@ -828,9 +904,16 @@ Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
   a line for any artefact not searchable as expected in it. The first upload includes the ingest
   app's cold start.
 - `duplicate` waits for the first upload to be searchable before it uploads the same file again.
+- **A read of the index that fails with a 429, a 5xx, a timeout or a lost connection** counts as
+  "not seen yet", and the watch keeps polling to the end of the window. `upload` prints how many
+  polls failed (`2 of 24 polls of the index failed ...`), the record keeps the count, and I1's and
+  I2's details give it. Any other error, a 401 or a 403 above all, stops `upload` at once: check the
+  roles and the scope rather than wait. If every poll in a window failed, the upload stays
+  unjudged, as below.
 - `ingest-checks` prints one line per check, `I1: pass - ...` or `fail`, and writes each result.
   I3 waits 60 seconds after the second upload before it reads the index.
-- **If a watch crashes or is interrupted** (Ctrl+C, a network error), the record keeps the upload
+- **If a watch crashes or is interrupted** (Ctrl+C, an error that is not transient, or a window in
+  which every poll failed), the record keeps the upload
   but `ingest-checks` refuses to judge it. First judge the kinds that were watched, with
   `ingest-checks --check <id>` for each: every check writes its own result file, which the report
   reads whichever session it came from. Then upload the unjudged kind again, under a new name, with
@@ -898,7 +981,11 @@ Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 
 - **T1** sends the first ten questions of project 2's frozen set through the gateway and compares
   each top 5 with a direct hybrid-plus-semantic query of the same index, with the tool's own
-  parameters (`k = top = 5`). It also writes `check-t1-ended.json`, which T4 reads.
+  parameters (`k = top = 5`). Both sides must return 5 artefacts: a question where either returns
+  fewer fails with the two counts, even when the two lists agree. A failed call is recorded as the
+  error's class and its HTTP status or JSON-RPC code (`McpRpcError (JSON-RPC code -32603)`), never
+  the server's message, which could name a host and stop the result being written. It also writes
+  `check-t1-ended.json`, which T4 reads.
 - **T2** sends a call with no token and one with a token for the wrong audience
   (`https://ai.azure.com`). Both must get 401 from the gateway.
 - **T3** calls the tool app's own URL with no token and with the owner's gateway token. Both must
@@ -1134,7 +1221,7 @@ findings too.
 | 19 | The first bootstrap apply failed at the Event Grid subscription for role propagation, and was re-run (or did not) | 1 | |
 | 20 | The tool app's registration issues v2 tokens (audience the client ID), and App Service authentication accepts them | 5 | |
 | 21 | `azurerm_storage_queue.id` is the Resource Manager ID in azurerm 5.x, so the queue role scopes are valid | 1 | |
-| 22 | The MCP pass-through path split (`/runtime/webhooks` plus `/mcp`) works; the Flex apps' `maximumInstanceCount` reads 10 | 4, 5 | |
+| 22 | The MCP pass-through path split works: the default (`/runtime/webhooks` plus `/mcp`), or step 5a's shape A or B (say which); the Flex apps' `maximumInstanceCount` reads 10 | 4, 5 | |
 | 23 | The service accepted the MCP API diagnostic's `largeLanguageModel` block on an `mcp` API (or it was dropped); any other azapi body error on the first apply | 4 | |
 | 24 | The MCP API reports type `mcp` after the apply (`apiType` is write-only) | 4 | |
 | 25 | I1 to I3 ran before I4's broken upload; the poison queue was empty at the start (the peek's count) | 6 | |

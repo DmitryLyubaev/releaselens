@@ -128,9 +128,15 @@ The mocked tests cannot show these:
 - **The MCP path split.** The service URL ends at `/runtime/webhooks` and the API's one endpoint
   is `/mcp`, the shape the research found for a pass-through, so a call to
   `https://<gateway host>/releaselens-search/mcp` should reach the tool app's
-  `/runtime/webhooks/mcp`. Microsoft shows neither this split nor the other (service URL the
-  app's root, endpoint `/runtime/webhooks/mcp`). If `initialize` through the gateway gets a 404
-  from the app, change the split and apply again.
+  `/runtime/webhooks/mcp`. Microsoft shows no split for a Functions host. Its "expose an existing
+  MCP server" walkthrough takes the server's whole endpoint as the base URL, so the gateway may
+  forward to `/runtime/webhooks` alone and get a 404. If `initialize` through the gateway gets a
+  404, the runbook's [step 5a](../../docs/runbook-functions.md#5a-the-tool-through-the-gateway)
+  has the edits, in order: shape A (service URL `/runtime/webhooks/mcp`, endpoint `/mcp`), then
+  shape B (service URL the app's root, endpoint `/runtime/webhooks/mcp`), each with its tftest
+  lines, the tests, the commit, a plan that only updates the MCP API in place, and the apply.
+  Neither touches `tool_mcp_url`, the gateway-side URL callers use. The default stays until the
+  live session shows which split is right.
 - **App Service authentication on Flex accepts the gateway identity's token**, with the v2
   issuer and the client ID as audience, and refuses a call with no token or with a token from
   anyone else (T3).
