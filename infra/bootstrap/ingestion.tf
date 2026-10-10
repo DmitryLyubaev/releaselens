@@ -2,9 +2,15 @@
 # no session is running must wait in the queue for the next one, and nothing here bills by the
 # hour. The Function apps themselves are per session (infra/functions).
 #
-# Keyless throughout: shared keys and local users are off, so every data-plane request, the
-# apps' host storage included, is authorised through Entra ID; and Event Grid writes to the queue
-# and the dead-letter container as the topic's own identity.
+# Three accounts. The ingestion account holds the artefacts, the dead-letter container and the two
+# queues. Each Function app's host storage (AzureWebJobsStorage) and deployment package are in an
+# account of its own: the host needs Storage Blob Data Owner on its whole account, and in a shared
+# account that role would let each app write artefacts-in, and so the index, and the other app's
+# package.
+#
+# Keyless throughout: shared keys and local users are off on all three, so every data-plane
+# request, the apps' host storage included, is authorised through Entra ID; and Event Grid writes
+# to the queue and the dead-letter container as the topic's own identity.
 
 resource "azurerm_storage_account" "ingest" {
   name                     = "strlingest${random_string.suffix.result}"
@@ -36,20 +42,6 @@ resource "azurerm_storage_container" "artefacts_in" {
 # dropped.
 resource "azurerm_storage_container" "deadletter_events" {
   name                  = "deadletter-events"
-  storage_account_id    = azurerm_storage_account.ingest.id
-  container_access_type = "private"
-}
-
-# One deployment-package container per app: Flex Consumption needs each to exist before the app
-# is created, and one per app.
-resource "azurerm_storage_container" "deploy_ingest" {
-  name                  = "deploy-ingest"
-  storage_account_id    = azurerm_storage_account.ingest.id
-  container_access_type = "private"
-}
-
-resource "azurerm_storage_container" "deploy_tool" {
-  name                  = "deploy-tool"
   storage_account_id    = azurerm_storage_account.ingest.id
   container_access_type = "private"
 }
@@ -119,4 +111,53 @@ resource "azurerm_eventgrid_system_topic_event_subscription" "artefacts" {
     azurerm_role_assignment.eventgrid_queue_sender,
     azurerm_role_assignment.eventgrid_deadletter_writer,
   ]
+}
+
+# The ingest app's host account: its AzureWebJobsStorage and its deployment package. 20
+# characters with the suffix, within the 24-character limit.
+resource "azurerm_storage_account" "ingest_host" {
+  name                     = "strlingesthost${random_string.suffix.result}"
+  resource_group_name      = azurerm_resource_group.bootstrap.name
+  location                 = azurerm_resource_group.bootstrap.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  shared_access_key_enabled       = false
+  default_to_oauth_authentication = true
+  local_user_enabled              = false
+  allow_nested_items_to_be_public = false
+  min_tls_version                 = "TLS1_2"
+
+  tags = local.tags
+}
+
+# The search tool's host account, likewise. 18 characters with the suffix.
+resource "azurerm_storage_account" "tool_host" {
+  name                     = "strltoolhost${random_string.suffix.result}"
+  resource_group_name      = azurerm_resource_group.bootstrap.name
+  location                 = azurerm_resource_group.bootstrap.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  shared_access_key_enabled       = false
+  default_to_oauth_authentication = true
+  local_user_enabled              = false
+  allow_nested_items_to_be_public = false
+  min_tls_version                 = "TLS1_2"
+
+  tags = local.tags
+}
+
+# One deployment-package container per app, in that app's host account: Flex Consumption needs it
+# to exist before the app is created.
+resource "azurerm_storage_container" "deploy_ingest" {
+  name                  = "deploy-ingest"
+  storage_account_id    = azurerm_storage_account.ingest_host.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "deploy_tool" {
+  name                  = "deploy-tool"
+  storage_account_id    = azurerm_storage_account.tool_host.id
+  container_access_type = "private"
 }

@@ -119,8 +119,8 @@ output "app_insights_connection_string" {
 }
 
 # The functions stack reads these through terraform_remote_state (spec §3.3). Identifiers and
-# endpoints, not credentials: the ingestion account has no usable key, and no key, connection
-# string or SAS of it is output.
+# endpoints, not credentials: the three accounts have no usable key, and no key, connection
+# string or SAS of any of them is output.
 output "ingest_identity_id" {
   description = "Resource ID of the ingest identity. The functions stack attaches it to the ingest app."
   value       = azurerm_user_assigned_identity.ingest.id
@@ -152,18 +152,50 @@ output "tool_identity_principal_id" {
 }
 
 output "ingest_storage_account_name" {
-  description = "Name of the ingestion storage account, which holds artefacts-in, both queues, both apps' host storage and their deployment containers. It is AzureWebJobsStorage__accountName for both apps."
+  description = "Name of the ingestion storage account, which holds artefacts-in, deadletter-events and both queues. The ingest app's queue trigger and blob reads connect to it."
   value       = azurerm_storage_account.ingest.name
 }
 
 output "ingest_storage_blob_endpoint" {
-  description = "The ingestion account's blob endpoint, with a trailing slash. The deployment containers' URLs are built from it."
+  description = "The ingestion account's blob endpoint, with a trailing slash."
   value       = azurerm_storage_account.ingest.primary_blob_endpoint
 }
 
 output "ingest_storage_queue_endpoint" {
   description = "The ingestion account's queue endpoint, with a trailing slash."
   value       = azurerm_storage_account.ingest.primary_queue_endpoint
+}
+
+# Each app's host account: its AzureWebJobsStorage__accountName, and the account its deployment
+# container is in.
+output "ingest_host_storage_account_name" {
+  description = "Name of the ingest app's host account. It is the ingest app's AzureWebJobsStorage__accountName."
+  value       = azurerm_storage_account.ingest_host.name
+}
+
+output "ingest_host_blob_endpoint" {
+  description = "The ingest app's host account's blob endpoint, with a trailing slash. The deployment container's URL is this followed by ingest_host_deploy_container."
+  value       = azurerm_storage_account.ingest_host.primary_blob_endpoint
+}
+
+output "ingest_host_deploy_container" {
+  description = "Name of the ingest app's deployment-package container, in its host account."
+  value       = azurerm_storage_container.deploy_ingest.name
+}
+
+output "tool_host_storage_account_name" {
+  description = "Name of the tool app's host account. It is the tool app's AzureWebJobsStorage__accountName."
+  value       = azurerm_storage_account.tool_host.name
+}
+
+output "tool_host_blob_endpoint" {
+  description = "The tool app's host account's blob endpoint, with a trailing slash. The deployment container's URL is this followed by tool_host_deploy_container."
+  value       = azurerm_storage_account.tool_host.primary_blob_endpoint
+}
+
+output "tool_host_deploy_container" {
+  description = "Name of the tool app's deployment-package container, in its host account."
+  value       = azurerm_storage_container.deploy_tool.name
 }
 
 output "search_tool_app_client_id" {

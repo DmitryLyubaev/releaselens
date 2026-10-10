@@ -31,7 +31,9 @@ stack as built, and that runbook. The design and its reasons are in the
 | Gateway service principal | `releaselens-ai-gateway` | `app_role_assignment_required = true`: only an identity holding `Gateway.Invoke` can get a token |
 | Ingest identity | `id-releaselens-ingest` | user-assigned; the identity the ingest Function app runs as |
 | Tool identity | `id-releaselens-tool` | user-assigned; the identity the search tool's Function app runs as |
-| Ingestion storage account | `strlingest<suffix>` | containers `artefacts-in`, `deadletter-events`, `deploy-ingest` and `deploy-tool`, all private; queues `ingest-events` and `ingest-events-poison`; both Function apps' host storage; shared keys and local users off; OAuth by default; no public blob access; TLS 1.2 |
+| Ingestion storage account | `strlingest<suffix>` | containers `artefacts-in` and `deadletter-events`, both private; queues `ingest-events` and `ingest-events-poison`; no host storage and no deployment package; shared keys and local users off; OAuth by default; no public blob access; TLS 1.2 |
+| Ingest host account | `strlingesthost<suffix>` | the ingest app's host storage (`AzureWebJobsStorage`) and its private deployment container `deploy-ingest`; keyless, no public blob access, TLS 1.2, as above |
+| Tool host account | `strltoolhost<suffix>` | the tool app's host storage and its private deployment container `deploy-tool`; keyless, no public blob access, TLS 1.2, as above |
 | Event Grid system topic | `evgt-releaselens-ingest` | on the ingestion account, with a system-assigned identity |
 | Event Grid subscription | `artefacts-in-to-ingest-events` | `Microsoft.Storage.BlobCreated` only, subject beginning `/blobServices/default/containers/artefacts-in/` and ending `.json`; delivers to the `ingest-events` queue and dead-letters to `deadletter-events`, both as the topic's identity, with no key |
 | Search tool Entra app | `releaselens-search-tool` | the tool app's audience: single-tenant, version 2 tokens, identifier URI `api://<its client ID>`; one app role `Tool.Invoke` (applications only); no delegated scope and no pre-authorised client; the signed-in owner owns it; no secret and no certificate |
@@ -41,7 +43,7 @@ stack as built, and that runbook. The design and its reasons are in the
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | twenty-eight Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
+| Role assignments | twenty-nine Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -85,19 +87,21 @@ register them and CI is not, so it happens here. The provider also sets:
 | `ingest_queue_events` | ingest identity | Storage Queue Data Contributor | the `ingest-events` queue |
 | `ingest_queue_poison` | ingest identity | Storage Queue Data Contributor | the `ingest-events-poison` queue |
 | `ingest_openai_user` | ingest identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
-| `ingest_host_blob_owner` | ingest identity | Storage Blob Data Owner | the ingestion account (host storage) |
-| `ingest_host_table_contributor` | ingest identity | Storage Table Data Contributor | the ingestion account (host storage) |
+| `ingest_host_blob_owner` | ingest identity | Storage Blob Data Owner | the ingest host account |
+| `ingest_host_queue_contributor` | ingest identity | Storage Queue Data Contributor | the ingest host account |
+| `ingest_host_table_contributor` | ingest identity | Storage Table Data Contributor | the ingest host account |
 | `tool_openai_user` | tool identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
-| `tool_host_blob_owner` | tool identity | Storage Blob Data Owner | the ingestion account (host storage) |
-| `tool_host_queue_contributor` | tool identity | Storage Queue Data Contributor | the ingestion account (host storage; the MCP extension's queues) |
-| `tool_host_table_contributor` | tool identity | Storage Table Data Contributor | the ingestion account (host storage) |
+| `tool_host_blob_owner` | tool identity | Storage Blob Data Owner | the tool host account |
+| `tool_host_queue_contributor` | tool identity | Storage Queue Data Contributor | the tool host account (the MCP extension's queues) |
+| `tool_host_table_contributor` | tool identity | Storage Table Data Contributor | the tool host account |
 | `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the `ingest-events` queue |
 | `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` |
 
-The ingest identity holds no queue role on the whole account: the host's own queue use is the
-Event Grid blob trigger's and the MCP extension's, and the ingest app has neither, so its two
-queue roles are all its queue access. Storage Blob Data Owner on the account is the Functions
-host's documented minimum; it also covers each app's deployment container.
+Storage Blob Data Owner on a whole account is the Functions host's documented minimum, so each
+app's host storage is in an account of its own: an app's host roles reach its own host account
+and nothing else, and its deployment container is covered by them. The tool identity has no role
+on the ingestion account. The ingest identity's roles there are on `artefacts-in` and its two
+queues only.
 
 Four more assignments are Entra app role assignments (`azuread_app_role_assignment`), not Azure
 roles. Three give one identity each `Gateway.Invoke` on the gateway's service principal, and
@@ -172,9 +176,11 @@ credential.
 The functions stack reads these the same way: `ingest_identity_id`, `ingest_identity_client_id`,
 `ingest_identity_principal_id`, `tool_identity_id`, `tool_identity_client_id`,
 `tool_identity_principal_id`, `ingest_storage_account_name`, `ingest_storage_blob_endpoint`,
-`ingest_storage_queue_endpoint`, `search_tool_app_client_id` and `search_tool_app_identifier_uri`.
-They are identifiers and endpoints; no key, connection string or SAS of the ingestion account is
-output.
+`ingest_storage_queue_endpoint`, `ingest_host_storage_account_name`, `ingest_host_blob_endpoint`,
+`ingest_host_deploy_container`, `tool_host_storage_account_name`, `tool_host_blob_endpoint`,
+`tool_host_deploy_container`, `search_tool_app_client_id` and `search_tool_app_identifier_uri`.
+They are identifiers and endpoints; no key, connection string or SAS of any of the three accounts
+is output.
 
 ## Terraform runs in WSL
 

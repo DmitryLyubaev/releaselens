@@ -407,15 +407,15 @@ The bootstrap stack makes every Azure role assignment but two, and looks each ro
 | App identity | Cognitive Services OpenAI User | the Azure OpenAI account | inference. The role also grants the account's assistants, responses and file-read data plane |
 | Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
 | Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app`, `tfstate-search`, `tfstate-gateway` and `tfstate-functions` (five assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
-| Owner | Storage Blob Data Contributor | `artefacts-in`, `deploy-ingest` and `deploy-tool` (three assignments) | the demo's uploads, and deploying both Function apps' packages with the owner's sign-in |
+| Owner | Storage Blob Data Contributor | `artefacts-in`, and `deploy-ingest` and `deploy-tool` in the two host accounts (three assignments) | the demo's uploads, and deploying both Function apps' packages with the owner's sign-in |
 | Gateway identity | Cognitive Services OpenAI User | each of the two Azure OpenAI accounts (two assignments) | API Management calls the models as this identity, so no key exists |
 | Gateway identity | Monitoring Metrics Publisher | Application Insights only | the gateway publishes its token metric with Entra ID, since local authentication is off |
 | Ingest identity | Storage Blob Data Reader | `artefacts-in` only | read the artefact a queue message names |
 | Ingest identity | Storage Queue Data Contributor | `ingest-events` and `ingest-events-poison` (two assignments) | the queue trigger receives and deletes; the runtime writes the poison message after the third failure |
 | Ingest identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account | embed chunks |
-| Ingest identity | Storage Blob Data Owner, Storage Table Data Contributor | the ingestion account (two assignments) | identity-based host storage. No queue role on the account: the app's only queues are its own two |
+| Ingest identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | its own host account, `strlingesthost<suffix>`, only (three assignments) | identity-based host storage. No account-wide role on the ingestion account |
 | Tool identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account | embed the query |
-| Tool identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | the ingestion account (three assignments) | identity-based host storage; the MCP extension uses queues |
+| Tool identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | its own host account, `strltoolhost<suffix>`, only (three assignments) | identity-based host storage; the MCP extension uses queues. No role on the ingestion account |
 | Event Grid topic's identity | Storage Queue Data Message Sender | `ingest-events` only | deliver blob events to the queue with no key |
 | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` only | dead-letter events Event Grid cannot deliver |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |

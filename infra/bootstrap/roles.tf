@@ -124,12 +124,13 @@ resource "azurerm_role_assignment" "deploy_state_app" {
 # The ingestion and the search tool (spec §3.1). The search service exists only in a session, so
 # the two search roles are in infra/search under its exception; everything else is here.
 #
-# Both apps keep their host storage (AzureWebJobsStorage, identity-based) in the ingestion
-# account. The host's own roles are on the account, because the host creates its containers
-# (and the MCP extension its queues) at run time; Storage Blob Data Owner is the host's
-# documented minimum, and it also covers reading the app's deployment container. Research notes
-# §7 list the set; Storage Account Contributor, also listed there, serves only the polling blob
-# trigger, which neither app uses.
+# Each app keeps its host storage (AzureWebJobsStorage, identity-based) and its deployment package
+# in a host account of its own (ingestion.tf). Its host roles are on that account and nowhere
+# else, because the host creates its containers (and the MCP extension its queues) at run time:
+# Storage Blob Data Owner, the host's documented minimum, which also covers reading the app's
+# deployment container, and the queue and table data roles. Research notes §7 list the set;
+# Storage Account Contributor, also listed there, serves only the polling blob trigger, which
+# neither app uses. The tool identity has no role on the ingestion account at all.
 
 # The ingest app reads the artefact a message names, works its two queues (the trigger receives
 # and deletes; the runtime writes a message to the poison queue after the third failure), and
@@ -159,22 +160,27 @@ resource "azurerm_role_assignment" "ingest_openai_user" {
   principal_id         = azurerm_user_assigned_identity.ingest.principal_id
 }
 
-# Its host storage: blobs and tables. No queue role on the account: the host's own queue use is
-# the Event Grid blob trigger's and the MCP extension's, and this app has neither, so its two
-# queue roles above are all the queue access it holds.
+# Its host storage, on its own host account only.
 resource "azurerm_role_assignment" "ingest_host_blob_owner" {
-  scope                = azurerm_storage_account.ingest.id
+  scope                = azurerm_storage_account.ingest_host.id
   role_definition_name = "Storage Blob Data Owner"
   principal_id         = azurerm_user_assigned_identity.ingest.principal_id
 }
 
+resource "azurerm_role_assignment" "ingest_host_queue_contributor" {
+  scope                = azurerm_storage_account.ingest_host.id
+  role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+}
+
 resource "azurerm_role_assignment" "ingest_host_table_contributor" {
-  scope                = azurerm_storage_account.ingest.id
+  scope                = azurerm_storage_account.ingest_host.id
   role_definition_name = "Storage Table Data Contributor"
   principal_id         = azurerm_user_assigned_identity.ingest.principal_id
 }
 
-# The search tool embeds the query. Its host storage adds queues, which the MCP extension needs.
+# The search tool embeds the query. Its host storage, on its own host account only, includes the
+# queues the MCP extension uses.
 resource "azurerm_role_assignment" "tool_openai_user" {
   scope                = azurerm_cognitive_account.openai.id
   role_definition_name = "Cognitive Services OpenAI User"
@@ -182,19 +188,19 @@ resource "azurerm_role_assignment" "tool_openai_user" {
 }
 
 resource "azurerm_role_assignment" "tool_host_blob_owner" {
-  scope                = azurerm_storage_account.ingest.id
+  scope                = azurerm_storage_account.tool_host.id
   role_definition_name = "Storage Blob Data Owner"
   principal_id         = azurerm_user_assigned_identity.tool.principal_id
 }
 
 resource "azurerm_role_assignment" "tool_host_queue_contributor" {
-  scope                = azurerm_storage_account.ingest.id
+  scope                = azurerm_storage_account.tool_host.id
   role_definition_name = "Storage Queue Data Contributor"
   principal_id         = azurerm_user_assigned_identity.tool.principal_id
 }
 
 resource "azurerm_role_assignment" "tool_host_table_contributor" {
-  scope                = azurerm_storage_account.ingest.id
+  scope                = azurerm_storage_account.tool_host.id
   role_definition_name = "Storage Table Data Contributor"
   principal_id         = azurerm_user_assigned_identity.tool.principal_id
 }
@@ -213,7 +219,8 @@ resource "azurerm_role_assignment" "eventgrid_deadletter_writer" {
   principal_id         = azurerm_eventgrid_system_topic.ingest.identity[0].principal_id
 }
 
-# The owner uploads the demo's artefacts and deploys both apps' packages with their own sign-in.
+# The owner uploads the demo's artefacts and deploys both apps' packages, each to its container in
+# that app's host account, with their own sign-in.
 resource "azurerm_role_assignment" "owner_artefacts_in" {
   scope                = azurerm_storage_container.artefacts_in.id
   role_definition_name = "Storage Blob Data Contributor"
