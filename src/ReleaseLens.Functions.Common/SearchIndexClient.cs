@@ -23,8 +23,9 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
     // about 15 KB as JSON, so 100 a request stays well inside both.
     private const int BatchSize = 100;
 
-    // The most a search returns in one page.
-    private const int PageSize = 1000;
+    // The service's own page is 50, so this reads up to 5,000 keys of one artefact: a hundred times
+    // more chunks than any artefact has. Past it, something is wrong, and it fails rather than loops.
+    private const int MaxPages = 100;
 
     /// <summary>Writes each chunk with <c>mergeOrUpload</c>: a chunk that exists is replaced, one that does not is added.</summary>
     public async Task UpsertAsync(IReadOnlyList<IndexChunk> chunks, CancellationToken cancellationToken)
@@ -59,6 +60,13 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
     /// Every key of every chunk whose <c>artefact</c> is <paramref name="artefact"/>, whatever scheme
     /// wrote it, reading every page.
     /// </summary>
+    /// <remarks>
+    /// No <c>top</c> is sent: the service adds a next-page link only when it cannot return the
+    /// <c>top</c> asked for, so a <c>top</c> of 1,000 with 1,500 matches would return 1,000 and no
+    /// link. Without it the service pages by its own size and always says where the next page is:
+    /// <c>@odata.nextLink</c> (the same URL on every page of a POST search) and
+    /// <c>@search.nextPageParameters</c> (the request body to send there, holding the <c>skip</c>).
+    /// </remarks>
     public async Task<IReadOnlyList<string>> KeysForArtefactAsync(string artefact, CancellationToken cancellationToken)
     {
         var body = new JsonObject
@@ -66,13 +74,12 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
             ["search"] = "*",
             ["filter"] = $"artefact eq '{artefact.Replace("'", "''", StringComparison.Ordinal)}'",
             ["select"] = "chunk_id",
-            ["top"] = PageSize,
         };
         var url = DocsUrl("search");
-        var seen = new HashSet<string> { url.ToString() };
         var keys = new List<string>();
+        var skip = 0;
 
-        while (true)
+        for (var page = 1; ; page++)
         {
             var reply = await SendAsync(url, body, cancellationToken);
             foreach (var document in reply["value"]?.AsArray() ?? [])
@@ -80,10 +87,16 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
                 keys.Add((string)document!["chunk_id"]!);
             }
 
-            // A page that is full comes with a link to the next, and the body to send there.
+            // The last page has no link.
             if (reply["@odata.nextLink"]?.GetValue<string>() is not { } next)
             {
                 return keys;
+            }
+
+            if (page >= MaxPages)
+            {
+                throw new InvalidOperationException(
+                    $"{Service} still had more keys after {MaxPages.ToString(CultureInfo.InvariantCulture)} pages; stopped.");
             }
 
             url = new Uri(next, UriKind.Absolute);
@@ -93,13 +106,17 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
                 throw new InvalidOperationException($"{Service} paged to a different host; not followed.");
             }
 
-            if (!seen.Add(url.ToString()))
-            {
-                throw new InvalidOperationException($"{Service} paged back to a page already read.");
-            }
-
             body = reply["@search.nextPageParameters"]?.AsObject()
                 ?? throw new InvalidOperationException($"{Service} gave a next page and no way to ask for it.");
+
+            // The link is the same on every page, so progress is the skip: it must move forward, or
+            // the same page would be read for ever.
+            if (body["skip"]?.GetValue<int>() is not { } nextSkip || nextSkip <= skip)
+            {
+                throw new InvalidOperationException($"{Service} paged without moving forward; stopped.");
+            }
+
+            skip = nextSkip;
         }
     }
 
