@@ -600,7 +600,7 @@ terraform apply tfplan
      terraform show -no-color tfplan | grep -E '^Plan:|^  # '
      ```
 
-     The one change allowed is `azapi_resource.mcp_policy` updated in place, if it appears: API
+     The one change allowed is `azapi_resource.mcp_policy will be updated in-place`, if it appears: API
      Management may hand the policy's XML back normalised, and the update writes the same file
      again (the stack README's [Live checks](../infra/functions/README.md#live-checks)). Anything
      else changed, or anything destroyed: stop, do not apply, and take the plan to the controller.
@@ -737,10 +737,11 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
    - A **404** is most likely the path split. Microsoft's "expose an existing MCP server"
      walkthrough takes the server's full endpoint as the base URL, so the gateway may forward the
      call to the service URL alone, the app's `/runtime/webhooks`, which answers 404. Neither shape
-     below touches `tool_mcp_url`, the gateway-side URL that the harness and Claude Code call
-     (`<gateway host>/releaselens-search/mcp`, built from the API's path): `$env:FN_MCP_URL` stays
-     as it is. First record whether the 404 is the gateway's own or the app's, from Application
-     Insights as for a 401 below. Then:
+     below changes the `tool_mcp_url` output, the gateway-side URL that the harness and Claude Code
+     call (`<gateway host>/releaselens-search/mcp`, built from the API's path), so
+     `$env:FN_MCP_URL` stays as it is. Shape A keeps the gateway answering there; shape B may not
+     (its item 7 has the probe). First record whether the 404 is the gateway's own or the app's,
+     from Application Insights as for a 401 below. Then:
      1. **Shape A: the service URL is the app's whole MCP endpoint.** In
         `infra/functions/mcp_api.tf`, in `azapi_resource.mcp_api`, change
         `serviceUrl           = "https://${local.tool_host}/runtime/webhooks"` to
@@ -772,9 +773,9 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
         terraform show -no-color tfplan | grep -E '^Plan:|^  # |serviceUrl|uriTemplate'
         ```
 
-        It must show `azapi_resource.mcp_api will be updated in place`, the `serviceUrl` (and for
+        It must show `azapi_resource.mcp_api will be updated in-place`, the `serviceUrl` (and for
         Shape B the `uriTemplate`) changing, and `Plan: 0 to add, 1 to change, 0 to destroy.` The
-        only other change allowed is `azapi_resource.mcp_policy` updated in place (`2 to change`),
+        only other change allowed is `azapi_resource.mcp_policy will be updated in-place` (`2 to change`),
         the normalised XML step 4a's fallback describes. Anything added, destroyed or replaced:
         stop, do not apply, and take the plan to the controller. Only then
         `terraform apply tfplan`.
@@ -789,8 +790,13 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
         `git commit -m "fix(infra): the MCP API's service URL is the tool app's root, and its
         endpoint the whole MCP path"`. If the gateway also takes the endpoint's template as the
         callers' path, this shape moves the gateway side to `/releaselens-search/runtime/webhooks/mcp`
-        and the call at `$env:FN_MCP_URL` gets the gateway's own 404: do not change the output to
-        follow it.
+        and the call at `$env:FN_MCP_URL` gets the gateway's own 404. To tell that from a wrong
+        split, probe the moved path once, without changing the output:
+        `$env:FN_MCP_URL = $env:FN_MCP_URL -replace '/mcp$', '/runtime/webhooks/mcp'`, then
+        `$script:McpSessionId = $null` and this step's `initialize` again. Record its status in
+        findings row 22, set `$env:FN_MCP_URL` back with `tfout` as in step 5, and stop: a `200`
+        there means the output must follow the path, which is a code change for the controller,
+        not a session edit.
      8. **If both shapes get a 404,** stop. Record each shape's status, and whether each 404 was
         the gateway's own or the app's, and take it to the controller: T1 to T4 cannot run without
         the path.
@@ -909,7 +915,9 @@ Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
   polls failed (`2 of 24 polls of the index failed ...`), the record keeps the count, and I1's and
   I2's details give it. Any other error, a 401 or a 403 above all, stops `upload` at once: check the
   roles and the scope rather than wait. If every poll in a window failed, the upload stays
-  unjudged, as below.
+  unjudged, as below. **An I1 or I2 fail whose detail reports failed polls is not measured:** the
+  missing chunks may have landed during the reads that failed. Record it in the findings as "not
+  measured", with the failed-poll count, and not as a fail of the app.
 - `ingest-checks` prints one line per check, `I1: pass - ...` or `fail`, and writes each result.
   I3 waits 60 seconds after the second upload before it reads the index.
 - **If a watch crashes or is interrupted** (Ctrl+C, an error that is not transient, or a window in

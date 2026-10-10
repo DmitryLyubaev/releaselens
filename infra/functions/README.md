@@ -135,8 +135,10 @@ The mocked tests cannot show these:
   has the edits, in order: shape A (service URL `/runtime/webhooks/mcp`, endpoint `/mcp`), then
   shape B (service URL the app's root, endpoint `/runtime/webhooks/mcp`), each with its tftest
   lines, the tests, the commit, a plan that only updates the MCP API in place, and the apply.
-  Neither touches `tool_mcp_url`, the gateway-side URL callers use. The default stays until the
-  live session shows which split is right.
+  Neither changes the `tool_mcp_url` output, the gateway-side URL callers use. Shape A keeps the
+  gateway answering there; shape B may move the gateway side to
+  `/releaselens-search/runtime/webhooks/mcp`, and the runbook probes that path before anything
+  else changes. The default stays until the live session shows which split is right.
 - **App Service authentication on Flex accepts the gateway identity's token**, with the v2
   issuer and the client ID as audience, and refuses a call with no token or with a token from
   anyone else (T3).
