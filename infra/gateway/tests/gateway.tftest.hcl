@@ -374,4 +374,20 @@ run "outputs" {
     condition     = output.gateway_scope == "api://33333333-3333-3333-3333-333333333333/.default"
     error_message = "gateway_scope must be api://<gateway app client id>/.default."
   }
+
+  # The functions stack publishes the search tool on this service, through this logger.
+  assert {
+    condition     = output.api_management_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3"
+    error_message = "api_management_id must be the service's resource ID."
+  }
+
+  assert {
+    condition     = output.gateway_url == "https://apim-releaselens-a1b2c3.azure-api.net"
+    error_message = "gateway_url must be the service's gateway URL, https://<gateway host>."
+  }
+
+  assert {
+    condition     = output.app_insights_logger_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3/loggers/appi-releaselens"
+    error_message = "app_insights_logger_id must be the Application Insights logger's resource ID."
+  }
 }

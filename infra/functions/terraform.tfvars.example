@@ -1,0 +1,10 @@
+# Copy to a git-ignored terraform.tfvars in this folder, in your own window, and fill in the two
+# inputs. Never commit them. Every identifier the stack needs comes from the bootstrap's, the
+# search stack's and the gateway's state.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# The account that holds every stack's state: terraform -chdir=../bootstrap output -raw tfstate_storage_account
+tfstate_storage_account = "<state storage account>"
+
+# Default; change it only for a reason the runbook gives.
+# location = "australiaeast"

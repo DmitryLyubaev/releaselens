@@ -80,9 +80,9 @@ def test_bootstrap_registers_exactly_the_twelve_providers(repo_root):
     assert sorted(entries) == sorted(f'"{name}"' for name in BOOTSTRAP_PROVIDERS)
 
 
-# The app stack runs as CI, which may not register resource providers. The search and gateway
-# stacks run as the owner, who may, but bootstrap is the one place registration happens.
-@pytest.mark.parametrize("stack", ["terraform", "search", "gateway"])
+# The app stack runs as CI, which may not register resource providers. The search, gateway and
+# functions stacks run as the owner, who may, but bootstrap is the one place registration happens.
+@pytest.mark.parametrize("stack", ["terraform", "search", "gateway", "functions"])
 def test_stack_registers_no_providers(repo_root, stack):
     provider = _block(_stack(repo_root, stack)["versions.tf"], 'provider "azurerm"')
 
@@ -384,3 +384,89 @@ def test_revision_2_is_released_only_after_its_own_metrics_switch(repo_root):
     release = _block(files["api.tf"], 'resource "azurerm_api_management_api_release" "revision_2"')
     depends = re.search(r"^  depends_on = \[(.*?)\]", release, re.MULTILINE | re.DOTALL)
     assert depends and "azapi_update_resource.diagnostic_metrics_rev2" in depends.group(1)
+
+
+def test_functions_stack_has_no_role_assignments(repo_root):
+    # Role assignments live in infra/bootstrap/roles.tf (the identities' host, queue, blob and model
+    # roles) and infra/search (the two search roles), never here.
+    files = _stack(repo_root, "functions")
+
+    for type_ in ["azurerm_role_assignment", "azuread_app_role_assignment"]:
+        assert _declarations(files, "resource", type_) == [], type_
+    # Nor through azapi.
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if "Microsoft.Authorization/roleAssignments" in line], name
+
+
+def test_functions_stack_is_not_in_the_app_group(repo_root):
+    # In rg-releaselens, the nightly destroy's empty-group check would find the apps and fail.
+    app_group = re.compile(r"rg-releaselens(?![-\w])")
+    for name, text in _stack(repo_root, "functions").items():
+        assert not [line for line in _code_lines(text) if app_group.search(line)], name
+
+    group = _block(_stack(repo_root, "functions")["main.tf"], 'resource "azurerm_resource_group" "functions"')
+    group_name = _setting(group, "name")
+    assert group_name and group_name.group(1) == '"rg-releaselens-functions"'
+
+
+def test_functions_apps_are_azapi_sites_not_the_azurerm_resources(repo_root):
+    # azurerm's Flex resource injects an AzureWebJobsStorage connection string, which takes
+    # precedence over the identity-based settings and breaks an account with shared keys off
+    # (azurerm #29693, #33211, #30732). The apps are Microsoft.Web/sites through azapi.
+    files = _stack(repo_root, "functions")
+
+    for type_ in [
+        "azurerm_function_app_flex_consumption",
+        "azurerm_linux_function_app",
+        "azurerm_windows_function_app",
+        "azurerm_function_app",
+    ]:
+        assert _declarations(files, "resource", type_) == [], type_
+    app = _block(files["main.tf"], 'resource "azapi_resource" "app"')
+    type_ = _setting(app, "type")
+    assert type_ and type_.group(1).startswith('"Microsoft.Web/sites@')
+
+
+def test_functions_stack_holds_no_key_or_connection_string_but_application_insights(repo_root):
+    files = _stack(repo_root, "functions")
+
+    # No storage connection string of any kind, nor a key read from anything. The host storage,
+    # the queue trigger and the deployment storage all authenticate with the apps' identities.
+    leaks = re.compile(
+        r'"AzureWebJobsStorage"|AzureWebJobsStorage\s*=|DEPLOYMENT_STORAGE_CONNECTION_STRING|'
+        r"StorageAccountConnectionString|storageAccountConnectionStringName|"
+        r"access_key|listKeys|listkeys|/host/default|functionKeys|subscription_key|"
+        r"x-functions-key|mcp_extension|\bsas\b|sas_token"
+    )
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if leaks.search(line)], name
+    # The one connection string is Application Insights', marked sensitive where it is used.
+    # Whitespace is collapsed, because fmt aligns the "=" of neighbouring attributes.
+    uses = [
+        re.sub(r"\s+", " ", line.strip())
+        for text in files.values()
+        for line in _code_lines(text)
+        if re.search(r"connection_string|CONNECTION_STRING", line)
+    ]
+    assert uses == [
+        "APPLICATIONINSIGHTS_CONNECTION_STRING = sensitive(local.bootstrap.app_insights_connection_string)"
+    ]
+    # No product or subscription on the gateway: the MCP API is called with an Entra token alone.
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if re.search(r"/products|/subscriptions@", line)], name
+
+
+def test_functions_stack_has_no_prevent_destroy(repo_root):
+    # A per-session stack: destroyed at the end of every session (spec §9).
+    for name, text in _stack(repo_root, "functions").items():
+        assert not [line for line in _code_lines(text) if "prevent_destroy" in line], name
+
+
+def test_functions_mcp_policy_is_saved_after_its_named_values(repo_root):
+    # API Management checks a policy's {{name}} references when the policy is saved.
+    api = _stack(repo_root, "functions")["mcp_api.tf"]
+    policy = _block(api, 'resource "azapi_resource" "mcp_policy"')
+    depends = re.search(r"^  depends_on = \[(.*?)\]", policy, re.MULTILINE | re.DOTALL)
+    assert depends and "azapi_resource.named_value" in depends.group(1)
+    parent_id = _setting(policy, "parent_id")
+    assert parent_id and parent_id.group(1) == "azapi_resource.mcp_api.id"

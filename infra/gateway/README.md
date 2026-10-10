@@ -38,6 +38,10 @@ settings (spec §5):
 - `gateway_base_url`, `https://<gateway host>/openai/v1/`
 - `gateway_scope`, `api://<gateway app client id>/.default`
 
+Three more are for the [functions stack](../functions/README.md), which reads them from this
+stack's state to publish the search tool on the service: `api_management_id`, `gateway_url`
+(`https://<gateway host>`) and `app_insights_logger_id`.
+
 - **Keyless both ways.** No product, no subscription, no subscription key. Callers are checked by
   their Entra token alone, and the gateway calls the models as the gateway identity, whose roles
   the bootstrap holds. This stack creates no role assignment.
