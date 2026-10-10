@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import re
 import secrets
 import statistics
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -67,6 +69,16 @@ class QueueReadError(Exception):
     """The queue could not be peeked."""
 
 
+class NotWatchedError(Exception):
+    """An upload `ingest-checks` was asked to judge was not watched through its window by `upload`."""
+
+
+@dataclass(frozen=True)
+class PoisonMessage:
+    text: str
+    inserted_at: float | None       # epoch seconds, from the peek's InsertionTime; None if the reply had none
+
+
 @dataclass(frozen=True)
 class Upload:
     """What one upload recorded, for the check that reads it later.
@@ -81,9 +93,17 @@ class Upload:
     expected_chunks: int | None = None
     old_keys: list[str] = field(default_factory=list)           # changed: the keys before the upload
     gone_text: str | None = None                                # changed: a phrase only the old text held
+    old_hashes: list[str] = field(default_factory=list)         # changed: SHA-256 of each old chunk's content
     keys_after_first: list[str] = field(default_factory=list)   # duplicate: the keys once the first upload landed
     second_uploaded_at: float | None = None                     # duplicate
     docs_before: int | None = None                              # broken: the index's document count
+    # What `upload` saw while it watched the artefact's window (new and changed). An upload that was not
+    # watched to the end of its window cannot be judged later: the window is over, and a late read says
+    # nothing about it.
+    watched: bool = False
+    observed_after: float | None = None     # seconds from the upload until the index first held the expected chunks
+    problem: str | None = None              # what was still wrong when the window ended, or settled wrong
+    new_count: int | None = None            # changed: the chunks the index holds after the replacement
 
 
 # --- names and keys ---------------------------------------------------------------------------------
@@ -150,30 +170,64 @@ def chunks_for_artefact(http: httpx.Client, endpoint: str, token: Token, artefac
     raise IndexReadError(f"the index still had more chunks after {MAX_PAGES} pages")
 
 
-def upload_blob(http: httpx.Client, endpoint: str, token: Token, name: str, data: bytes) -> None:
-    """Put one blob in `artefacts-in`, as the owner."""
-    response = http.put(
-        f"{endpoint.rstrip('/')}/{CONTAINER}/{name}",
-        headers={"Authorization": f"Bearer {token()}", "x-ms-version": STORAGE_VERSION,
-                 "x-ms-blob-type": "BlockBlob", "Content-Type": "application/json"},
-        content=data)
+def upload_blob(http: httpx.Client, endpoint: str, token: Token, name: str, data: bytes, *,
+                overwrite: bool = False) -> None:
+    """Put one blob in `artefacts-in`, as the owner.
+
+    Unless `overwrite`, the put carries `If-None-Match: *`, so a blob that already exists is never replaced
+    (a repeated name would be matched by the earlier upload's event); `duplicate` overwrites on purpose.
+    """
+    headers = {"Authorization": f"Bearer {token()}", "x-ms-version": STORAGE_VERSION,
+               "x-ms-blob-type": "BlockBlob", "Content-Type": "application/json"}
+    if not overwrite:
+        headers["If-None-Match"] = "*"
+    response = http.put(f"{endpoint.rstrip('/')}/{CONTAINER}/{name}", headers=headers, content=data)
+    if response.status_code in (409, 412) and not overwrite:
+        raise UploadError("a blob of that name already exists in this session; start a new session "
+                          "(--new-session) rather than upload the same name again")
     if response.status_code != 201:
         raise UploadError(f"the blob upload answered {response.status_code}")
 
 
-def peek_poison(http: httpx.Client, endpoint: str, token: Token) -> list[str]:
-    """The texts of the first messages in the poison queue, peeked: nothing is dequeued or changed."""
-    response = http.get(
-        f"{endpoint.rstrip('/')}/{POISON_QUEUE}/messages",
-        params={"peekonly": "true", "numofmessages": str(PEEK_MAX)},
-        headers={"Authorization": f"Bearer {token()}", "x-ms-version": STORAGE_VERSION})
+def _queue_url(endpoint: str, suffix: str = "") -> str:
+    return f"{endpoint.rstrip('/')}/{POISON_QUEUE}{suffix}"
+
+
+def peek_poison(http: httpx.Client, endpoint: str, token: Token) -> list[PoisonMessage]:
+    """The first messages in the poison queue, peeked: nothing is dequeued or changed.
+
+    One peek returns at most 32 messages, from the head of the queue, so a longer queue could hide a new
+    message: the queue's approximate count (Get Queue Metadata, which Reader allows) is read first, and a
+    queue over 32 is refused with the count, not peeked.
+    """
+    headers = {"Authorization": f"Bearer {token()}", "x-ms-version": STORAGE_VERSION}
+    meta = http.get(_queue_url(endpoint), params={"comp": "metadata"}, headers=headers)
+    if meta.status_code != 200:
+        raise QueueReadError(f"the queue answered {meta.status_code}")
+    try:
+        held = int(meta.headers["x-ms-approximate-messages-count"])
+    except (KeyError, ValueError):
+        raise QueueReadError("the queue did not say how many messages it holds") from None
+    if held > PEEK_MAX:
+        raise QueueReadError(f"the poison queue holds {held} messages, more than the {PEEK_MAX} one peek returns, "
+                             "so a new message could be hidden: clear the queue and run again")
+    response = http.get(_queue_url(endpoint, "/messages"),
+                        params={"peekonly": "true", "numofmessages": str(PEEK_MAX)}, headers=headers)
     if response.status_code != 200:
         raise QueueReadError(f"the queue answered {response.status_code}")
     try:
         root = ET.fromstring(response.content)
     except ET.ParseError:
         raise QueueReadError("the queue's answer is not XML") from None
-    return [(message.findtext("MessageText") or "") for message in root.iter("QueueMessage")]
+    return [PoisonMessage(message.findtext("MessageText") or "", _inserted_at(message.findtext("InsertionTime")))
+            for message in root.iter("QueueMessage")]
+
+
+def _inserted_at(text: str | None) -> float | None:
+    try:
+        return parsedate_to_datetime(text).timestamp() if text else None
+    except (TypeError, ValueError):
+        return None
 
 
 def blob_of_message(text: str) -> str | None:
@@ -207,6 +261,14 @@ def _unbase64(text: str) -> str | None:
 
 # --- the checks ---------------------------------------------------------------------------------------
 
+def content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _expected_keys(upload: Upload) -> list[str]:
+    return [chunk_key(upload.artefact, i) for i in range(upload.expected_chunks or 0)]
+
+
 def _problems_new(upload: Upload, chunks: list[dict]) -> str | None:
     """Why `chunks` are not the chunks a finished ingestion of `upload` leaves, or None."""
     expected = upload.expected_chunks or 0
@@ -217,17 +279,14 @@ def _problems_new(upload: Upload, chunks: list[dict]) -> str | None:
     return None
 
 
-def _expected_keys(upload: Upload) -> list[str]:
-    return [chunk_key(upload.artefact, i) for i in range(upload.expected_chunks or 0)]
+def watch_new(uploads: list[Upload], read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
+              timeout_s: float = I1_TIMEOUT_S, interval_s: float = POLL_S) -> list[Upload]:
+    """Watch each new upload's window (120 s from its own upload) and record what was seen, per upload.
 
-
-def i1_new_searchable(uploads: list[Upload], read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
-                      timeout_s: float = I1_TIMEOUT_S, interval_s: float = POLL_S) -> CheckResult:
-    """I1: each new artefact's chunks are in the index, with the expected count, within 120 s of its upload."""
-    if not uploads:
-        return CheckResult("I1", False, "no new artefact was uploaded in this session")
+    Called by `upload`, straight after the uploads, so the window is always watched while it is open.
+    """
     pending = set(range(len(uploads)))
-    times: dict[int, float] = {}
+    seen: dict[int, float] = {}
     last: dict[int, str] = {}
     while True:
         live = [i for i in sorted(pending) if clock() <= uploads[i].uploaded_at + timeout_s]
@@ -236,54 +295,107 @@ def i1_new_searchable(uploads: list[Upload], read_chunks: ReadChunks, *, clock: 
         for i in live:
             upload = uploads[i]
             problem = _problems_new(upload, read_chunks(upload.artefact))
-            seen = clock() - upload.uploaded_at
-            if problem is None and seen <= timeout_s:
-                times[i] = seen
+            elapsed = clock() - upload.uploaded_at
+            if problem is None and elapsed <= timeout_s:
+                seen[i] = elapsed
                 pending.discard(i)
             else:
                 last[i] = problem or "searchable only after the time was up"
         if pending:
             sleep(interval_s)
-    if pending:
-        missed = "; ".join(f"{uploads[i].artefact}: {last.get(i, 'never read in time')}" for i in sorted(pending))
-        return CheckResult("I1", False, f"{len(times)} of {len(uploads)} searchable within {timeout_s:.0f} s; "
-                                        f"not: {missed}")
-    values = sorted(times.values())
+    return [replace(u, watched=True, observed_after=seen.get(i),
+                    problem=None if i in seen else last.get(i, "never read in time"))
+            for i, u in enumerate(uploads)]
+
+
+def require_watched(check: str, uploads: list[Upload]) -> None:
+    unwatched = [u.artefact or u.blob for u in uploads if not u.watched]
+    if unwatched:
+        raise NotWatchedError(f"{check} was not watched through its window by `upload` for {', '.join(unwatched)}: "
+                              "a read now says nothing about the window, so nothing is judged; upload again in a "
+                              "new session and let `upload` finish")
+
+
+def i1_new_searchable(uploads: list[Upload], *, timeout_s: float = I1_TIMEOUT_S) -> CheckResult:
+    """I1: each new artefact's chunks were in the index, with the expected count, within 120 s of its upload.
+
+    Judged from what `upload` saw while it watched each window; an upload that was not watched is refused.
+    """
+    if not uploads:
+        return CheckResult("I1", False, "no new artefact was uploaded in this session")
+    require_watched("I1", uploads)
+    missed = [u for u in uploads if u.observed_after is None or u.observed_after > timeout_s]
+    if missed:
+        shown = "; ".join(f"{u.artefact}: {u.problem or 'searchable only after the time was up'}" for u in missed)
+        return CheckResult("I1", False, f"{len(uploads) - len(missed)} of {len(uploads)} searchable within "
+                                        f"{timeout_s:.0f} s; not: {shown}")
+    values = sorted(u.observed_after for u in uploads)
     return CheckResult("I1", True, f"{len(uploads)} of {len(uploads)} searchable within {timeout_s:.0f} s of "
                                    f"their upload: median {statistics.median(values):.0f} s, maximum "
                                    f"{values[-1]:.0f} s (seen at each poll, so at most {POLL_S} s late)")
 
 
+NOT_SHORTENED = "the input was not shortened enough: I2 not measured"
+
+
 def _problems_changed(upload: Upload, chunks: list[dict]) -> list[str]:
-    expected = upload.expected_chunks or 0
-    problems = []
+    """What is still wrong with `chunks` as the replacement of the changed artefact; empty when it is replaced.
+
+    No count is typed in: the new chunks are whatever the index holds under the new keys, so the check is
+    that those are exactly keys 0 to n-1 of the artefact, none of the old keys remain, n is smaller than the
+    old count, the cut-away text is gone and some text is new.
+    """
+    n = len(chunks)
+    if n == 0:
+        return ["0 chunks in the index"]
     held = {c["chunk_id"] for c in chunks}
+    problems = []
     old_left = held & set(upload.old_keys)
     if old_left:
         problems.append(f"{len(old_left)} old key(s) still in the index")
-    if len(chunks) != expected:
-        problems.append(f"{len(chunks)} chunks, expected {expected}")
-    elif held != set(_expected_keys(upload)):
-        problems.append("the keys are not the new ones")
+    elif held != {chunk_key(upload.artefact, i) for i in range(n)}:
+        problems.append(f"the {n} keys are not exactly the new keys 0 to {n - 1}")
     if upload.gone_text and any(upload.gone_text in c["content"] for c in chunks):
         problems.append("old text still present")
+    old = set(upload.old_hashes)
+    if not any(content_hash(c["content"]) not in old for c in chunks):
+        problems.append("no new text: every chunk is one the old version held")
+    if not problems and n >= len(upload.old_keys):
+        problems.append(NOT_SHORTENED)
     return problems
 
 
-def i2_changed_replaces(upload: Upload, read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
-                        timeout_s: float = I2_TIMEOUT_S, interval_s: float = POLL_S) -> CheckResult:
-    """I2: the index holds exactly the changed artefact's new chunks, with the new text, and none of its old keys."""
-    if not upload.old_keys or not upload.expected_chunks:
-        return CheckResult("I2", False, "the upload recorded no old keys or no expected count: the artefact was "
-                                        "not in the index before it, so nothing could be replaced")
-    problems: list[str] = ["never read"]
+def watch_changed(upload: Upload, read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
+                  timeout_s: float = I2_TIMEOUT_S, interval_s: float = POLL_S) -> Upload:
+    """Watch the changed artefact's window (spec §7 sets none for I2: the same 120 s) and record what was seen."""
+    problems: list[str] = ["never read in time"]
+    chunks: list[dict] = []
     while clock() <= upload.uploaded_at + timeout_s:
-        problems = _problems_changed(upload, read_chunks(upload.artefact))
+        chunks = read_chunks(upload.artefact)
+        problems = _problems_changed(upload, chunks)
+        elapsed = clock() - upload.uploaded_at
         if not problems:
-            return CheckResult("I2", True, f"exactly {upload.expected_chunks} chunks with the new keys and text; "
-                                           f"{len(upload.old_keys)} old keys gone")
+            return replace(upload, watched=True, observed_after=elapsed, problem=None, new_count=len(chunks))
+        if problems == [NOT_SHORTENED]:
+            break                       # settled: waiting longer changes nothing
         sleep(interval_s)
-    return CheckResult("I2", False, f"not replaced within {timeout_s:.0f} s: " + "; ".join(problems))
+    return replace(upload, watched=True, observed_after=None, problem="; ".join(problems), new_count=len(chunks))
+
+
+def i2_changed_replaces(upload: Upload) -> CheckResult:
+    """I2: the index holds exactly the changed artefact's new chunks, with new text, none of its old keys.
+
+    Judged from what `upload` saw while it watched; an upload that was not watched is refused.
+    """
+    require_watched("I2", [upload])
+    if not upload.old_keys:
+        return CheckResult("I2", False, "the upload recorded no old keys: the artefact was not in the index before it")
+    if upload.problem is not None:
+        return CheckResult("I2", False, upload.problem if upload.problem == NOT_SHORTENED
+                           else f"not replaced within {I2_TIMEOUT_S:.0f} s: {upload.problem}")
+    return CheckResult("I2", True, f"exactly {upload.new_count} chunks under the new keys, with new text and without "
+                                   f"the cut-away text; {len(upload.old_keys)} old keys gone, {upload.observed_after:.0f} s "
+                                   "after the upload")
 
 
 def i3_duplicate_harmless(upload: Upload, read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
@@ -304,23 +416,36 @@ def i3_duplicate_harmless(upload: Upload, read_chunks: ReadChunks, *, clock: Clo
                                    "as after the first")
 
 
-def i4_broken_to_poison(upload: Upload, peek: Callable[[], list[str]], count: Callable[[], int], *,
+def i4_broken_to_poison(upload: Upload, peek: Callable[[], list[PoisonMessage]], count: Callable[[], int], *,
                         clock: Clock, sleep: Sleep, timeout_s: float = I4_TIMEOUT_S,
                         interval_s: float = POISON_POLL_S) -> CheckResult:
-    """I4: a poison message for the broken upload within 10 minutes, and the index gained nothing."""
+    """I4: a poison message for the broken upload, inserted within 10 minutes of it, and the index gained nothing.
+
+    The queue is always peeked at least once, and the verdict is the matching message's own InsertionTime
+    against the upload's time, so it does not depend on when this runs. The upload's blob name is unique,
+    so another upload's message never matches. (A message whose reply carried no InsertionTime is judged by
+    when it was first seen.)
+    """
     if upload.docs_before is None:
         return CheckResult("I4", False, "the upload recorded no document count: nothing to compare the index with")
-    found_after: float | None = None
-    while clock() - upload.uploaded_at <= timeout_s:
-        if upload.blob in {blob_of_message(text) for text in peek()}:
-            found_after = clock() - upload.uploaded_at
+    delay: float | None = None
+    while True:
+        matches = [m for m in peek() if blob_of_message(m.text) == upload.blob]
+        if matches:
+            stamped = [m.inserted_at for m in matches if m.inserted_at is not None]
+            delay = (min(stamped) - upload.uploaded_at) if stamped else clock() - upload.uploaded_at
+            break
+        if clock() - upload.uploaded_at >= timeout_s:
             break
         sleep(interval_s)
-    if found_after is None:
+    if delay is None:
         return CheckResult("I4", False, f"no poison message for the upload within {timeout_s / 60:.0f} minutes")
+    if delay > timeout_s:
+        return CheckResult("I4", False, f"the poison message was inserted {delay:.0f} s after the upload, later than "
+                                        f"{timeout_s / 60:.0f} minutes")
     after = count()
     if after != upload.docs_before:
-        return CheckResult("I4", False, f"a poison message came after {found_after:.0f} s, but the index went from "
+        return CheckResult("I4", False, f"a poison message came after {delay:.0f} s, but the index went from "
                                         f"{upload.docs_before} to {after} documents: it gained {after - upload.docs_before} documents")
-    return CheckResult("I4", True, f"a poison message for the upload came after {found_after:.0f} s; the index "
+    return CheckResult("I4", True, f"a poison message for the upload came {delay:.0f} s after it; the index "
                                    f"gained no documents ({upload.docs_before} before and after)")

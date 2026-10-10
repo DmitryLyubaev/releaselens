@@ -179,7 +179,7 @@ def test_t4_waits_for_a_metric_that_lags_and_passes_when_it_arrives(clock):
 
     def totals():
         reads.append(clock.now)
-        return {"owner": 20} if len(reads) >= 4 else {}
+        return {"owner": 22} if len(reads) >= 4 else {}
 
     result = tc.t4_rate_limit(burst, totals, label="owner", clock=clock, sleep=clock.sleep, wait_s=300, interval_s=30)
     assert result.passed is True and len(reads) == 4 and sum(clock.sleeps) == 90
@@ -197,6 +197,20 @@ def test_t4_fails_when_the_metric_holds_fewer_calls_than_the_gateway_let_through
     burst = tc.Burst(30, 20, 10, 10, 0)
     result = tc.t4_rate_limit(burst, lambda: {"owner": 7}, label="owner", clock=clock, sleep=clock.sleep, wait_s=0)
     assert result.passed is False and "7" in result.detail
+
+
+def test_t4_needs_the_burst_s_accepted_calls_plus_the_handshake_s_requests(clock):
+    burst = tc.Burst(30, 20, 10, 10, 0)
+    assert tc.HANDSHAKE_REQUESTS == 2
+    short = tc.t4_rate_limit(burst, lambda: {"owner": 21}, label="owner", clock=clock, sleep=clock.sleep, wait_s=0)
+    enough = tc.t4_rate_limit(burst, lambda: {"owner": 22}, label="owner", clock=clock, sleep=clock.sleep, wait_s=0)
+    assert short.passed is False and "22" in short.detail and enough.passed is True
+
+
+def test_t4_fails_when_no_burst_call_was_accepted_and_never_passes_on_other_rows(clock):
+    burst = tc.Burst(30, 0, 30, 30, 0)
+    result = tc.t4_rate_limit(burst, lambda: {"owner": 500}, label="owner", clock=clock, sleep=clock.sleep, wait_s=0)
+    assert result.passed is False and "no call" in result.detail and "got past the gateway" in result.detail
 
 
 def test_t4_fails_without_a_429_with_retry_after_and_does_not_wait_for_the_metric(clock):
@@ -315,7 +329,7 @@ def test_the_real_frozen_set_has_at_least_ten_questions_and_loads():
     assert len(first) == 10 and first[0][0] == "q001"
 
 
-def test_tool_call_rows_query_the_tool_calls_metric_by_caller_since_the_start():
+def test_tool_call_rows_query_the_tool_calls_metric_by_caller_within_the_burst_window():
     seen = []
 
     def handler(request):
@@ -323,18 +337,22 @@ def test_tool_call_rows_query_the_tool_calls_metric_by_caller_since_the_start():
         return httpx.Response(200, json={"tables": [{"columns": [{"name": "Caller"}, {"name": "total"}],
                                                       "rows": [["00000000-0000-0000-0000-0000000000a1", 23.0]]}]})
 
-    rows = tc.tool_call_rows("app-id-1", "tok", "2026-10-10T01:30:00Z", httpx.Client(transport=httpx.MockTransport(handler)))
+    rows = tc.tool_call_rows("app-id-1", "tok", "2026-10-10T01:30:00Z", "2026-10-10T01:31:10Z",
+                             httpx.Client(transport=httpx.MockTransport(handler)))
 
     assert rows == [{"Caller": "00000000-0000-0000-0000-0000000000a1", "total": 23.0}]
     body = json.loads(seen[0].content)
-    assert 'name == "Tool Calls"' in body["query"] and "2026-10-10T01:30:00Z" in body["query"]
-    assert seen[0].headers["authorization"] == "Bearer tok" and body["timespan"].startswith("2026-10-10T01:30:00Z/")
+    assert 'name == "Tool Calls"' in body["query"]
+    assert "between (datetime(2026-10-10T01:30:00Z) .. datetime(2026-10-10T01:31:10Z))" in body["query"]
+    assert seen[0].headers["authorization"] == "Bearer tok" and body["timespan"] == "2026-10-10T01:30:00Z/2026-10-10T01:31:10Z"
 
 
-def test_tool_call_rows_refuse_a_since_that_is_not_a_utc_time_and_raise_the_status_only():
+def test_tool_call_rows_refuse_a_time_that_is_not_utc_and_raise_the_status_only():
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403, text="secret")))
     with pytest.raises(ValueError):
-        tc.tool_call_rows("a", "t", '2026" | take 1', client)
+        tc.tool_call_rows("a", "t", '2026" | take 1', "2026-10-10T01:31:10Z", client)
+    with pytest.raises(ValueError):
+        tc.tool_call_rows("a", "t", "2026-10-10T01:31:10Z", "tomorrow", client)
     with pytest.raises(MetricQueryError) as raised:
-        tc.tool_call_rows("a", "t", "2026-10-10T01:30:00Z", client)
+        tc.tool_call_rows("a", "t", "2026-10-10T01:30:00Z", "2026-10-10T01:31:10Z", client)
     assert str(raised.value) == "the query API answered 403"

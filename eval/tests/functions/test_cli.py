@@ -8,7 +8,9 @@ import base64
 import json
 import subprocess
 import threading
+from dataclasses import asdict
 from datetime import datetime, timezone
+from email.utils import formatdate
 from pathlib import Path
 
 import httpx
@@ -65,12 +67,14 @@ class _Env:
         self.blobs: list[tuple[str, bytes]] = []
         self.on_put = None
         self.doc_count = 1000
-        self.poison: list[str] = []
+        self.poison: list[tuple[str, float]] = []        # (message text, insertion time)
+        self.poison_count: int | None = None
+        self.put_headers: list[httpx.Headers] = []
+        self.conflicts: set[str] = set()
         self.answers: dict[str, list[str]] = {}
         self.gateway_calls = 0
         self.tool_limit = 10_000
         self.metric_rows = [{"Caller": OWNER_OID, "total": 500}]
-        self.corpus = tmp_path / "chunks.jsonl"
 
     def run(self, command, **kwargs):
         if command[:2] == ["git", "status"]:
@@ -79,20 +83,26 @@ class _Env:
             return subprocess.CompletedProcess(command, 0, COMMIT + "\n", "")
         return subprocess.CompletedProcess(command, 0 if self.ignored else 1, "", "")
 
-    # -- artefact files and the corpus
-    def corpus_of(self, counts: dict[str, int]) -> None:
-        lines = []
-        for artefact, n in counts.items():
-            for i in range(n):
-                lines.append(json.dumps({"chunkId": len(lines) + 1, "artefact": artefact,
-                                         "entityType": artefact.split(":")[0], "entityKey": artefact.split(":")[1],
-                                         "chunkIndex": i, "tokenCount": 5, "content": "text"}))
-        self.corpus.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def artefact_file(self, artefact: str) -> Path:
+    # -- artefact files and the export manifest
+    def artefact_file(self, artefact: str, chunks: int | None = None) -> Path:
+        """A file as `export-artefacts` writes it; with `chunks`, its entry in manifest.json."""
         path = self.files / f"{_stem(artefact)}.json"
         path.write_text(json.dumps({"entityType": artefact.split(":")[0]}), encoding="utf-8")
+        if chunks is not None:
+            manifest_path = self.files / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+            manifest[path.name] = chunks
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return path
+
+    def autoingest(self, counts: dict[str, int]) -> None:
+        """What the Function does: once a blob is put, its artefact's chunks are in the index."""
+        def hook(name: str) -> None:
+            artefact = ic.artefact_of_stem(name.split("-", 1)[1].removesuffix(".json"))
+            if artefact in counts:
+                self.ingested(artefact, counts[artefact])
+
+        self.on_put = hook
 
     def ingested(self, artefact: str, n: int, text: str = "new text") -> None:
         self.index[artefact] = [{"chunk_id": ic.chunk_key(artefact, i), "content": f"{text} {i}"} for i in range(n)]
@@ -105,13 +115,20 @@ class _Env:
         auth = request.headers.get("authorization")
         if host == "store.example.com" and request.method == "PUT":
             name = path.rsplit("/", 1)[1]
+            if name in self.conflicts and "if-none-match" in request.headers:
+                return httpx.Response(409, text="BlobAlreadyExists")
             with self.lock:
                 self.blobs.append((name, request.content))
+                self.put_headers.append(request.headers)
             if self.on_put:
                 self.on_put(name)
             return httpx.Response(201)
         if host == "store.example.com" and request.method == "GET":
-            xml = "".join(f"<QueueMessage><MessageText>{t}</MessageText></QueueMessage>" for t in self.poison)
+            if request.url.params.get("comp") == "metadata":
+                count = len(self.poison) if self.poison_count is None else self.poison_count
+                return httpx.Response(200, headers={"x-ms-approximate-messages-count": str(count)})
+            xml = "".join(f"<QueueMessage><InsertionTime>{formatdate(at, usegmt=True)}</InsertionTime>"
+                          f"<MessageText>{t}</MessageText></QueueMessage>" for t, at in self.poison)
             return httpx.Response(200, text=f"<QueueMessagesList>{xml}</QueueMessagesList>")
         if host == "search.example.com":
             return self.search(request, path)
@@ -184,7 +201,7 @@ def _argv(env: _Env, command: str, *extra: str) -> list[str]:
 
 def _upload(env: _Env, kind: str, *extra: str) -> int:
     return cli.main(_argv(env, "upload", "--kind", kind, "--dir", str(env.files), "--blob-endpoint", BLOB,
-                          "--search-endpoint", SEARCH, "--corpus", str(env.corpus), *extra))
+                          "--search-endpoint", SEARCH, *extra))
 
 
 def _manifest(env: _Env) -> dict:
@@ -226,10 +243,10 @@ def test_a_measured_command_refuses_an_output_directory_git_would_see(env, capsy
 
 # --- upload --------------------------------------------------------------------------------------------
 
-def test_upload_new_puts_each_file_as_session_and_key_and_records_the_expected_chunks(env, capsys):
-    env.corpus_of({"issue:1": 2, "pull_request:7": 3})
-    env.artefact_file("issue:1")
-    env.artefact_file("pull_request:7")
+def test_upload_new_puts_each_file_as_session_and_key_with_if_none_match_and_watches_its_window(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.artefact_file("pull_request:7", 3)
+    env.autoingest({"issue:1": 2, "pull_request:7": 3})
 
     assert _upload(env, "new") == 0
 
@@ -237,21 +254,46 @@ def test_upload_new_puts_each_file_as_session_and_key_and_records_the_expected_c
     session = manifest["session"]
     assert len(session) == 8
     assert sorted(name for name, _ in env.blobs) == sorted(f"{session}-{_stem(a)}.json" for a in ("issue:1", "pull_request:7"))
-    assert all(json.loads(data) for _, data in env.blobs)
+    assert all(headers.get("if-none-match") == "*" for headers in env.put_headers)
     uploads = {u["artefact"]: u for u in manifest["uploads"]}
-    assert {a: (u["kind"], u["expected_chunks"]) for a, u in uploads.items()} == {
-        "issue:1": ("new", 2), "pull_request:7": ("new", 3)}
+    assert {a: (u["kind"], u["expected_chunks"], u["watched"], u["problem"]) for a, u in uploads.items()} == {
+        "issue:1": ("new", 2, True, None), "pull_request:7": ("new", 3, True, None)}
+    assert all(u["observed_after"] is not None and u["observed_after"] <= 120 for u in uploads.values())
     assert uploads["issue:1"]["blob"] == f"{session}-{_stem('issue:1')}.json" and uploads["issue:1"]["uploaded_at"] > 0
     assert sorted(_Tokens.created) == sorted([(ic.STORAGE_SCOPE, TENANT), ("https://search.azure.com/.default", TENANT)])
     put = next(r for r in env.requests if r.method == "PUT")
     assert put.headers["authorization"] == "Bearer t-storage" and put.url.path.startswith("/artefacts-in/")
-    assert "uploaded 2" in capsys.readouterr().out
+    assert "uploaded 2 new" in capsys.readouterr().out
+
+
+def test_upload_never_uploads_the_export_manifest(env):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    assert _upload(env, "new") == 0
+    assert [name for name, _ in env.blobs] == [f"{_manifest(env)['session']}-{_stem('issue:1')}.json"]
+
+
+def test_upload_new_watches_the_whole_window_and_records_a_miss_without_failing_the_upload(env, capsys):
+    env.artefact_file("issue:1", 2)                    # nothing ingests it
+    assert _upload(env, "new") == 0
+    entry = _manifest(env)["uploads"][0]
+    assert entry["watched"] is True and entry["observed_after"] is None and "0 of 2" in entry["problem"]
+    assert "not searchable" in capsys.readouterr().out
+    assert env.clock.now >= entry["uploaded_at"] + 120
+
+
+def test_upload_new_refuses_a_missing_export_manifest_and_a_file_it_does_not_list(env, capsys):
+    env.artefact_file("issue:1")                       # a file, but no manifest.json entry
+    assert _upload(env, "new") == 1 and "manifest.json" in capsys.readouterr().err
+    assert env.blobs == [] and _files(env) == []
+    env.artefact_file("issue:2", 3)
+    assert _upload(env, "new") == 1 and "issue:1" in capsys.readouterr().err
+    assert env.blobs == []
 
 
 def test_upload_new_refuses_an_artefact_the_index_already_holds_and_uploads_nothing(env, capsys):
-    env.corpus_of({"issue:1": 2, "issue:2": 1})
-    env.artefact_file("issue:1")
-    env.artefact_file("issue:2")
+    env.artefact_file("issue:1", 2)
+    env.artefact_file("issue:2", 1)
     env.ingested("issue:2", 1)
 
     assert _upload(env, "new") == 1
@@ -259,67 +301,122 @@ def test_upload_new_refuses_an_artefact_the_index_already_holds_and_uploads_noth
     assert "already" in capsys.readouterr().err and env.blobs == [] and _files(env) == []
 
 
-def test_upload_new_refuses_an_artefact_the_corpus_does_not_hold_and_a_file_that_is_not_a_key(env, capsys):
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:9")
-    assert _upload(env, "new") == 1 and "corpus" in capsys.readouterr().err
-    (env.files / f"{_stem('issue:9')}.json").unlink()
+def test_upload_refuses_a_file_that_is_not_a_key(env, capsys):
+    env.artefact_file("issue:1", 2)
     (env.files / "readme.json").write_text("{}", encoding="utf-8")
     assert _upload(env, "new") == 1 and "not a base64url artefact key" in capsys.readouterr().err
     assert env.blobs == []
 
 
+def test_a_repeated_upload_of_the_same_name_is_refused_plainly_on_a_409(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    assert _upload(env, "new") == 0
+    env.index.clear()
+    env.conflicts = {f"{_manifest(env)['session']}-{_stem('issue:1')}.json"}
+    assert _upload(env, "new") == 1
+    assert "already exists" in capsys.readouterr().err and len(_manifest(env)["uploads"]) == 1
+
+
 def test_a_second_upload_joins_the_session_and_a_new_session_moves_the_old_manifest_aside(env):
-    env.corpus_of({"issue:1": 2, "issue:2": 1})
-    env.artefact_file("issue:1")
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2, "issue:2": 1})
     assert _upload(env, "new") == 0
     first = _manifest(env)["session"]
     (env.files / f"{_stem('issue:1')}.json").unlink()
-    env.artefact_file("issue:2")
+    env.artefact_file("issue:2", 1)
     assert _upload(env, "new") == 0
     assert _manifest(env)["session"] == first and len(_manifest(env)["uploads"]) == 2
 
     (env.files / f"{_stem('issue:2')}.json").unlink()
-    env.artefact_file("issue:1")
+    env.artefact_file("issue:1", 2)
     env.index.clear()
     assert _upload(env, "new", "--new-session") == 0
     assert _manifest(env)["session"] != first and len(_manifest(env)["uploads"]) == 1
     assert (env.out / f"functions-session-{first}.json").exists()
 
 
-def test_upload_changed_records_the_old_keys_and_needs_the_expected_count_and_the_gone_text(env, capsys):
-    env.artefact_file("issue:1")
-    env.index["issue:1"] = [{"chunk_id": str(k), "content": "old"} for k in (9001, 9002, 9003)]
+OLD_TEXTS = ["old head", "old middle", "the cut tail", "old end"]
 
-    assert _upload(env, "changed") == 1 and "--expect-chunks" in capsys.readouterr().err and env.blobs == []
-    assert _upload(env, "changed", "--expect-chunks", "2", "--gone-text", "the cut tail") == 0
+
+def _old_numeric(env: _Env, artefact: str = "issue:1") -> None:
+    env.index[artefact] = [{"chunk_id": str(9001 + i), "content": t} for i, t in enumerate(OLD_TEXTS)]
+
+
+def _changed_file(env: _Env, body: str = "a shortened body") -> None:
+    (env.files / f"{_stem('issue:1')}.json").write_text(json.dumps({"entityType": "issue", "body": body}), encoding="utf-8")
+
+
+def test_upload_changed_snapshots_the_old_chunks_then_watches_the_replacement_with_no_count_typed_in(env):
+    _old_numeric(env)
+    _changed_file(env)
+    env.on_put = lambda name: env.ingested("issue:1", 2)
+
+    assert _upload(env, "changed", "--gone-text", "the cut tail") == 0
 
     entry = _manifest(env)["uploads"][0]
-    assert (entry["kind"], entry["expected_chunks"], entry["gone_text"]) == ("changed", 2, "the cut tail")
-    assert sorted(entry["old_keys"]) == ["9001", "9002", "9003"]
+    assert (entry["kind"], entry["gone_text"], entry["watched"], entry["problem"]) == ("changed", "the cut tail", True, None)
+    assert sorted(entry["old_keys"]) == ["9001", "9002", "9003", "9004"] and entry["new_count"] == 2
+    assert entry["old_hashes"] == [ic.content_hash(t) for t in OLD_TEXTS]
+    assert env.put_headers[0].get("if-none-match") == "*"
+
+
+def test_upload_changed_no_longer_takes_a_chunk_count(env):
+    _old_numeric(env)
+    _changed_file(env)
+    with pytest.raises(SystemExit):
+        _upload(env, "changed", "--gone-text", "the cut tail", "--expect-chunks", "2")
+
+
+def test_upload_changed_needs_a_gone_text(env, capsys):
+    _old_numeric(env)
+    _changed_file(env)
+    assert _upload(env, "changed") == 1 and "--gone-text" in capsys.readouterr().err and env.blobs == []
+
+
+def test_upload_changed_refuses_unless_every_snapshotted_key_is_numeric(env, capsys):
+    """A second `changed` upload would snapshot the base64 keys of the first: spec §4.4 and §7 mean the bulk-loaded keys."""
+    env.index["issue:1"] = [{"chunk_id": "9001", "content": "the cut tail"}, {"chunk_id": ic.chunk_key("issue:1", 0), "content": "x"}]
+    _changed_file(env)
+    assert _upload(env, "changed", "--gone-text", "the cut tail") == 1
+    assert "numeric" in capsys.readouterr().err and env.blobs == []
+
+
+def test_upload_changed_refuses_a_gone_text_not_in_the_old_content(env, capsys):
+    _old_numeric(env)
+    _changed_file(env)
+    assert _upload(env, "changed", "--gone-text", "a phrase nobody wrote") == 1
+    assert "old content" in capsys.readouterr().err and env.blobs == []
+
+
+def test_upload_changed_refuses_a_gone_text_the_shortened_file_still_holds(env, capsys):
+    _old_numeric(env)
+    _changed_file(env, body="this body still has the cut tail in it")
+    assert _upload(env, "changed", "--gone-text", "the cut tail") == 1
+    assert "shortened file" in capsys.readouterr().err and env.blobs == []
 
 
 def test_upload_changed_refuses_an_artefact_that_is_not_in_the_index_yet(env, capsys):
-    env.artefact_file("issue:1")
-    assert _upload(env, "changed", "--expect-chunks", "2", "--gone-text", "tail") == 1
+    _changed_file(env)
+    assert _upload(env, "changed", "--gone-text", "tail") == 1
     assert "not in the index" in capsys.readouterr().err and env.blobs == []
 
 
 def test_upload_changed_refuses_a_gone_text_that_holds_an_identifier_before_uploading(env, capsys):
-    env.artefact_file("issue:1")
-    env.index["issue:1"] = [{"chunk_id": "1", "content": "old"}]
-    assert _upload(env, "changed", "--expect-chunks", "2", "--gone-text", f"see {APP_ID}") == 1
+    _old_numeric(env)
+    _changed_file(env)
+    assert _upload(env, "changed", "--gone-text", f"see {APP_ID}") == 1
     assert "GUID" in capsys.readouterr().err and env.blobs == []
 
 
-def test_upload_duplicate_uploads_twice_after_the_first_is_searchable_and_keeps_the_keys_between(env):
-    env.corpus_of({"issue:1": 3})
-    env.artefact_file("issue:1")
+def test_upload_duplicate_uploads_twice_overwriting_after_the_first_is_searchable_and_keeps_the_keys_between(env):
+    env.artefact_file("issue:1", 3)
     env.on_put = lambda name: env.ingested("issue:1", 3)
 
     assert _upload(env, "duplicate") == 0
 
     assert [name for name, _ in env.blobs] == [env.blobs[0][0]] * 2
+    assert all("if-none-match" not in headers for headers in env.put_headers)       # a duplicate must overwrite
     entry = _manifest(env)["uploads"][0]
     assert entry["kind"] == "duplicate" and entry["expected_chunks"] == 3
     assert entry["keys_after_first"] == [ic.chunk_key("issue:1", i) for i in range(3)]
@@ -327,33 +424,42 @@ def test_upload_duplicate_uploads_twice_after_the_first_is_searchable_and_keeps_
 
 
 def test_upload_duplicate_stops_without_a_second_upload_when_the_first_never_becomes_searchable(env, capsys):
-    env.corpus_of({"issue:1": 3})
-    env.artefact_file("issue:1")
+    env.artefact_file("issue:1", 3)
     assert _upload(env, "duplicate") == 1
     assert len(env.blobs) == 1 and "first upload" in capsys.readouterr().err
 
 
-def test_upload_broken_puts_a_malformed_file_and_records_the_document_count(env):
+def test_upload_broken_puts_a_malformed_file_with_if_none_match_and_records_the_document_count(env):
     assert _upload(env, "broken") == 0
     (name, data), = env.blobs
     entry = _manifest(env)["uploads"][0]
-    assert name == f"{_manifest(env)['session']}-broken.json" and entry["blob"] == name
+    assert name.startswith(f"{_manifest(env)['session']}-broken-") and name.endswith(".json") and entry["blob"] == name
     with pytest.raises(ValueError):
         json.loads(data)
     assert (entry["kind"], entry["docs_before"]) == ("broken", 1000)
+    assert env.put_headers[0].get("if-none-match") == "*"
+
+
+def test_every_broken_upload_has_its_own_name(env):
+    assert _upload(env, "broken") == 0
+    assert _upload(env, "broken") == 0
+    names = [name for name, _ in env.blobs]
+    assert len(set(names)) == 2
+    assert [u["blob"] for u in _manifest(env)["uploads"]] == names
 
 
 def test_upload_writes_what_was_uploaded_even_when_a_later_upload_fails(env, capsys):
-    env.corpus_of({"issue:1": 2, "issue:2": 1})
-    env.artefact_file("issue:1")
-    env.artefact_file("issue:2")
+    env.artefact_file("issue:1", 2)
+    env.artefact_file("issue:2", 1)
+
     def fail_second(name):
         if len(env.blobs) == 2:
             raise httpx.ConnectError("down")
 
     env.on_put = fail_second
     assert _upload(env, "new") == 1
-    assert [u["artefact"] for u in _manifest(env)["uploads"]] == ["issue:1"]
+    entries = _manifest(env)["uploads"]
+    assert [u["artefact"] for u in entries] == ["issue:1"] and entries[0]["watched"] is False
     assert "ConnectError" in capsys.readouterr().err
 
 
@@ -363,53 +469,123 @@ def _checks(env: _Env, *extra: str) -> int:
     return cli.main(_argv(env, "ingest-checks", "--search-endpoint", SEARCH, "--queue-endpoint", BLOB, *extra))
 
 
-def test_ingest_checks_run_i1_on_the_manifest_and_write_only_that_checks_result(env, capsys):
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:1")
-    env.on_put = lambda name: env.ingested("issue:1", 2)
-    env.index.clear()
-    assert _upload(env, "new") == 0        # the hook puts the chunks in the index straight away
+def _write_session(env: _Env, *uploads: ic.Upload) -> None:
+    env.out.mkdir(exist_ok=True)
+    (env.out / "functions-session.json").write_text(
+        json.dumps({"session": "ab12cd34", "uploads": [asdict(u) for u in uploads]}), encoding="utf-8")
+
+
+def test_ingest_checks_judge_i1_from_what_upload_watched_without_reading_the_index(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    assert _upload(env, "new") == 0
+    env.index.clear()                       # the index is no longer what it was: the verdict is from the watch
+    before, created = len(env.requests), list(_Tokens.created)
 
     assert _checks(env, "--check", "i1") == 0
 
     assert json.loads((env.out / "check-i1.json").read_text(encoding="utf-8"))["passed"] is True
     assert "I1: pass" in capsys.readouterr().out
     assert [f for f in _files(env) if f.startswith("check-")] == ["check-i1.json"]
+    assert len(env.requests) == before and _Tokens.created == created
 
 
-def test_ingest_checks_default_to_every_check_the_manifest_has_an_upload_for(env, capsys):
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:1")
+def test_a_late_ingest_check_does_not_rejudge_an_earlier_batch_by_the_clock(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2, "issue:2": 1})
     assert _upload(env, "new") == 0
-    env.ingested("issue:1", 2)
+    (env.files / f"{_stem('issue:1')}.json").unlink()
+    env.artefact_file("issue:2", 1)
+    assert _upload(env, "new") == 0
+    env.clock.now += 86_400
 
+    assert _checks(env, "--check", "i1") == 0
+    assert "2 of 2" in capsys.readouterr().out
+
+
+def test_ingest_checks_refuse_an_upload_that_was_not_watched_and_write_no_result(env, capsys):
+    _write_session(env, ic.Upload("new", "issue:1", "ab12cd34-x.json", 1.0, expected_chunks=2))
+    assert _checks(env, "--check", "i1") == 1
+    err = capsys.readouterr().err
+    assert "not watched" in err and "issue:1" in err
+    assert not (env.out / "check-i1.json").exists()
+
+
+def test_ingest_checks_refuse_i2_too_when_it_was_not_watched(env, capsys):
+    _write_session(env, ic.Upload("changed", "issue:1", "ab12cd34-x.json", 1.0, old_keys=["1"], gone_text="x"))
+    assert _checks(env, "--check", "i2") == 1 and "not watched" in capsys.readouterr().err
+    assert not (env.out / "check-i2.json").exists()
+
+
+def test_ingest_checks_default_to_every_check_the_session_has_an_upload_for(env):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    assert _upload(env, "new") == 0
     assert _checks(env) == 0
-
     assert [f for f in _files(env) if f.startswith("check-")] == ["check-i1.json"]
 
 
 def test_a_failed_ingest_check_still_writes_its_result_and_exits_1(env, capsys):
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:1")
-    assert _upload(env, "new") == 0
+    env.artefact_file("issue:1", 2)
+    assert _upload(env, "new") == 0                           # nothing ingested it
     assert _checks(env, "--check", "i1") == 1
     assert json.loads((env.out / "check-i1.json").read_text(encoding="utf-8"))["passed"] is False
     assert "I1: fail" in capsys.readouterr().out
 
 
+def test_ingest_checks_i2_passes_from_the_watch_with_no_count_given(env, capsys):
+    _old_numeric(env)
+    _changed_file(env)
+    env.on_put = lambda name: env.ingested("issue:1", 1)
+    assert _upload(env, "changed", "--gone-text", "the cut tail") == 0
+    assert _checks(env, "--check", "i2") == 0
+    assert "I2: pass" in capsys.readouterr().out
+
+
+def _inserted_after(env: _Env, name_of_blob: str, seconds: float) -> None:
+    event = {"subject": f"/blobServices/default/containers/artefacts-in/blobs/{name_of_blob}"}
+    env.poison = [(base64.b64encode(json.dumps(event).encode()).decode(), env.clock.now + seconds)]
+
+
 def test_ingest_checks_i4_only_peeks_the_poison_queue_and_passes_on_a_matching_message(env, capsys):
     assert _upload(env, "broken") == 0
-    blob = _manifest(env)["uploads"][0]["blob"]
-    event = {"subject": f"/blobServices/default/containers/artefacts-in/blobs/{blob}"}
-    env.poison = [base64.b64encode(json.dumps(event).encode()).decode()]
+    _inserted_after(env, _manifest(env)["uploads"][0]["blob"], 120)
     before = len(env.requests)
 
     assert _checks(env, "--check", "i4") == 0
 
-    new = env.requests[before:]
-    peeks = [r for r in new if r.url.host == "store.example.com"]
-    assert peeks and all(r.method == "GET" and r.url.params["peekonly"] == "true" for r in peeks)
+    store = [r for r in env.requests[before:] if r.url.host == "store.example.com"]
+    assert store and all(r.method == "GET" for r in store)
+    assert any(r.url.params.get("peekonly") == "true" for r in store)
     assert "I4: pass" in capsys.readouterr().out
+
+
+def test_ingest_checks_i4_run_hours_later_is_judged_by_the_messages_insertion_time(env, capsys):
+    assert _upload(env, "broken") == 0
+    _inserted_after(env, _manifest(env)["uploads"][0]["blob"], 120)
+    env.clock.now += 5 * 3600
+    assert _checks(env, "--check", "i4") == 0
+    assert "I4: pass" in capsys.readouterr().out
+
+
+def test_ingest_checks_i4_refuses_a_poison_queue_over_32_messages_and_writes_no_result(env, capsys):
+    assert _upload(env, "broken") == 0
+    env.poison_count = 33
+    assert _checks(env, "--check", "i4") == 1
+    assert "33" in capsys.readouterr().err and not (env.out / "check-i4.json").exists()
+
+
+def test_the_second_broken_upload_is_not_matched_by_the_first_ones_message(env, capsys):
+    assert _upload(env, "broken") == 0
+    first = _manifest(env)["uploads"][0]["blob"]
+    assert _upload(env, "broken") == 0
+    _inserted_after(env, first, 30)
+    session = _manifest(env)
+    # judge only the second upload: drop the first from the record, as a session with one broken upload
+    session["uploads"] = session["uploads"][1:]
+    (env.out / "functions-session.json").write_text(json.dumps(session), encoding="utf-8")
+    assert _checks(env, "--check", "i4") == 1
+    assert "I4: fail" in capsys.readouterr().out
 
 
 def test_ingest_checks_refuse_a_check_with_no_upload_for_it_and_a_missing_manifest(env, capsys):
@@ -419,13 +595,12 @@ def test_ingest_checks_refuse_a_check_with_no_upload_for_it_and_a_missing_manife
     assert not (env.out / "check-i2.json").exists()
 
 
-def test_ingest_checks_ask_the_index_with_the_search_token_and_the_queue_with_the_storage_token(env):
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:1")
-    assert _upload(env, "new") == 0
-    env.ingested("issue:1", 2)
+def test_ingest_checks_i3_asks_the_index_with_the_search_token(env):
+    env.artefact_file("issue:1", 3)
+    env.on_put = lambda name: env.ingested("issue:1", 3)
+    assert _upload(env, "duplicate") == 0
     _Tokens.created = []
-    assert _checks(env, "--check", "i1") == 0
+    assert _checks(env, "--check", "i3") == 0
     assert _Tokens.created and all(s == "https://search.azure.com/.default" for s, _ in _Tokens.created)
 
 
@@ -495,10 +670,22 @@ def test_tool_checks_t4_sends_thirty_at_once_records_the_burst_and_reads_the_met
 
     assert "T4: pass" in capsys.readouterr().out
     burst = json.loads((env.out / "check-t4-burst.json").read_text(encoding="utf-8"))
-    assert burst["sent"] == 30 and burst["refused_with_retry_after"] > 0 and burst["since"].endswith("Z")
+    assert burst["sent"] == 30 and burst["refused_with_retry_after"] > 0
+    # the window opens just before the handshake and closes just after the burst (the clock is fixed here)
+    assert burst["start"] == "2026-10-10T03:30:05Z" and burst["until"] == "2026-10-10T03:30:25Z"
     query = next(r for r in env.requests if r.url.host == "api.applicationinsights.io")
-    assert "Tool Calls" in json.loads(query.content)["query"] and query.headers["authorization"] == "Bearer t-insights"
+    sent = json.loads(query.content)
+    assert "Tool Calls" in sent["query"] and query.headers["authorization"] == "Bearer t-insights"
+    assert "between (datetime(2026-10-10T03:30:05Z) .. datetime(2026-10-10T03:30:25Z))" in sent["query"]
     assert not any(OWNER_OID in text for text in (_everything_written(env),))
+
+
+def test_tool_checks_t4_fails_clearly_when_no_burst_call_got_past_the_gateway(env, questions_file, capsys):
+    env.tool_limit = 0                                  # every tools/call is refused with a 429
+    env.metric_rows = [{"Caller": OWNER_OID, "total": 500}]
+    assert _tool(env, questions_file, "--check", "t4") == 1
+    assert "got past the gateway" in capsys.readouterr().out
+    assert not any(r.url.host == "api.applicationinsights.io" for r in env.requests)
 
 
 def test_tool_checks_t4_fails_with_no_429_and_writes_the_result(env, questions_file):
@@ -567,9 +754,8 @@ def test_report_refuses_to_write_a_result_that_holds_an_identifier(env, capsys):
 
 def test_nothing_written_holds_a_token_a_url_a_hostname_a_guid_or_an_oid(env, questions_file):
     env.tool_limit = 20
-    env.corpus_of({"issue:1": 2})
-    env.artefact_file("issue:1")
-    env.on_put = lambda name: env.ingested("issue:1", 2)
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
     assert _upload(env, "new") == 0
     assert _checks(env, "--check", "i1") == 0
     assert _tool(env, questions_file) in (0, 1)
