@@ -12,6 +12,7 @@ using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Core.Telemetry;
 using ReleaseLens.Embedding;
+using ReleaseLens.Functions.Common;
 using ReleaseLens.Ingestion;
 using ReleaseLens.Ingestion.GitHub;
 using ReleaseLens.Llm.Providers;
@@ -322,6 +323,90 @@ switch (command)
         break;
     }
 
+    // Real evidence as the ingest Function's input (plan 5): one file per key, in the artefact format,
+    // named by the key's base64url, ready to upload to the artefacts-in container.
+    case "export-artefacts":
+    {
+        if (args.ElementAtOrDefault(1) is not { } directory || args.Length < 3)
+        {
+            logger.LogError(
+                "Usage: export-artefacts <dir> <key>...  (a key is issue:<number>, pull_request:<number>, " +
+                "commit:<sha> or release:<tag>)");
+            return 1;
+        }
+
+        // Every key is checked before the database is touched or a file is written.
+        var keys = new List<EvidenceKey>();
+        foreach (var text in args.Skip(2))
+        {
+            try
+            {
+                var key = ArtefactKeys.Parse(text);
+                if (!keys.Contains(key))
+                {
+                    keys.Add(key);
+                }
+            }
+            catch (FormatException ex)
+            {
+                logger.LogError("{Error}", ex.Message);
+                return 1;
+            }
+        }
+
+        var tenantId = await ResolveTenantAsync();
+        var evidence = host.Services.GetRequiredService<EvidenceRepository>();
+        var factory = host.Services.GetRequiredService<TenantConnectionFactory>();
+
+        var found = new List<IEvidenceRecord>();
+        var missing = new List<EvidenceKey>();
+        await using (var scope = await factory.OpenAsync(tenantId, cancellation.Token))
+        {
+            foreach (var key in keys)
+            {
+                IEvidenceRecord? record = key.Type switch
+                {
+                    EntityType.Commit => await evidence.GetCommitAsync(scope, key.Value, cancellation.Token),
+                    EntityType.Issue => await evidence.GetIssueAsync(scope, int.Parse(key.Value), cancellation.Token),
+                    EntityType.PullRequest => await evidence.GetPullRequestAsync(scope, int.Parse(key.Value), cancellation.Token),
+                    EntityType.Release => await evidence.GetReleaseAsync(scope, key.Value, cancellation.Token),
+                    _ => throw new UnreachableException($"The key '{key}' was parsed above.")
+                };
+
+                if (record is null)
+                {
+                    missing.Add(key);
+                }
+                else
+                {
+                    found.Add(record);
+                }
+            }
+        }
+
+        // The others are written even when some keys are missing.
+        Directory.CreateDirectory(directory);
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        foreach (var record in found)
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, ArtefactKeys.FileName(record.Key)),
+                ArtefactJson.Serialize(record), utf8, cancellation.Token);
+        }
+
+        logger.LogInformation(
+            "Exported {Count} artefact(s) to {Directory}", found.Count, Path.GetFullPath(directory));
+
+        if (missing.Count > 0)
+        {
+            logger.LogError(
+                "Not found, and not exported: {Missing}", string.Join(", ", missing.Select(key => key.ToString())));
+            return 1;
+        }
+
+        break;
+    }
+
     // The benchmark's two in-app arms: S1 (hybrid) and E1 (bge-exact).
     case "retrieve":
     {
@@ -386,7 +471,7 @@ switch (command)
     default:
         logger.LogError(
             "Unknown command '{Command}'. Use: migrate | create-tenant | ingest | issue-key | reset-checkpoints | " +
-            "export-corpus | retrieve | price",
+            "export-corpus | export-artefacts | retrieve | price",
             command);
         return 1;
 }
