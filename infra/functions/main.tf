@@ -203,3 +203,29 @@ resource "azapi_update_resource" "auth" {
     }
   }
 }
+
+# Basic publishing credentials are a username and password for the SCM (Kudu) and FTP endpoints.
+# Both are off on both apps, so code deploys only with the owner's Entra sign-in. Updates rather
+# than resources of their own, as for authsettingsV2: the policies cannot be deleted on their
+# own, and deleting the site removes them.
+locals {
+  basic_publishing = {
+    for pair in setproduct(keys(local.apps), ["scm", "ftp"]) : "${pair[0]}-${pair[1]}" => {
+      app  = pair[0]
+      kind = pair[1]
+    }
+  }
+}
+
+resource "azapi_update_resource" "basic_publishing" {
+  for_each = local.basic_publishing
+
+  type        = "Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-11-01"
+  resource_id = "${azapi_resource.app[each.value.app].id}/basicPublishingCredentialsPolicies/${each.value.kind}"
+
+  body = {
+    properties = {
+      allow = false
+    }
+  }
+}

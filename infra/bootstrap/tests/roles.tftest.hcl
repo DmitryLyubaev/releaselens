@@ -349,6 +349,8 @@ run "role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,
@@ -387,6 +389,8 @@ run "role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,
@@ -427,6 +431,8 @@ run "role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,
@@ -525,6 +531,18 @@ run "function_role_assignments" {
     error_message = "tool_host_table_contributor must give the tool identity Storage Table Data Contributor on its own host account, strltoolhost<suffix>."
   }
 
+  # Application Insights has local authentication off, so each app's telemetry is ingested with
+  # its own identity (APPLICATIONINSIGHTS_AUTHENTICATION_STRING), which needs this role there.
+  assert {
+    condition     = azurerm_role_assignment.ingest_metrics_publisher.role_definition_name == "Monitoring Metrics Publisher" && azurerm_role_assignment.ingest_metrics_publisher.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Insights/components/appi-releaselens" && azurerm_role_assignment.ingest_metrics_publisher.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_metrics_publisher must give the ingest identity Monitoring Metrics Publisher on Application Insights only."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_metrics_publisher.role_definition_name == "Monitoring Metrics Publisher" && azurerm_role_assignment.tool_metrics_publisher.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Insights/components/appi-releaselens" && azurerm_role_assignment.tool_metrics_publisher.principal_id == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    error_message = "tool_metrics_publisher must give the tool identity Monitoring Metrics Publisher on Application Insights only."
+  }
+
   assert {
     condition     = azurerm_role_assignment.eventgrid_queue_sender.role_definition_name == "Storage Queue Data Message Sender" && azurerm_role_assignment.eventgrid_queue_sender.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events" && azurerm_role_assignment.eventgrid_queue_sender.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
     error_message = "eventgrid_queue_sender must give the Event Grid topic's identity Storage Queue Data Message Sender on the ingest-events queue's Resource Manager ID."
@@ -583,6 +601,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,
@@ -621,6 +641,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,
@@ -660,6 +682,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.tool_host_blob_owner,
         azurerm_role_assignment.tool_host_queue_contributor,
         azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.ingest_metrics_publisher,
+        azurerm_role_assignment.tool_metrics_publisher,
         azurerm_role_assignment.eventgrid_queue_sender,
         azurerm_role_assignment.eventgrid_deadletter_writer,
         azurerm_role_assignment.owner_artefacts_in,

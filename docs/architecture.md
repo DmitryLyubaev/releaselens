@@ -416,6 +416,7 @@ The bootstrap stack makes every Azure role assignment but two, and looks each ro
 | Ingest identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | its own host account, `strlingesthost<suffix>`, only (three assignments) | identity-based host storage. No account-wide role on the ingestion account |
 | Tool identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account | embed the query |
 | Tool identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | its own host account, `strltoolhost<suffix>`, only (three assignments) | identity-based host storage; the MCP extension uses queues. No role on the ingestion account |
+| Ingest identity, tool identity | Monitoring Metrics Publisher | Application Insights only (two assignments) | each app sends its telemetry with Entra ID as its own identity, since local authentication is off |
 | Event Grid topic's identity | Storage Queue Data Message Sender | `ingest-events` only | deliver blob events to the queue with no key |
 | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` only | dead-letter events Event Grid cannot deliver |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
