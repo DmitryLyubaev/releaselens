@@ -65,7 +65,8 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
     /// <c>top</c> asked for, so a <c>top</c> of 1,000 with 1,500 matches would return 1,000 and no
     /// link. Without it the service pages by its own size and always says where the next page is:
     /// <c>@odata.nextLink</c> (the same URL on every page of a POST search) and
-    /// <c>@search.nextPageParameters</c> (the request body to send there, holding the <c>skip</c>).
+    /// <c>@search.nextPageParameters</c> (whose <c>skip</c> is the position; the rest of the request
+    /// is sent again as it was first written, not as the reply echoes it).
     /// </remarks>
     public async Task<IReadOnlyList<string>> KeysForArtefactAsync(string artefact, CancellationToken cancellationToken)
     {
@@ -106,17 +107,21 @@ public sealed class SearchIndexClient(HttpClient http, string indexName)
                 throw new InvalidOperationException($"{Service} paged to a different host; not followed.");
             }
 
-            body = reply["@search.nextPageParameters"]?.AsObject()
+            // Only the skip is taken from the reply. The filter and the select stay the ones sent
+            // first, whatever the service echoes: this list feeds a delete, and a next page that
+            // lost the filter would hand back other artefacts' keys.
+            var nextPage = reply["@search.nextPageParameters"]?.AsObject()
                 ?? throw new InvalidOperationException($"{Service} gave a next page and no way to ask for it.");
 
             // The link is the same on every page, so progress is the skip: it must move forward, or
             // the same page would be read for ever.
-            if (body["skip"]?.GetValue<int>() is not { } nextSkip || nextSkip <= skip)
+            if (nextPage["skip"]?.GetValue<int>() is not { } nextSkip || nextSkip <= skip)
             {
                 throw new InvalidOperationException($"{Service} paged without moving forward; stopped.");
             }
 
             skip = nextSkip;
+            body["skip"] = skip;
         }
     }
 
