@@ -58,7 +58,24 @@ _KEY = re.compile(r"(?:commit|issue|pull_request|release):.+", re.DOTALL)
 
 
 class IndexReadError(Exception):
-    """The index could not be read; the message holds a status, never a URL or a body."""
+    """The index could not be read; the message holds a status, never a URL or a body.
+
+    `status` is the HTTP status when the index answered with one, and None when the read failed otherwise.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def is_transient(error: Exception) -> bool:
+    """Whether a failed index read may succeed if tried again: a 429, a 5xx, a timeout or a lost connection.
+
+    Anything else, a 401, a 403 or another 4xx above all, is not: wrong roles or a wrong audience fail at once.
+    """
+    if isinstance(error, IndexReadError):
+        return error.status is not None and (error.status == 429 or 500 <= error.status <= 599)
+    return isinstance(error, httpx.TransportError)
 
 
 class UploadError(Exception):
@@ -104,6 +121,11 @@ class Upload:
     observed_after: float | None = None     # seconds from the upload until the index first held the expected chunks
     problem: str | None = None              # what was still wrong when the window ended, or settled wrong
     new_count: int | None = None            # changed: the chunks the index holds after the replacement
+    # The index reads made while watching, and how many of them failed with a transient error (a 429, a
+    # 5xx, a timeout or a lost connection), each counted as "not seen yet". When every read failed, the
+    # window was not watched at all, and the upload stays unwatched.
+    polls: int = 0
+    failed_polls: int = 0
 
 
 # --- names and keys ---------------------------------------------------------------------------------
@@ -156,7 +178,7 @@ def chunks_for_artefact(http: httpx.Client, endpoint: str, token: Token, artefac
         response = http.post(url, params={"api-version": search_index.API_VERSION},
                              headers={"Authorization": f"Bearer {token()}"}, json=body)
         if not response.is_success:
-            raise IndexReadError(f"the index answered {response.status_code}")
+            raise IndexReadError(f"the index answered {response.status_code}", status=response.status_code)
         reply = response.json()
         chunks += [{"chunk_id": d["chunk_id"], "content": d.get("content") or ""} for d in reply.get("value", [])]
         if "@odata.nextLink" not in reply:
@@ -210,7 +232,9 @@ def peek_poison(http: httpx.Client, endpoint: str, token: Token) -> list[PoisonM
         raise QueueReadError("the queue did not say how many messages it holds") from None
     if held > PEEK_MAX:
         raise QueueReadError(f"the poison queue holds {held} messages, more than the {PEEK_MAX} one peek returns, "
-                             "so a new message could be hidden: clear the queue and run again")
+                             "so a new message could be hidden. Clearing the queue needs a role the owner does "
+                             "not hold; its messages expire after the queue's message time-to-live (7 days by "
+                             "default). See the runbook's step 6a")
     response = http.get(_queue_url(endpoint, "/messages"),
                         params={"peekonly": "true", "numofmessages": str(PEEK_MAX)}, headers=headers)
     if response.status_code != 200:
@@ -279,22 +303,49 @@ def _problems_new(upload: Upload, chunks: list[dict]) -> str | None:
     return None
 
 
+def _poll(read_chunks: ReadChunks, artefact: str) -> list[dict] | None:
+    """One read of the index while watching: None when it failed with a transient error.
+
+    Any other failure (a 401, a 403, another 4xx, a page that did not move forward) propagates at once, so
+    wrong roles or a wrong audience are never turned into a slow fail.
+    """
+    try:
+        return read_chunks(artefact)
+    except (IndexReadError, httpx.TransportError) as error:
+        if is_transient(error):
+            return None
+        raise
+
+
+def _all_failed(polls: int) -> str:
+    return f"every one of the {polls} polls failed with a transient error: the window was not watched"
+
+
 def watch_new(uploads: list[Upload], read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
               timeout_s: float = I1_TIMEOUT_S, interval_s: float = POLL_S) -> list[Upload]:
     """Watch each new upload's window (120 s from its own upload) and record what was seen, per upload.
 
-    Called by `upload`, straight after the uploads, so the window is always watched while it is open.
+    Called by `upload`, straight after the uploads, so the window is always watched while it is open. A read
+    that fails with a transient error counts as "not seen yet" and the polling goes on; an upload whose every
+    read failed stays unwatched, so it is never judged.
     """
     pending = set(range(len(uploads)))
     seen: dict[int, float] = {}
     last: dict[int, str] = {}
+    polls = [0] * len(uploads)
+    failed = [0] * len(uploads)
     while True:
         live = [i for i in sorted(pending) if clock() <= uploads[i].uploaded_at + timeout_s]
         if not live:
             break
         for i in live:
             upload = uploads[i]
-            problem = _problems_new(upload, read_chunks(upload.artefact))
+            polls[i] += 1
+            chunks = _poll(read_chunks, upload.artefact)
+            if chunks is None:
+                failed[i] += 1
+                continue
+            problem = _problems_new(upload, chunks)
             elapsed = clock() - upload.uploaded_at
             if problem is None and elapsed <= timeout_s:
                 seen[i] = elapsed
@@ -303,9 +354,22 @@ def watch_new(uploads: list[Upload], read_chunks: ReadChunks, *, clock: Clock, s
                 last[i] = problem or "searchable only after the time was up"
         if pending:
             sleep(interval_s)
-    return [replace(u, watched=True, observed_after=seen.get(i),
-                    problem=None if i in seen else last.get(i, "never read in time"))
+    return [replace(u, watched=False, observed_after=None, problem=_all_failed(polls[i]),
+                    polls=polls[i], failed_polls=failed[i])
+            if polls[i] and failed[i] == polls[i] else
+            replace(u, watched=True, observed_after=seen.get(i),
+                    problem=None if i in seen else last.get(i, "never read in time"),
+                    polls=polls[i], failed_polls=failed[i])
             for i, u in enumerate(uploads)]
+
+
+def _failed_polls(uploads: list[Upload]) -> str:
+    """How many of the watch's index reads failed with a transient error, for a result's detail."""
+    polls = sum(u.polls for u in uploads)
+    if not polls:
+        return ""
+    return (f"; {sum(u.failed_polls for u in uploads)} of {polls} polls failed with a transient error "
+            "(counted as not seen yet)")
 
 
 def require_watched(check: str, uploads: list[Upload]) -> None:
@@ -328,11 +392,12 @@ def i1_new_searchable(uploads: list[Upload], *, timeout_s: float = I1_TIMEOUT_S)
     if missed:
         shown = "; ".join(f"{u.artefact}: {u.problem or 'searchable only after the time was up'}" for u in missed)
         return CheckResult("I1", False, f"{len(uploads) - len(missed)} of {len(uploads)} searchable within "
-                                        f"{timeout_s:.0f} s; not: {shown}")
+                                        f"{timeout_s:.0f} s; not: {shown}{_failed_polls(uploads)}")
     values = sorted(u.observed_after for u in uploads)
     return CheckResult("I1", True, f"{len(uploads)} of {len(uploads)} searchable within {timeout_s:.0f} s of "
                                    f"their upload: median {statistics.median(values):.0f} s, maximum "
-                                   f"{values[-1]:.0f} s (seen at each poll, so at most {POLL_S} s late)")
+                                   f"{values[-1]:.0f} s (seen at each poll, so at most {POLL_S} s late)"
+                                   f"{_failed_polls(uploads)}")
 
 
 NOT_SHORTENED = "the input was not shortened enough: I2 not measured"
@@ -367,19 +432,35 @@ def _problems_changed(upload: Upload, chunks: list[dict]) -> list[str]:
 
 def watch_changed(upload: Upload, read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,
                   timeout_s: float = I2_TIMEOUT_S, interval_s: float = POLL_S) -> Upload:
-    """Watch the changed artefact's window (spec §7 sets none for I2: the same 120 s) and record what was seen."""
+    """Watch the changed artefact's window (spec §7 sets none for I2: the same 120 s) and record what was seen.
+
+    As in `watch_new`, a read that fails with a transient error is "not seen yet", and an upload whose every
+    read failed stays unwatched.
+    """
     problems: list[str] = ["never read in time"]
     chunks: list[dict] = []
+    polls = failed = 0
     while clock() <= upload.uploaded_at + timeout_s:
-        chunks = read_chunks(upload.artefact)
+        polls += 1
+        read = _poll(read_chunks, upload.artefact)
+        if read is None:
+            failed += 1
+            sleep(interval_s)
+            continue
+        chunks = read
         problems = _problems_changed(upload, chunks)
         elapsed = clock() - upload.uploaded_at
         if not problems:
-            return replace(upload, watched=True, observed_after=elapsed, problem=None, new_count=len(chunks))
+            return replace(upload, watched=True, observed_after=elapsed, problem=None, new_count=len(chunks),
+                           polls=polls, failed_polls=failed)
         if problems == [NOT_SHORTENED]:
             break                       # settled: waiting longer changes nothing
         sleep(interval_s)
-    return replace(upload, watched=True, observed_after=None, problem="; ".join(problems), new_count=len(chunks))
+    if polls and failed == polls:
+        return replace(upload, watched=False, observed_after=None, problem=_all_failed(polls),
+                       polls=polls, failed_polls=failed)
+    return replace(upload, watched=True, observed_after=None, problem="; ".join(problems), new_count=len(chunks),
+                   polls=polls, failed_polls=failed)
 
 
 def i2_changed_replaces(upload: Upload) -> CheckResult:
@@ -391,11 +472,12 @@ def i2_changed_replaces(upload: Upload) -> CheckResult:
     if not upload.old_keys:
         return CheckResult("I2", False, "the upload recorded no old keys: the artefact was not in the index before it")
     if upload.problem is not None:
-        return CheckResult("I2", False, upload.problem if upload.problem == NOT_SHORTENED
-                           else f"not replaced within {I2_TIMEOUT_S:.0f} s: {upload.problem}")
+        return CheckResult("I2", False, (upload.problem if upload.problem == NOT_SHORTENED
+                                         else f"not replaced within {I2_TIMEOUT_S:.0f} s: {upload.problem}")
+                           + _failed_polls([upload]))
     return CheckResult("I2", True, f"exactly {upload.new_count} chunks under the new keys, with new text and without "
                                    f"the cut-away text; {len(upload.old_keys)} old keys gone, {upload.observed_after:.0f} s "
-                                   "after the upload")
+                                   f"after the upload{_failed_polls([upload])}")
 
 
 def i3_duplicate_harmless(upload: Upload, read_chunks: ReadChunks, *, clock: Clock, sleep: Sleep,

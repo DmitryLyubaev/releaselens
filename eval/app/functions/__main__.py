@@ -49,7 +49,7 @@ from app.retrieval.azure_auth import TokenSource
 from . import ingest_checks as ic
 from . import report
 from . import tool_checks as tc
-from .mcp_http import McpError, McpSession
+from .mcp_http import McpError, McpSession, describe
 
 EVAL = Path(__file__).resolve().parents[2]
 REPORTS = EVAL / "reports"
@@ -305,6 +305,9 @@ def run_upload(args) -> int:
     for upload in done:
         if kind in ("new", "changed") and upload.observed_after is None:
             print(f"{upload.artefact}: not searchable as expected within the window: {upload.problem}")
+        if upload.failed_polls:
+            print(f"{upload.artefact}: {upload.failed_polls} of {upload.polls} polls of the index failed with a "
+                  "transient error and counted as not seen yet")
     return 0
 
 
@@ -471,7 +474,7 @@ def run_tool_checks(args) -> int:
                 try:
                     session.initialize()
                 except McpError as error:
-                    finish(checks.CheckResult("T4", False, f"the handshake failed before the burst: {error}"))
+                    finish(checks.CheckResult("T4", False, f"the handshake failed before the burst: {describe(error)}"))
                     continue
                 except httpx.TransportError:
                     finish(checks.CheckResult("T4", False, "the handshake before the burst got no response"))

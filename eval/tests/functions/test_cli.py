@@ -284,6 +284,60 @@ def test_upload_new_watches_the_whole_window_and_records_a_miss_without_failing_
     assert env.clock.now >= entry["uploaded_at"] + 120
 
 
+def _index_fails(env: _Env, statuses: dict[int, int] | None = None, *, from_read: int | None = None) -> None:
+    """The index answers a filtered read with the given status: on the reads `statuses` names (1-based), or on
+    every read from `from_read` on. Read 1 is `upload`'s snapshot before the upload."""
+    original, reads = env.search, [0]
+
+    def failing(request, path):
+        if "filter" in json.loads(request.content or b"{}"):
+            reads[0] += 1
+            status = (statuses or {}).get(reads[0]) or (503 if from_read and reads[0] >= from_read else None)
+            if status:
+                return httpx.Response(status, text="busy")
+        return original(request, path)
+
+    env.search = failing
+
+
+def test_upload_new_rides_out_transient_index_errors_and_records_how_many_polls_failed(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    _index_fails(env, {2: 503, 3: 429})
+
+    assert _upload(env, "new") == 0
+
+    entry = _manifest(env)["uploads"][0]
+    assert entry["watched"] is True and entry["observed_after"] is not None and entry["problem"] is None
+    assert (entry["failed_polls"], entry["polls"]) == (2, 3)
+    assert "2 of 3 polls" in capsys.readouterr().out
+    assert _checks(env, "--check", "i1") == 0
+    detail = json.loads((env.out / "check-i1.json").read_text(encoding="utf-8"))["detail"]
+    assert "2 of 3 polls failed" in detail
+
+
+def test_upload_new_stops_at_once_on_a_403_from_the_index(env, capsys):
+    env.artefact_file("issue:1", 2)
+    _index_fails(env, {2: 403})
+    assert _upload(env, "new") == 1
+    assert "the index answered 403" in capsys.readouterr().err
+    assert _manifest(env)["uploads"][0]["watched"] is False          # on record, never judged
+    assert env.clock.now < _manifest(env)["uploads"][0]["uploaded_at"] + 120
+
+
+def test_an_upload_whose_every_poll_failed_is_refused_by_ingest_checks_with_no_result(env, capsys):
+    env.artefact_file("issue:1", 2)
+    env.autoingest({"issue:1": 2})
+    _index_fails(env, from_read=2)
+
+    assert _upload(env, "new") == 0
+    entry = _manifest(env)["uploads"][0]
+    assert entry["watched"] is False and entry["failed_polls"] == entry["polls"] > 0
+
+    assert _checks(env, "--check", "i1") == 1
+    assert "not watched" in capsys.readouterr().err and not (env.out / "check-i1.json").exists()
+
+
 def test_upload_new_refuses_a_missing_export_manifest_and_a_file_it_does_not_list(env, capsys):
     env.artefact_file("issue:1")                       # a file, but no manifest.json entry
     assert _upload(env, "new") == 1 and "manifest.json" in capsys.readouterr().err
@@ -746,6 +800,32 @@ def test_tool_checks_t4_fails_clearly_when_no_burst_call_got_past_the_gateway(en
 def test_tool_checks_t4_fails_with_no_429_and_writes_the_result(env, questions_file):
     assert _tool(env, questions_file, "--check", "t4") == 1
     assert json.loads((env.out / "check-t4.json").read_text(encoding="utf-8"))["passed"] is False
+
+
+def _rpc_error_on(env: _Env, method: str) -> None:
+    """The server answers `method` with a JSON-RPC error whose message names an Azure host."""
+    original = env.mcp
+
+    def erring(request, auth, *, tool):
+        message = json.loads(request.content)
+        if message.get("method") == method and "id" in message:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "error": {
+                "code": -32603, "message": "upstream apim-x.azure-api.net refused the call"}})
+        return original(request, auth, tool=tool)
+
+    env.mcp = erring
+
+
+@pytest.mark.parametrize("check,method", [("t1", "tools/call"), ("t1", "initialize"), ("t4", "initialize")])
+def test_a_server_error_message_with_a_hostname_still_writes_the_check_s_result(env, questions_file, capsys,
+                                                                                check, method):
+    _rpc_error_on(env, method)
+    assert _tool(env, questions_file, "--check", check) == 1
+
+    saved = json.loads((env.out / f"check-{check}.json").read_text(encoding="utf-8"))
+    assert saved["passed"] is False and "McpRpcError" in saved["detail"] and "-32603" in saved["detail"]
+    assert "azure-api.net" not in saved["detail"] and "upstream" not in saved["detail"]
+    assert "not written" not in capsys.readouterr().err
 
 
 def test_tool_checks_t4_metric_reruns_the_metric_alone_and_overwrites_only_its_own_result(env, questions_file):

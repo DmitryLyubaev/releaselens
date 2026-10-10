@@ -2,7 +2,8 @@
 
 As in `ingest_checks`, each check is given what it measures as a function or a session, and a clock
 and a sleep, so it runs on fixtures. A result's detail holds statuses, counts, labels, question IDs
-and artefact IDs: never a token, a URL, a hostname, a reply body or a question's text.
+and artefact IDs: never a token, a URL, a hostname, a reply body, a question's text or a server's
+error message (an MCP error is its class and its status or code, from `describe`).
 
 T1 compares with the query the tool itself sends (`SearchIndexClient.HybridSemanticAsync`): keyword
 plus vector with `k = top = 5`, the semantic ranker, configuration `default`, the query embedded by
@@ -25,7 +26,7 @@ from app.gateway.metric import QUERY_URL, MetricQueryError, check_since
 from app.retrieval import embed, search_index
 from app.retrieval import questions as frozen_questions
 
-from .mcp_http import McpError, McpHttpError, McpSession, text_of
+from .mcp_http import McpError, McpHttpError, McpSession, describe, text_of
 
 TOOL = "search_corpus"
 TOP = 5                     # the tool's default, and the k and top of the direct query
@@ -117,7 +118,7 @@ def t1_same_search(session: McpSession, direct: Callable[[str], list[str]],
         if TOOL not in session.list_tools():
             return CheckResult("T1", False, f"{TOOL} is not in the tool list")
     except McpError as error:
-        return CheckResult("T1", False, f"the handshake or the tool list failed: {error}")
+        return CheckResult("T1", False, f"the handshake or the tool list failed: {describe(error)}")
     except httpx.TransportError:
         return CheckResult("T1", False, "the handshake or the tool list got no response")
 
@@ -126,7 +127,7 @@ def t1_same_search(session: McpSession, direct: Callable[[str], list[str]],
         try:
             from_tool = _artefacts_of(session.call(TOOL, {"query": text, "top": TOP}))
         except McpError as error:
-            problems.append(f"{qid}: the tool call failed ({error})")
+            problems.append(f"{qid}: the tool call failed ({describe(error)})")
             continue
         except httpx.TransportError:
             problems.append(f"{qid}: the tool call got no response")
@@ -139,7 +140,10 @@ def t1_same_search(session: McpSession, direct: Callable[[str], list[str]],
         except (DirectSearchError, httpx.HTTPError) as error:
             problems.append(f"{qid}: the direct query failed ({type(error).__name__})")
             continue
-        if from_tool == from_index:
+        if len(from_tool) != TOP or len(from_index) != TOP:
+            # Two empty lists, or two short ones, are equal without showing the same search.
+            problems.append(f"{qid}: the tool gave {len(from_tool)} hits, the direct query {len(from_index)}, not {TOP}")
+        elif from_tool == from_index:
             matched += 1
         else:
             problems.append(f"{qid}: the tool gave {from_tool}, the direct query {from_index}")
