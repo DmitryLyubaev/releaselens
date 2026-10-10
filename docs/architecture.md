@@ -408,6 +408,7 @@ The bootstrap stack makes every Azure role assignment but two, and looks each ro
 | Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
 | Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app`, `tfstate-search`, `tfstate-gateway` and `tfstate-functions` (five assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
 | Owner | Storage Blob Data Contributor | `artefacts-in`, and `deploy-ingest` and `deploy-tool` in the two host accounts (three assignments) | the demo's uploads, and deploying both Function apps' packages with the owner's sign-in |
+| Owner | Storage Queue Data Reader | `ingest-events` and `ingest-events-poison` (two assignments) | the harness peeks the poison queue for I4; Reader cannot dequeue, add or delete |
 | Gateway identity | Cognitive Services OpenAI User | each of the two Azure OpenAI accounts (two assignments) | API Management calls the models as this identity, so no key exists |
 | Gateway identity | Monitoring Metrics Publisher | Application Insights only | the gateway publishes its token metric with Entra ID, since local authentication is off |
 | Ingest identity | Storage Blob Data Reader | `artefacts-in` only | read the artefact a queue message names |

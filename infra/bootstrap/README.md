@@ -43,7 +43,7 @@ stack as built, and that runbook. The design and its reasons are in the
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | thirty-one Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
+| Role assignments | thirty-three Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -83,6 +83,8 @@ register them and CI is not, so it happens here. The provider also sets:
 | `owner_artefacts_in` | the owner | Storage Blob Data Contributor | `artefacts-in` |
 | `owner_deploy_ingest` | the owner | Storage Blob Data Contributor | `deploy-ingest` |
 | `owner_deploy_tool` | the owner | Storage Blob Data Contributor | `deploy-tool` |
+| `owner_queue_poison_reader` | the owner | Storage Queue Data Reader | the `ingest-events-poison` queue (the harness peeks it for I4) |
+| `owner_queue_events_reader` | the owner | Storage Queue Data Reader | the `ingest-events` queue |
 | `ingest_artefacts_reader` | ingest identity | Storage Blob Data Reader | `artefacts-in` |
 | `ingest_queue_events` | ingest identity | Storage Queue Data Contributor | the `ingest-events` queue |
 | `ingest_queue_poison` | ingest identity | Storage Queue Data Contributor | the `ingest-events-poison` queue |

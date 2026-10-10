@@ -253,6 +253,21 @@ resource "azurerm_role_assignment" "owner_deploy_tool" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+# The owner reads the two ingestion queues, so that the harness's I4 can peek the poison queue (and
+# the queue it came from) for a message about its upload. Reader allows a peek, which changes
+# nothing; the owner cannot dequeue, add or delete.
+resource "azurerm_role_assignment" "owner_queue_poison_reader" {
+  scope                = azurerm_storage_queue.ingest_events_poison.id
+  role_definition_name = "Storage Queue Data Reader"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_role_assignment" "owner_queue_events_reader" {
+  scope                = azurerm_storage_queue.ingest_events.id
+  role_definition_name = "Storage Queue Data Reader"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 # Tool.Invoke, the one app role on the search tool's Entra app, goes to the gateway's identity
 # only: API Management signs in as it to call the tool. With an assignment required on the
 # service principal, nothing else can get a token for the tool.

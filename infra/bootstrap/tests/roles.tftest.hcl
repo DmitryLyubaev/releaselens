@@ -357,6 +357,8 @@ run "role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
       ] : lower(trimsuffix(a.scope, "/")) != lower("/subscriptions/${var.subscription_id}")
     ])
     error_message = "No role assignment may be scoped to the subscription."
@@ -397,6 +399,8 @@ run "role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
       ] : startswith(lower(a.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/"))
     ])
     error_message = "Every role assignment must be scoped inside one of this subscription's resource groups."
@@ -439,6 +443,8 @@ run "role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
         ] : !(a.principal_id == azurerm_user_assigned_identity.deploy.principal_id && (
           startswith(lower("${azurerm_cognitive_account.openai.id}/"), lower("${trimsuffix(a.scope, "/")}/")) ||
           startswith(lower(a.scope), lower("${azurerm_cognitive_account.openai.id}/"))
@@ -573,6 +579,18 @@ run "function_role_assignments" {
     error_message = "owner_state_functions must give the owner Storage Blob Data Contributor on the tfstate-functions container's Resource Manager ID."
   }
 
+  # The owner reads both queues (peek only, never a change) so that I4 can see a poison message
+  # arrive, and the queue it came from.
+  assert {
+    condition     = azurerm_role_assignment.owner_queue_poison_reader.role_definition_name == "Storage Queue Data Reader" && azurerm_role_assignment.owner_queue_poison_reader.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events-poison" && azurerm_role_assignment.owner_queue_poison_reader.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_queue_poison_reader must give the owner Storage Queue Data Reader on the ingest-events-poison queue's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.owner_queue_events_reader.role_definition_name == "Storage Queue Data Reader" && azurerm_role_assignment.owner_queue_events_reader.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events" && azurerm_role_assignment.owner_queue_events_reader.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_queue_events_reader must give the owner Storage Queue Data Reader on the ingest-events queue's Resource Manager ID."
+  }
+
   # The tool identity has no role on the ingestion account: not on the account, not on anything in
   # it, and not on any scope above it that it would inherit.
   assert {
@@ -609,6 +627,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
       ] : !(a.principal_id == azurerm_user_assigned_identity.tool.principal_id && (startswith(lower("${azurerm_storage_account.ingest.id}/"), lower("${trimsuffix(a.scope, "/")}/")) || startswith(lower(a.scope), lower("${azurerm_storage_account.ingest.id}/"))))
     ])
     error_message = "The tool identity must have no role on the ingestion account, directly, below it or inherited."
@@ -649,6 +669,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
       ] : !(a.principal_id == azurerm_user_assigned_identity.tool.principal_id && (startswith(lower("${azurerm_storage_account.ingest_host.id}/"), lower("${trimsuffix(a.scope, "/")}/")) || startswith(lower(a.scope), lower("${azurerm_storage_account.ingest_host.id}/")))) && !(a.principal_id == azurerm_user_assigned_identity.ingest.principal_id && (startswith(lower("${azurerm_storage_account.tool_host.id}/"), lower("${trimsuffix(a.scope, "/")}/")) || startswith(lower(a.scope), lower("${azurerm_storage_account.tool_host.id}/"))))
     ])
     error_message = "Neither app identity may hold a role on the other app's host account."
@@ -690,6 +712,8 @@ run "function_role_assignments" {
         azurerm_role_assignment.owner_deploy_ingest,
         azurerm_role_assignment.owner_deploy_tool,
         azurerm_role_assignment.owner_state_functions,
+        azurerm_role_assignment.owner_queue_poison_reader,
+        azurerm_role_assignment.owner_queue_events_reader,
       ] : !(a.principal_id == azurerm_user_assigned_identity.ingest.principal_id && startswith(lower("${azurerm_storage_account.ingest.id}/"), lower("${trimsuffix(a.scope, "/")}/")))
     ])
     error_message = "The ingest identity must hold no role on the whole ingestion account or above it: only on artefacts-in and its two queues."

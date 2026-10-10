@@ -100,8 +100,8 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_thirty_one_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 31
+def test_bootstrap_has_the_thirty_three_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 33
 
 
 def test_bootstrap_has_the_four_app_role_assignments_all_in_roles_tf(repo_root):
