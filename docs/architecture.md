@@ -217,7 +217,7 @@ commit message.
 
 ## Azure deployment
 
-All four Terraform stacks are built and tested with mocked plans, and the deploy, destroy and
+All five Terraform stacks are built and tested with mocked plans, and the deploy, destroy and
 gateway-check workflows are built. **The app stack was deployed and destroyed twice on 1 October 2026**; the
 [README's record](../README.md#two-stack-deployment-1-october-2026) has the runs. Apart from
 the verified items below, this section describes what the code configures. What the checks after the bootstrap apply showed is under
@@ -235,6 +235,11 @@ GitHub Actions: environment "azure", whose only branch rule is main
 ┌─ rg-releaselens-bootstrap · long-lived · applied by the owner · lock CanNotDelete ──────────┐
 │  strlstate<suffix>           shared keys off · tfstate-bootstrap (owner) · tfstate-app      │
 │                              · tfstate-search (owner) · tfstate-gateway (owner)             │
+│                              · tfstate-functions (owner)                                    │
+│  strlingest<suffix>          shared keys off · artefacts-in · ingest-events (+ poison)      │
+│  evgt-releaselens-ingest     BlobCreated *.json ──► ingest-events, as its own identity      │
+│  id-releaselens-ingest       the ingest Function app's identity                             │
+│  id-releaselens-tool         the search tool Function app's identity                        │
 │  id-releaselens-deploy       federated credential github-environment-azure (env azure)      │
 │  id-releaselens-app          the identity the Container App runs as                         │
 │  aoai-releaselens-<suffix>   kind AIServices · key authentication disabled                  │
@@ -259,7 +264,9 @@ benchmark, whose AI Search service is in a third stack, [`infra/search`](../infr
 the owner applies it in its own group, `rg-releaselens-search`, for one measurement session, and
 destroys it at the end. A fourth stack, [`infra/gateway`](../infra/gateway/README.md), is the AI
 gateway's, applied and destroyed the same way in `rg-releaselens-gateway` (see
-[The AI gateway path](#the-ai-gateway-path)). The app stack reads nothing from bootstrap. The owner
+[The AI gateway path](#the-ai-gateway-path)). A fifth, [`infra/functions`](../infra/functions/README.md),
+holds the two Function apps, applied and destroyed the same way in `rg-releaselens-functions` (see
+[The functions path](#the-functions-path)). The app stack reads nothing from bootstrap. The owner
 copies four bootstrap outputs into the GitHub environment once, and the workflows pass them to
 Terraform as `TF_VAR_*`:
 - `APP_IDENTITY_ID`, a variable
@@ -385,6 +392,67 @@ What sits where:
 - **Direct stays the default,** and a production setup would remove direct access so that all
   traffic goes through the gateway. This repository does not.
 
+### The functions path
+
+Two Azure Function apps on Flex Consumption, .NET 10 isolated, each with its own user-assigned
+identity: one turns an artefact dropped into Storage into searchable chunks, and one publishes a
+read-only search tool behind the AI gateway. The stack is
+[`infra/functions`](../infra/functions/README.md); the long-lived parts are in bootstrap; the
+design is the [functions spec](superpowers/specs/2026-10-10-functions-ingestion-and-search-tool-design.md),
+and the live session is the [functions runbook](runbook-functions.md). **Nothing on this path has
+been applied or measured yet.**
+
+```
+Ingestion (keyless end to end)
+  owner or export ──► artefacts-in/<name>.json            strlingest<suffix>, shared keys off
+                        │ BlobCreated, subject ending .json
+                        ▼
+                      evgt-releaselens-ingest ──► ingest-events   delivered as the topic's own identity
+                                                    │             (undeliverable events: deadletter-events)
+                                                    ▼
+                      func-releaselens-ingest-<suffix>  (queue trigger, as id-releaselens-ingest)
+                        1 parse the event (plain or base64), read the blob
+                        2 chunk with EvidenceChunker; embed in one call to releaselens-embed-small
+                        3 mergeOrUpload with keys <artefact, base64url>-<index>
+                        4 delete every key of that artefact not in the new set
+                        3 failed tries, 30 s apart ──► ingest-events-poison
+
+The search tool (only through the gateway)
+  caller ──► token for api://<gateway-app-client-id>, role Gateway.Invoke
+             ──► apim-releaselens-<suffix>, MCP API releaselens-search
+                   1 validate-azure-ad-token ──► 401 if not
+                   2 rate-limit-by-key: 20 calls a minute per oid ──► 429 with Retry-After
+                   3 emit-metric Tool Calls, dimension Caller ──► appi-releaselens
+                   4 authentication-managed-identity: the gateway identity's token for
+                     releaselens-search-tool, replacing the caller's
+                   no policy reads a body, so Streamable HTTP passes through
+             ──► func-releaselens-tool-<suffix>/runtime/webhooks/mcp
+                   App Service authentication: only the gateway identity's token ──► 401 if not
+                   search_corpus(query, top = 5, at most 10): embed the query, then hybrid
+                   search with the semantic ranker, as id-releaselens-tool (index reader only)
+```
+
+What sits where:
+- **Bootstrap (long-lived, nothing bills by the hour):** the ingestion account, with
+  `artefacts-in`, `deadletter-events` and the two queues; a host account for each app, with its
+  deployment container; the Event Grid system topic and its one subscription; the two identities;
+  the app registration `releaselens-search-tool` (no secret, assignment required, its one role
+  `Tool.Invoke` held by the gateway identity alone); and every role the apps use, in
+  `infra/bootstrap/roles.tf`. An upload made while no session runs waits in the queue, for up to
+  seven days.
+- **The search stack (per session):** the index's two roles for the identities, Contributor for
+  ingest and Reader for the tool.
+- **The functions stack (per session):** `rg-releaselens-functions`, the Flex plan and the two
+  apps (created with azapi, because azurerm's Flex resource injects a storage connection string),
+  App Service authentication on every route of both, basic publishing credentials off, and the
+  tool's MCP API, policy, named values and diagnostic on the gateway's service. It creates no
+  role assignment and no key.
+- **The code:** `src/ReleaseLens.Functions.Ingest`, `src/ReleaseLens.Functions.Tool` and
+  `src/ReleaseLens.Functions.Common` (the embeddings and search clients, and the key rule); the
+  Worker's `export-artefacts` writes real artefacts as the ingest app's input.
+- **The harness:** `eval/app/functions/`, the checks I1 to I4 and T1 to T4, with their pass rules
+  fixed in the spec before any run.
+
 ### Identities and roles
 
 Five user-assigned managed identities, and two Entra app registrations, which no one signs in as:
@@ -400,7 +468,8 @@ All five identities live in the bootstrap group. Contributor on `rg-releaselens`
 credentials, so an identity in that group would let CI add a trust for itself outside the
 environment gate.
 
-The bootstrap stack makes every Azure role assignment but two, and looks each role up by name:
+The bootstrap stack makes every Azure role assignment but the search stack's four, and looks each
+role up by name:
 
 | Identity | Role | Scope | Why |
 |---|---|---|---|
@@ -437,10 +506,18 @@ not Azure roles, and are in addition to the table above:
 | Deploy identity | `Gateway.Invoke` | the gateway's service principal | CI's check calls the gateway |
 | Gateway identity | `Tool.Invoke` | the search tool's service principal | API Management calls the search tool as this identity, and nothing else may |
 
-The other two are in the search stack, which only the owner applies, and which gives the owner
-`Search Service Contributor` and `Search Index Data Contributor` on its search service, and on
-nothing else. The rule that bootstrap holds every assignment keeps role-assignment rights away
-from CI, and CI never runs that stack.
+The other four are in the search stack, which only the owner applies, on its search service and
+on nothing else, because the service exists only in a session:
+
+| Principal | Role | Why |
+|---|---|---|
+| Owner | Search Service Contributor | create and manage the index |
+| Owner | Search Index Data Contributor | load the index and query it |
+| Ingest identity | Search Index Data Contributor | write each artefact's chunks and delete its stale ones |
+| Tool identity | Search Index Data Reader | query the index, never write it |
+
+The two identities' principal IDs come from the bootstrap's state. The rule that bootstrap holds
+every assignment keeps role-assignment rights away from CI, and CI never runs that stack.
 
 The app identity, not a system-assigned one, holds the role on the account. A system-assigned
 identity would not exist until CI created the app, so CI would need the right to write role
@@ -560,6 +637,8 @@ would try to roll the kind back. The `AIServices` kind keeps the
 | API Management, Basic v2 | gateway | by the hour while it exists, about US$0.21 (US$0.20548, Retail Prices API, 2026-10-06), so about US$5 a day if forgotten; destroyed at the end of every gateway session (gateway spec §3.2, §7.5) |
 | AI Search service, Basic | search | by the hour while it exists, US$3.19 a day; destroyed after each benchmark session (benchmark spec §6.4, §8) |
 | State storage account | bootstrap | a few cents a month (an estimate) |
+| The ingestion account and the two Function host accounts, the Event Grid system topic | bootstrap | a few cents a month for storage; Event Grid within its free monthly operations (functions spec §9) |
+| Two Function apps, Flex Consumption, no always-ready instance | functions | per execution and the memory it uses, after a monthly free grant; nothing idle (functions spec §7) |
 | The AI gateway's Entra app, Log Analytics workspace (30 days, 0.1 GB a day cap) and Application Insights | bootstrap | nothing idle; Log Analytics ingestion is billed per GB and capped (gateway spec §3.1) |
 | Managed identities, resource groups, budget | bootstrap | nothing |
 

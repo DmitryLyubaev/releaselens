@@ -439,7 +439,7 @@ nothing is deployed. The rest of this section is about what the code configures,
 Azure fact carries its source and date. The
 detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
-There are two Terraform stacks for the app, a third for the retrieval benchmark and a fourth for the AI gateway:
+There are two Terraform stacks for the app, a third for the retrieval benchmark, a fourth for the AI gateway and a fifth for the Azure Functions:
 
 | Stack | Applied by | Holds |
 |---|---|---|
@@ -447,6 +447,7 @@ There are two Terraform stacks for the app, a third for the retrieval benchmark 
 | [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
 | [`infra/search`](infra/search/README.md) | the owner, locally, for one benchmark session, then destroyed | its own resource group, one keyless AI Search service on Basic, the owner's two roles on it, and the two Function identities' roles |
 | [`infra/gateway`](infra/gateway/README.md) | the owner, locally, for one gateway session, then destroyed | its own resource group and one API Management service, Basic v2, in front of the two accounts; see [AI gateway](#ai-gateway) |
+| [`infra/functions`](infra/functions/README.md) | the owner, locally, for one functions session, then destroyed | its own resource group and two Flex Consumption Function apps, and the search tool published as an MCP API on the gateway; see [Azure Functions](#azure-functions) |
 
 **Bootstrap once.** The owner follows the runbook in
 [infra/bootstrap/README.md](infra/bootstrap/README.md). The budget comes first: the first apply
@@ -658,6 +659,40 @@ fixed before any run, is in `eval/app/gateway/`, and "failover held", "did not h
 **What this does not show:**
 - **One session, one model and 45 requests.** It is not a load test.
 - **No processing-region claim.** "Southeast Asia" is the account that answered, not where the prompt was processed.
+
+## Azure Functions
+
+**Not yet run.** The code, the infrastructure and the measured checks are built and tested
+offline; nothing has been applied or measured.
+
+Two Azure Function apps show, measured, what serverless functions add to ReleaseLens:
+- **Ingestion.** A GitHub artefact dropped into Storage as a JSON file becomes searchable on its
+  own. Event Grid puts the blob's event on a queue, and the ingest app chunks the artefact, embeds
+  the chunks and writes them to the AI Search index. Keys are deterministic, so sending the same
+  file again writes the same chunks, and a changed artefact's stale chunks are deleted. Broken
+  input goes to a poison queue after three tries, instead of being retried forever or lost.
+- **A search tool on the gateway.** `search_corpus` is a read-only MCP tool on the second app,
+  running project 2's best search (hybrid with the semantic ranker). It is published behind the
+  [AI gateway](#ai-gateway) the way a product team publishes onto a platform team's gateway:
+  Entra only, 20 calls a minute per caller, usage per caller, and no way round the gateway. Claude
+  Code can use it as a remote MCP server.
+
+What to know before relying on it:
+- **Keyless throughout.** Storage has shared keys off, Event Grid delivers with its own identity,
+  both apps use identity-based host storage, and every model and search call uses the app's own
+  managed identity. No secret exists on either app registration.
+- **Least access.** The tool's identity can only read the index; the ingest app has no HTTP
+  function; App Service authentication lets only the gateway's identity call the tool app.
+- **The apps exist only during a session,** with the gateway and the search service they need,
+  and are destroyed at the end. Uploads made while nothing runs wait in the queue.
+- **Counts and durations only** are logged: no artefact content and no query text.
+
+The design is in the [spec](docs/superpowers/specs/2026-10-10-functions-ingestion-and-search-tool-design.md),
+whose §7 fixes each check's pass rule before any live run: I1 to I4 for ingestion, T1 to T4 for
+the tool. The live session is scripted in the [runbook](docs/runbook-functions.md), which also
+holds the table of what has still to be verified. The stack's own page is
+[`infra/functions/README.md`](infra/functions/README.md), the apps are in `src/ReleaseLens.Functions.*`,
+and the harness is in `eval/app/functions/`. A failed check is a publishable result.
 
 ## What this is not
 
