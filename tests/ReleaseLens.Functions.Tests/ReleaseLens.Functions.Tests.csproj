@@ -26,11 +26,17 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ReleaseLens.Functions.Common\ReleaseLens.Functions.Common.csproj" />
     <ProjectReference Include="..\..\src\ReleaseLens.Functions.Ingest\ReleaseLens.Functions.Ingest.csproj" />
+    <ProjectReference Include="..\..\src\ReleaseLens.Functions.Tool\ReleaseLens.Functions.Tool.csproj" />
   </ItemGroup>
 
   <!-- The ingest app's host.json, read by IngestHostJsonTests: the retry settings are part of the design. -->
   <ItemGroup>
     <Content Include="..\..\src\ReleaseLens.Functions.Ingest\host.json" Link="ingest-host.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The tool app's host.json, read by ToolHostJsonTests: the key setting is part of the design. -->
+  <ItemGroup>
+    <Content Include="..\..\src\ReleaseLens.Functions.Tool\host.json" Link="tool-host.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

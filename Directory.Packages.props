@@ -44,6 +44,8 @@
     <PackageVersion Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.1.0" />
     <!-- The queue trigger, with the identity-based IngestQueue connection and host.json messageEncoding (5.x and later). -->
     <PackageVersion Include="Microsoft.Azure.Functions.Worker.Extensions.Storage.Queues" Version="5.5.5" />
+    <!-- The MCP tool trigger and its Streamable HTTP endpoint (/runtime/webhooks/mcp); latest stable 1.x. -->
+    <PackageVersion Include="Microsoft.Azure.Functions.Worker.Extensions.Mcp" Version="1.6.0" />
     <!-- Reads the artefact blob with the managed identity. -->
     <PackageVersion Include="Azure.Storage.Blobs" Version="12.30.1" />
   </ItemGroup>
