@@ -98,7 +98,7 @@ register them and CI is not, so it happens here. The provider also sets:
 | `tool_host_table_contributor` | tool identity | Storage Table Data Contributor | the tool host account |
 | `ingest_metrics_publisher` | ingest identity | Monitoring Metrics Publisher | Application Insights |
 | `tool_metrics_publisher` | tool identity | Monitoring Metrics Publisher | Application Insights |
-| `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the `ingest-events` queue |
+| `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the ingestion account (Event Grid refuses a queue-scoped role at subscription creation) |
 | `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` |
 
 Storage Blob Data Owner on a whole account is the Functions host's documented minimum, so each
