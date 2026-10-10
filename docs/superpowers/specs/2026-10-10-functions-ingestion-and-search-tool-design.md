@@ -373,4 +373,16 @@ volume (US$0.000037 per GB-second after a 100,000 GB-second free grant, research
 
 ## 13. Changes after approval
 
-None yet.
+- **2026-10-10, §5.3: the Claude Code command.** The runbook adds the tool with
+  `claude mcp add-json --scope local`, not `claude mcp add --transport http`. `claude mcp add`
+  has no flag for a `headersHelper` (Claude Code's MCP documentation, read 2026-10-10), which only
+  a JSON configuration sets. The local scope keeps the gateway's URL in the owner's own
+  configuration and out of the repository, where a project-scope `.mcp.json` would commit it.
+- **2026-10-10, §3.1: where the deployment packages live.** Each app's deployment container is in
+  its own host storage account (`strlingesthost<suffix>` and `strltoolhost<suffix>`), not in the
+  ingestion account. The host needs Storage Blob Data Owner on its whole account, so in a shared
+  account each app could write the other's package, and `artefacts-in`.
+- **2026-10-10, §11: holding back I1's five artefacts.** `build-index` has no option to hold
+  artefacts back, so the runbook bulk-loads from a filtered copy of the saved index data, in
+  `eval/reports/functions-bulk` (git-ignored): the chunks and their saved vectors without the five.
+  Nothing is embedded again.
