@@ -72,7 +72,8 @@ Each app's settings:
 - **Identifiers come from the other stacks' state**, read through `terraform_remote_state`, so
   no tenant, client ID or account name passes through a file.
 - **Nothing is registered from here, and no role is granted.** Bootstrap registers
-  `Microsoft.Web` and holds every role the apps use; the search stack holds the two search roles.
+  `Microsoft.Web` and holds every role the apps use; the search stack holds the apps' two search
+  roles.
 - **No `prevent_destroy`.** The stack is meant to be destroyed.
 
 Its state is in the container `tfstate-functions` of the state storage account, under the key
