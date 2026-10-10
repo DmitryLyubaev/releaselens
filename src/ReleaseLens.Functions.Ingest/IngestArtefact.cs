@@ -1,4 +1,3 @@
-using ReleaseLens.Core.Chunking;
 using ReleaseLens.Core.Evidence;
 using ReleaseLens.Functions.Common;
 
@@ -16,14 +15,12 @@ public sealed record IngestResult(string Artefact, int Chunks, int Deleted);
 /// </summary>
 public sealed class IngestArtefact(EmbeddingsClient embeddings, SearchIndexClient index)
 {
-    private static readonly EvidenceChunker Chunker = new(ChunkOptions.Default);
-
     public async Task<IngestResult> IngestAsync(IEvidenceRecord record, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(record);
 
         var artefact = record.Key.ToString();
-        var chunks = Chunks(record);
+        var chunks = ArtefactChunks.Of(record);
 
         var vectors = await embeddings.EmbedAsync([.. chunks.Select(chunk => chunk.Content)], ct);
 
@@ -39,13 +36,4 @@ public sealed class IngestArtefact(EmbeddingsClient embeddings, SearchIndexClien
 
         return new IngestResult(artefact, documents.Count, stale.Count);
     }
-
-    private static IReadOnlyList<Chunk> Chunks(IEvidenceRecord record) => record switch
-    {
-        CommitEvidence commit => Chunker.Chunk(commit),
-        IssueEvidence issue => Chunker.Chunk(issue),
-        PullRequestEvidence pullRequest => Chunker.Chunk(pullRequest),
-        ReleaseEvidence release => Chunker.Chunk(release),
-        _ => throw new ArgumentException($"{record.GetType().Name} is not an evidence record.", nameof(record)),
-    };
 }
