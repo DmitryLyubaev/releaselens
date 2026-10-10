@@ -550,8 +550,8 @@ run "function_role_assignments" {
   }
 
   assert {
-    condition     = azurerm_role_assignment.eventgrid_queue_sender.role_definition_name == "Storage Queue Data Message Sender" && azurerm_role_assignment.eventgrid_queue_sender.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events" && azurerm_role_assignment.eventgrid_queue_sender.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
-    error_message = "eventgrid_queue_sender must give the Event Grid topic's identity Storage Queue Data Message Sender on the ingest-events queue's Resource Manager ID."
+    condition     = azurerm_role_assignment.eventgrid_queue_sender.role_definition_name == "Storage Queue Data Message Sender" && azurerm_role_assignment.eventgrid_queue_sender.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.eventgrid_queue_sender.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    error_message = "eventgrid_queue_sender must give the Event Grid topic's identity Storage Queue Data Message Sender on the ingestion storage account (Event Grid refuses a queue-scoped role at subscription creation)."
   }
 
   assert {
