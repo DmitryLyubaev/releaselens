@@ -1,0 +1,62 @@
+<!--
+  The search tool's MCP API policy (spec section 5.2).
+  Order matters. Each step relies on the one before it, and nothing reaches the tool app before the
+  caller is known and within its rate. Named values (the double-brace references) are created by
+  the functions gateway stack: the tenant, the gateway app's client ID, the tool app's audience and
+  the gateway identity's client ID.
+  This API fronts an MCP server over Streamable HTTP, so no step here reads or rewrites a request
+  or response body: reading a body buffers it and breaks the stream. For the same reason the model
+  policies of the gateway's other API (token limit, token metric) are not used; they only
+  understand model-API traffic. Payload logging is set to 0 for this API in the stack.
+-->
+<policies>
+  <inbound>
+    <base />
+    <!-- 1. Who. First, so an unauthenticated call is a 401 and touches nothing else. The token
+         goes to "jwt" so the next steps can read the caller's object ID without a second parse.
+         Two audience forms are accepted. The role is the permission: no role, no entry. -->
+    <validate-azure-ad-token tenant-id="{{tool-tenant-id}}" output-token-variable-name="jwt" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized.">
+      <audiences>
+        <audience>api://{{tool-gateway-app-client-id}}</audience>
+        <audience>{{tool-gateway-app-client-id}}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="roles" match="any">
+          <value>Gateway.Invoke</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <!-- 2. How often. 20 calls a minute per caller, counted on the object ID. Over it, the
+         gateway answers 429 with Retry-After itself, and the tool app never sees the call. -->
+    <rate-limit-by-key calls="20" renewal-period="60" counter-key='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
+    <!-- 3. Record calls by caller. A count only: nothing of the request is read. -->
+    <emit-metric name="Tool Calls" namespace="releaselens-gateway">
+      <dimension name="Caller" value='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' />
+    </emit-metric>
+    <!-- 4. The gateway's own credential, for the tool app's audience. This replaces the caller's
+         Authorization header, so the caller's token never reaches the tool app, which accepts
+         only the gateway identity's token (spec section 3.3). -->
+    <authentication-managed-identity resource="{{tool-app-audience}}" client-id="{{tool-gateway-identity-client-id}}" />
+  </inbound>
+  <!-- The inherited default, left as it is: the request is sent once. An MCP call is not retried,
+       because a tool call may not be safe to repeat and a caller's client already handles a
+       failure. There is no retry and no backend routing step. -->
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+    <!-- A fixed message and the status code only: no backend host or error detail leaves the
+         gateway. The body is set on the existing response, not a new one, so headers such as
+         Retry-After on a 429 are kept. If the error left a status below 400, the caller would get
+         an error body with a success status, so that becomes a 502; a failure status stays. -->
+    <set-status code="@(context.Response.StatusCode &gt;= 400 ? context.Response.StatusCode : 502)" reason="Gateway error" />
+    <set-header name="Content-Type" exists-action="override">
+      <value>application/json</value>
+    </set-header>
+    <set-body>@("{\"error\":{\"status\":" + context.Response.StatusCode + ",\"message\":\"The gateway could not complete the request.\"}}")</set-body>
+  </on-error>
+</policies>
