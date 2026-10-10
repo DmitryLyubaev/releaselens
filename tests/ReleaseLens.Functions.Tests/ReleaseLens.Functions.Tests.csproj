@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!--
+    No reference to ReleaseLens.Ingestion.Tests, where StubHttpMessageHandler lives: it would bring
+    in the Testcontainers fixtures and need Docker to build and run. StubHttpHandler here is the
+    small equivalent these tests need.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ReleaseLens.Functions.Common\ReleaseLens.Functions.Common.csproj" />
+  </ItemGroup>
+
+</Project>
