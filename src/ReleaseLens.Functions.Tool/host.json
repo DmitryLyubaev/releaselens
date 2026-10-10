@@ -1,0 +1,12 @@
+{
+  "version": "2.0",
+  "extensions": {
+    "mcp": {
+      "serverName": "releaselens-search",
+      "instructions": "Search the ReleaseLens corpus of issues, pull requests, discussions and releases with search_corpus, and cite the artefact IDs it returns.",
+      "system": {
+        "webhookAuthorizationLevel": "Anonymous"
+      }
+    }
+  }
+}
