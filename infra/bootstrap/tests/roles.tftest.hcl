@@ -555,8 +555,8 @@ run "function_role_assignments" {
   }
 
   assert {
-    condition     = azurerm_role_assignment.eventgrid_deadletter_writer.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.eventgrid_deadletter_writer.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deadletter-events" && azurerm_role_assignment.eventgrid_deadletter_writer.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
-    error_message = "eventgrid_deadletter_writer must give the Event Grid topic's identity Storage Blob Data Contributor on the deadletter-events container's Resource Manager ID."
+    condition     = azurerm_role_assignment.eventgrid_deadletter_writer.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.eventgrid_deadletter_writer.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.eventgrid_deadletter_writer.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    error_message = "eventgrid_deadletter_writer must give the Event Grid topic's identity Storage Blob Data Contributor on the ingestion storage account (Event Grid refuses a container-scoped role at subscription creation)."
   }
 
   assert {

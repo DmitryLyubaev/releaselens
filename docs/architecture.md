@@ -488,7 +488,7 @@ role up by name:
 | Tool identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | its own host account, `strltoolhost<suffix>`, only (three assignments) | identity-based host storage; the MCP extension uses queues. No role on the ingestion account |
 | Ingest identity, tool identity | Monitoring Metrics Publisher | Application Insights only (two assignments) | each app sends its telemetry with Entra ID as its own identity, since local authentication is off |
 | Event Grid topic's identity | Storage Queue Data Message Sender | the ingestion account (its two queues): Event Grid refuses a queue-scoped role when the subscription is created | deliver blob events to the queue with no key |
-| Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` only | dead-letter events Event Grid cannot deliver |
+| Event Grid topic's identity | Storage Blob Data Contributor | the ingestion account (so `artefacts-in` too): Event Grid refuses a container-scoped role when the subscription is created | dead-letter events Event Grid cannot deliver |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
 | Deploy identity | Managed Identity Operator | the app identity only | attach an identity from another resource group to the Container App |
 | Deploy identity | Storage Blob Data Contributor | `tfstate-app` only | read and write the app stack's state, including its lock |

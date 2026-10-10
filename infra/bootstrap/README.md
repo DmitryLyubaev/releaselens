@@ -99,7 +99,7 @@ register them and CI is not, so it happens here. The provider also sets:
 | `ingest_metrics_publisher` | ingest identity | Monitoring Metrics Publisher | Application Insights |
 | `tool_metrics_publisher` | tool identity | Monitoring Metrics Publisher | Application Insights |
 | `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the ingestion account (Event Grid refuses a queue-scoped role at subscription creation) |
-| `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` |
+| `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | the ingestion account (Event Grid refuses a container-scoped role at subscription creation) |
 
 Storage Blob Data Owner on a whole account is the Functions host's documented minimum, so each
 app's host storage is in an account of its own: an app's host roles reach its own host account
