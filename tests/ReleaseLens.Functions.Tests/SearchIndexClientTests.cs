@@ -125,25 +125,101 @@ public class SearchIndexClientTests
         Assert.Equal("*", (string?)body["search"]);
     }
 
+    // A POST search's next-page link is the same URL on every page; the position is the skip.
+    private const string PostNextLink = "https://example-search.search.windows.net/indexes/releaselens-chunks/docs/search.post.search?api-version=2026-04-01";
+
+    private static string Page(string[] keys, int? nextSkip, string? nextLink = PostNextLink) =>
+        JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["value"] = keys.Select(key => new { chunk_id = key }),
+            ["@odata.nextLink"] = nextSkip is null ? null : nextLink,
+            ["@search.nextPageParameters"] = nextSkip is null
+                ? null
+                : new { search = "*", filter = "artefact eq 'issue:7'", select = "chunk_id", skip = nextSkip },
+        });
+
     [Fact]
     public async Task KeysForArtefact_PagesUntilEveryKeyIsRead()
     {
-        var nextLink = "https://example-search.search.windows.net/indexes/releaselens-chunks/docs/search?api-version=2026-04-01&$skiptoken=abc";
+        // Three pages that all carry the same link, told apart only by the skip.
         var stub = new StubHttpHandler()
-            .EnqueueJson(JsonSerializer.Serialize(new Dictionary<string, object>
-            {
-                ["value"] = new[] { new { chunk_id = "a-0" }, new { chunk_id = "a-1" } },
-                ["@odata.nextLink"] = nextLink,
-                ["@search.nextPageParameters"] = new { search = "*", filter = "artefact eq 'issue:7'", skip = 2 },
-            }))
-            .EnqueueJson("""{"value":[{"chunk_id":"a-2"}]}""");
+            .EnqueueJson(Page(["a-0", "a-1"], nextSkip: 2))
+            .EnqueueJson(Page(["a-2", "a-3"], nextSkip: 4))
+            .EnqueueJson(Page(["a-4"], nextSkip: null));
 
         var keys = await Client(stub).KeysForArtefactAsync("issue:7", Ct);
 
-        Assert.Equal(["a-0", "a-1", "a-2"], keys);
+        Assert.Equal(["a-0", "a-1", "a-2", "a-3", "a-4"], keys);
+        Assert.Equal(3, stub.Requests.Count);
+        Assert.All(stub.Requests.Skip(1), request => Assert.Equal(PostNextLink, request.Uri.ToString()));
+        Assert.All(stub.Requests.Skip(1), request => Assert.Equal(HttpMethod.Post, request.Method));
+        Assert.Equal([2, 4], stub.Requests.Skip(1).Select(request => (int?)JsonNode.Parse(request.Body)!["skip"]));
+    }
+
+    [Fact]
+    public async Task KeysForArtefact_SendsNoTopSoTheServiceAlwaysSaysWhereTheNextPageIs()
+    {
+        var stub = new StubHttpHandler().EnqueueJson(Page(["a-0"], nextSkip: null));
+
+        await Client(stub).KeysForArtefactAsync("issue:7", Ct);
+
+        Assert.False(JsonNode.Parse(Assert.Single(stub.Requests).Body)!.AsObject().ContainsKey("top"));
+    }
+
+    [Fact]
+    public async Task KeysForArtefact_AReplyWithNoLinkIsTheLastPage_EvenWhenEmpty()
+    {
+        var stub = new StubHttpHandler().EnqueueJson(Page([], nextSkip: null));
+
+        Assert.Empty(await Client(stub).KeysForArtefactAsync("issue:7", Ct));
+        Assert.Single(stub.Requests);
+    }
+
+    [Theory]
+    [InlineData(2, 2)]   // the skip does not move
+    [InlineData(2, 1)]   // it goes back
+    public async Task KeysForArtefact_ASkipThatDoesNotIncrease_ThrowsInsteadOfLooping(int first, int second)
+    {
+        var stub = new StubHttpHandler()
+            .EnqueueJson(Page(["a-0"], nextSkip: first))
+            .EnqueueJson(Page(["a-1"], nextSkip: second))
+            .EnqueueJson(Page(["a-2"], nextSkip: null));
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client(stub).KeysForArtefactAsync("issue:7", Ct));
+
+        Assert.Contains("forward", failure.Message);
         Assert.Equal(2, stub.Requests.Count);
-        Assert.Equal(nextLink, stub.Requests[1].Uri.ToString());
-        Assert.Equal(2, (int?)JsonNode.Parse(stub.Requests[1].Body)!["skip"]);
+    }
+
+    [Fact]
+    public async Task KeysForArtefact_ANextLinkWithNoSkip_Throws()
+    {
+        var stub = new StubHttpHandler().EnqueueJson(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["value"] = new[] { new { chunk_id = "a-0" } },
+            ["@odata.nextLink"] = PostNextLink,
+            ["@search.nextPageParameters"] = new { search = "*" },
+        }));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Client(stub).KeysForArtefactAsync("issue:7", Ct));
+    }
+
+    [Fact]
+    public async Task KeysForArtefact_StopsWithAClearErrorPastThePageCap()
+    {
+        // Each page moves forward, so only the cap can end this.
+        var stub = new StubHttpHandler();
+        for (var page = 1; page <= 101; page++)
+        {
+            stub.EnqueueJson(Page([$"a-{page}"], nextSkip: page * 50));
+        }
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Client(stub).KeysForArtefactAsync("issue:7", Ct));
+
+        Assert.Contains("100 pages", failure.Message);
+        Assert.Equal(100, stub.Requests.Count);
     }
 
     [Fact]
