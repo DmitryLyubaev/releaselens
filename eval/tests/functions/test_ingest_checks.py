@@ -131,6 +131,22 @@ def test_chunks_for_artefact_raises_on_a_refusal_with_the_status_only():
         ic.chunks_for_artefact(_index_client(lambda r: httpx.Response(403, text="https://secret.example.com")),
                                SEARCH, lambda: TOKEN, ARTEFACT)
     assert str(raised.value) == "the index answered 403" and "secret" not in str(raised.value)
+    assert raised.value.status == 403
+
+
+@pytest.mark.parametrize("error,transient", [
+    (ic.IndexReadError("the index answered 429", status=429), True),
+    (ic.IndexReadError("the index answered 503", status=503), True),
+    (ic.IndexReadError("the index answered 500", status=500), True),
+    (httpx.ReadTimeout("slow"), True),
+    (httpx.ConnectError("down"), True),
+    (ic.IndexReadError("the index answered 401", status=401), False),
+    (ic.IndexReadError("the index answered 403", status=403), False),
+    (ic.IndexReadError("the index answered 404", status=404), False),
+    (ic.IndexReadError("the index paged without moving forward"), False),
+])
+def test_only_a_429_a_5xx_a_timeout_or_a_connection_error_is_transient(error, transient):
+    assert ic.is_transient(error) is transient
 
 
 # --- the upload and the poison queue ---------------------------------------------------------------
@@ -225,6 +241,9 @@ def test_peek_poison_refuses_a_queue_with_more_messages_than_one_peek_returns_an
     with pytest.raises(ic.QueueReadError) as raised:
         ic.peek_poison(_index_client(_queue_handler(["x"], count=33, seen=seen)), QUEUE_ENDPOINT, lambda: TOKEN)
     assert "33" in str(raised.value) and "32" in str(raised.value)
+    # The owner holds only Storage Queue Data Reader: the refusal never asks them to clear the queue.
+    assert "clear the queue" not in str(raised.value)
+    assert "time-to-live" in str(raised.value) and "7 days" in str(raised.value) and "6a" in str(raised.value)
     assert not any(r.url.params.get("peekonly") for r in seen)
     ic.peek_poison(_index_client(_queue_handler(["x"], count=32)), QUEUE_ENDPOINT, lambda: TOKEN)
 
@@ -299,6 +318,87 @@ def test_watch_new_watches_to_the_end_of_the_window_and_records_what_was_wrong(c
     assert a.observed_after == 120 and a.problem is None
     assert b.observed_after is None and b.problem and b.watched
     assert c.observed_after is None and "3 of 4" in c.problem
+
+
+class Flaky:
+    """A reader that raises the given error on the given reads (1-based) and otherwise reads `read`."""
+
+    def __init__(self, read, failures: dict[int, Exception]) -> None:
+        self.read, self.failures, self.reads = read, failures, 0
+
+    def __call__(self, artefact: str) -> list[dict]:
+        self.reads += 1
+        if self.reads in self.failures:
+            raise self.failures[self.reads]
+        return self.read(artefact)
+
+
+TRANSIENT = {1: ic.IndexReadError("the index answered 429", status=429),
+             2: ic.IndexReadError("the index answered 503", status=503),
+             4: httpx.ReadTimeout("slow")}
+
+
+def test_watch_new_counts_a_transient_read_error_as_not_seen_yet_and_keeps_polling(clock):
+    world = World(clock)
+    upload = _new("issue:1", 2, clock.now)
+    world.schedule(clock.now + 12, upload.artefact, _docs(upload.artefact, 2))
+
+    (watched,) = ic.watch_new([upload], Flaky(world.read, TRANSIENT), clock=clock, sleep=clock.sleep)
+
+    # reads at 0 (429), 5 (503), 10 (not there yet), 15 (timeout), 20 (seen)
+    assert watched.watched and watched.observed_after == 20 and watched.problem is None
+    assert (watched.failed_polls, watched.polls) == (3, 5)
+    assert all(s == ic.POLL_S for s in clock.sleeps)
+    result = ic.i1_new_searchable([watched])
+    assert result.passed is True and "3 of 5 polls failed" in result.detail
+
+
+def test_watch_changed_counts_a_transient_read_error_as_not_seen_yet_and_keeps_polling(clock):
+    world = World(clock)
+    upload = _changed(clock.now)
+    world.schedule(clock.now - 10, ARTEFACT, [{"chunk_id": k, "content": t} for k, t in zip(OLD, OLD_TEXTS)])
+    world.schedule(clock.now + 12, ARTEFACT, _replaced(2))
+
+    watched = ic.watch_changed(upload, Flaky(world.read, TRANSIENT), clock=clock, sleep=clock.sleep)
+
+    assert watched.watched and watched.observed_after == 20 and watched.problem is None
+    assert (watched.failed_polls, watched.polls) == (3, 5)
+    result = ic.i2_changed_replaces(watched)
+    assert result.passed is True and "3 of 5 polls failed" in result.detail
+
+
+@pytest.mark.parametrize("error", [ic.IndexReadError("the index answered 403", status=403),
+                                   ic.IndexReadError("the index answered 401", status=401),
+                                   ic.IndexReadError("the index answered 400", status=400),
+                                   ic.IndexReadError("the index paged without moving forward")])
+def test_a_read_error_that_is_not_transient_propagates_from_both_watches_at_once(clock, error):
+    world = World(clock)
+    with pytest.raises(ic.IndexReadError) as raised:
+        ic.watch_new([_new("issue:1", 2, clock.now)], Flaky(world.read, {2: error}), clock=clock, sleep=clock.sleep)
+    assert raised.value is error and clock.sleeps == [ic.POLL_S]
+    with pytest.raises(ic.IndexReadError) as raised:
+        ic.watch_changed(_changed(clock.now), Flaky(world.read, {1: error}), clock=clock, sleep=clock.sleep)
+    assert raised.value is error
+
+
+def test_an_upload_whose_every_poll_failed_stays_unwatched_and_is_never_judged(clock):
+    def down(artefact):
+        raise ic.IndexReadError("the index answered 503", status=503)
+
+    new_one, seen_one = _new("issue:1", 2, clock.now), _new("issue:2", 1, clock.now)
+    world = World(clock)
+    world.schedule(clock.now, seen_one.artefact, _docs(seen_one.artefact, 1))
+    a, b = ic.watch_new([new_one, seen_one], lambda art: down(art) if art == "issue:1" else world.read(art),
+                        clock=clock, sleep=clock.sleep)
+    assert a.watched is False and a.failed_polls == a.polls > 0 and "failed" in a.problem
+    assert b.watched is True and b.observed_after == 0
+    with pytest.raises(ic.NotWatchedError):
+        ic.i1_new_searchable([a, b])
+
+    changed = ic.watch_changed(_changed(clock.now), down, clock=clock, sleep=clock.sleep)
+    assert changed.watched is False and changed.failed_polls == changed.polls > 0
+    with pytest.raises(ic.NotWatchedError):
+        ic.i2_changed_replaces(changed)
 
 
 def test_i1_passes_when_every_upload_was_watched_searchable_in_time_and_reports_median_and_maximum(clock):

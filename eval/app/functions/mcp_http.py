@@ -49,6 +49,20 @@ class McpProtocolError(McpError):
     """A reply that is not the shape the protocol says."""
 
 
+def describe(error: McpError) -> str:
+    """What a check's result may say about `error`: its class, and its HTTP status or JSON-RPC code.
+
+    Never its message: a JSON-RPC error's message and a tool's error text come from the server, and may
+    name a host, which would make the report's writer refuse the whole result.
+    """
+    name = type(error).__name__
+    if isinstance(error, McpHttpError):
+        return f"{name} (HTTP {error.status})"
+    if isinstance(error, McpRpcError) and isinstance(error.code, int) and not isinstance(error.code, bool):
+        return f"{name} (JSON-RPC code {error.code})"
+    return name
+
+
 def text_of(result: dict) -> str:
     """The text of a tool result's first text content."""
     for item in result.get("content") or []:

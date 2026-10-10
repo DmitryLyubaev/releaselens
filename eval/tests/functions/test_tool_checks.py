@@ -8,7 +8,8 @@ import httpx
 import pytest
 
 from app.functions import tool_checks as tc
-from app.functions.mcp_http import McpHttpError, McpToolError
+from app.functions import report
+from app.functions.mcp_http import McpHttpError, McpProtocolError, McpRpcError, McpToolError
 from app.gateway.checks import Reply
 from app.gateway.metric import MetricQueryError
 
@@ -92,12 +93,46 @@ def test_t1_fails_when_search_corpus_is_not_in_the_tool_list_and_asks_no_questio
     assert result.passed is False and "tool list" in result.detail and session.calls == []
 
 
-def test_t1_fails_on_a_tool_error_and_says_only_the_error_not_the_question_text():
+def test_t1_fails_on_a_tool_error_and_says_only_the_error_s_class_not_its_text_or_the_question():
     session, direct = _agreeing()
     session.fail_on[QUESTIONS[4][1]] = McpToolError("search failed")
     result = tc.t1_same_search(session, lambda q: direct[q], QUESTIONS)
-    assert result.passed is False and "q005" in result.detail and "search failed" in result.detail
-    assert QUESTIONS[4][1] not in result.detail
+    assert result.passed is False and "q005" in result.detail and "McpToolError" in result.detail
+    assert "search failed" not in result.detail and QUESTIONS[4][1] not in result.detail
+
+
+def test_t1_fails_when_both_sides_return_nothing_and_gives_both_counts():
+    session = FakeSession(answers={text: _hits() for _, text in QUESTIONS})
+    result = tc.t1_same_search(session, lambda q: [], QUESTIONS)
+    assert result.passed is False and "0 of 10" in result.detail
+    assert "q001: the tool gave 0 hits, the direct query 0, not 5" in result.detail
+
+
+def test_t1_fails_when_both_sides_return_the_same_four():
+    four = ["issue:1", "issue:2", "issue:3", "issue:4"]
+    session = FakeSession(answers={text: _hits(*four) for _, text in QUESTIONS})
+    result = tc.t1_same_search(session, lambda q: list(four), QUESTIONS)
+    assert result.passed is False and "0 of 10" in result.detail
+    assert "the tool gave 4 hits, the direct query 4, not 5" in result.detail
+
+
+HOST_IN_MESSAGE = "upstream apim-x.azure-api.net refused the call"
+
+
+@pytest.mark.parametrize("error", [McpRpcError(-32603, HOST_IN_MESSAGE), McpToolError(HOST_IN_MESSAGE),
+                                   McpProtocolError(HOST_IN_MESSAGE)])
+def test_a_server_message_with_a_hostname_never_reaches_t1_s_detail_and_the_result_still_writes(error, tmp_path):
+    session, direct = _agreeing()
+    session.fail_on[QUESTIONS[0][1]] = error
+    on_call = tc.t1_same_search(session, lambda q: direct[q], QUESTIONS)
+    on_handshake = tc.t1_same_search(FakeSession(init_error=error), lambda q: [], QUESTIONS)
+
+    for result in (on_call, on_handshake):
+        assert result.passed is False and type(error).__name__ in result.detail
+        assert "azure-api.net" not in result.detail and "upstream" not in result.detail
+        report.write(tmp_path / "check-t1.json", json.dumps({"detail": result.detail}))      # does not raise
+    if isinstance(error, McpRpcError):
+        assert "JSON-RPC code -32603" in on_call.detail and "JSON-RPC code -32603" in on_handshake.detail
 
 
 def test_t1_fails_when_the_handshake_is_refused():
