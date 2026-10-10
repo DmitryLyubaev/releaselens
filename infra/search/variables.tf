@@ -13,7 +13,7 @@ variable "location" {
 # applies the stack.
 variable "owner_object_id" {
   type        = string
-  description = "Entra object ID of the owner, who gets the two search roles: az ad signed-in-user show --query id -o tsv."
+  description = "Entra object ID of the owner, who gets two roles on the search service (Search Service Contributor and Search Index Data Contributor): az ad signed-in-user show --query id -o tsv."
 
   validation {
     # A wrong value would otherwise fail only at apply.

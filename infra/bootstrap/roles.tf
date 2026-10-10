@@ -1,6 +1,8 @@
 # Every role assignment in the design lives here (spec §4.10). The app stack writes none. The one
-# exception is the search stack, which only the owner applies, and which gives the owner two
-# roles on its own search service (spec §6.2 of the AI Search benchmark).
+# exception is the search stack, which only the owner applies, and which grants four roles on its
+# own search service: the owner's two (spec §6.2 of the AI Search benchmark), and Search Index Data
+# Contributor for the ingest identity and Search Index Data Reader for the tool identity (spec
+# §3.2 of the functions design).
 
 # The owner is whoever applies this stack, so the owner's principal is the signed-in one.
 # Applied by anyone else, these assignments would move to that principal.
@@ -122,7 +124,7 @@ resource "azurerm_role_assignment" "deploy_state_app" {
 }
 
 # The ingestion and the search tool (spec §3.1). The search service exists only in a session, so
-# the two search roles are in infra/search under its exception; everything else is here.
+# the two identities' search roles are in infra/search under its exception; everything else is here.
 #
 # Each app keeps its host storage (AzureWebJobsStorage, identity-based) and its deployment package
 # in a host account of its own (ingestion.tf). Its host roles are on that account and nowhere
