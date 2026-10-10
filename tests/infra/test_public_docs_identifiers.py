@@ -82,8 +82,8 @@ def _public_documents(repo_root: Path) -> list[Path]:
 
 def test_the_scan_covers_the_public_documents(repo_root: Path) -> None:
     names = {path.relative_to(repo_root).as_posix() for path in _public_documents(repo_root)}
-    assert {"README.md", "docs/runbook-gateway.md", "docs/architecture.md", "infra/gateway/README.md",
-            "infra/bootstrap/README.md"} <= names
+    assert {"README.md", "docs/runbook-gateway.md", "docs/runbook-functions.md", "docs/architecture.md",
+            "infra/gateway/README.md", "infra/functions/README.md", "infra/bootstrap/README.md"} <= names
     assert any(name.startswith("docs/superpowers/specs/") for name in names)
     assert any(name.startswith("docs/superpowers/plans/") for name in names)
 
@@ -129,13 +129,28 @@ def test_the_scan_lets_a_placeholder_or_a_public_endpoint_through(text: str) -> 
     assert identifiers_in(text) == []
 
 
-def test_the_gateway_runbook_never_prints_the_signed_in_account(repo_root: Path) -> None:
+_CAPTURED = re.compile(r"\$\w+\s*=\s*az account show")       # PowerShell: `$sub = az account show ...`
+
+
+@pytest.mark.parametrize("runbook", ["runbook-gateway.md", "runbook-functions.md"])
+def test_a_runbook_never_prints_the_signed_in_account(repo_root: Path, runbook: str) -> None:
     # `az account show` prints the account's email unless its output is captured: the runbook's own
     # rule forbids an email on a screen, so each use must be a capture, and `acctok` prints a Boolean.
-    text = (repo_root / "docs" / "runbook-gateway.md").read_text(encoding="utf-8")
+    text = (repo_root / "docs" / runbook).read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if "az account show" in line and "`az account show`" not in line]
     assert lines, "the account check is missing"
     for line in lines:
-        assert "ConvertFrom-Json" in line or "$(az account show" in line or "=$(az account show" in line, line
+        assert ("ConvertFrom-Json" in line or "$(az account show" in line or "=$(az account show" in line
+                or _CAPTURED.search(line)), line
         assert "-o table" not in line, line
     assert "acctok" in text
+
+
+def test_the_functions_runbook_asks_first_before_each_delivery_step(repo_root: Path) -> None:
+    # Spec §11's eight steps are the runbook's eight sections, and each waits for the owner's yes.
+    text = (repo_root / "docs" / "runbook-functions.md").read_text(encoding="utf-8")
+    sections = re.split(r"^## ", text, flags=re.MULTILINE)
+    steps = [s for s in sections if re.match(r"Step \d\.", s)]
+    assert [s.split(".", 1)[0] for s in steps] == [f"Step {n}" for n in range(1, 9)]
+    for step in steps:
+        assert "**Ask first.**" in step, step.splitlines()[0]
