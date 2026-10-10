@@ -17,6 +17,10 @@ from pathlib import Path
 
 GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 HOST_SUFFIXES = [".azure.com", ".azure-api.net", ".azurewebsites.net", ".windows.net"]
+FIXED_ERROR_BODY = (
+    '@("{\\"error\\":{\\"status\\":" + context.Response.StatusCode'
+    ' + ",\\"message\\":\\"The gateway could not complete the request.\\"}}")'
+)
 OID = '@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))'
 
 
@@ -85,15 +89,26 @@ def test_rate_limit(repo_root: Path) -> None:
 def test_metric(repo_root: Path) -> None:
     metric = _only(_root(repo_root), "inbound", "emit-metric")
     assert metric.get("name") == "Tool Calls"
+    assert metric.get("namespace") == "releaselens-gateway"
     dimensions = metric.findall("dimension")
     assert [dim.get("name") for dim in dimensions] == ["Caller"]
     assert dimensions[0].get("value") == OID
 
 
 def test_backend_credential(repo_root: Path) -> None:
-    swap = _only(_root(repo_root), "inbound", "authentication-managed-identity")
+    root = _root(repo_root)
+    swap = _only(root, "inbound", "authentication-managed-identity")
     assert swap.get("resource") == "{{tool-app-audience}}"
     assert swap.get("client-id") == "{{tool-gateway-identity-client-id}}"
+    # Nothing else: ignore-error="true" would forward the caller's own token if the gateway's token
+    # fetch failed, and output-token-variable-name would stop the header being replaced.
+    assert set(swap.attrib) == {"resource", "client-id"}
+    assert list(swap) == []
+    # And no later step puts an Authorization header back.
+    inbound = _section(root, "inbound")
+    assert _steps(inbound)[-1] is swap
+    for header in inbound.iter("set-header"):
+        assert (header.get("name") or "").lower() != "authorization"
 
 
 def test_the_named_values_are_the_four_task_8_creates(repo_root: Path) -> None:
@@ -115,12 +130,42 @@ def test_no_retry_and_no_model_policy(repo_root: Path) -> None:
     assert not [element.tag for element in root.iter() if element.tag.startswith("llm-")]
 
 
+ALLOWED_STEPS = {
+    "inbound": {
+        "base",
+        "validate-azure-ad-token",
+        "rate-limit-by-key",
+        "emit-metric",
+        "authentication-managed-identity",
+    },
+    "backend": {"base"},
+    "outbound": {"base"},
+    "on-error": {"base", "set-status", "set-header", "set-body"},
+}
+# Elements that only appear inside an allowed step.
+ALLOWED_NESTED = {"audiences", "audience", "required-claims", "claim", "value", "dimension"}
+
+
+def test_only_the_expected_elements_appear(repo_root: Path) -> None:
+    # An allow-list, so a body-touching or body-producing element (send-request, return-response,
+    # cache-store, find-and-replace, validate-content, json-to-xml, mock-response, a logger...) fails.
+    root = _root(repo_root)
+    for name, allowed in ALLOWED_STEPS.items():
+        tags = {child.tag for child in _section(root, name)}
+        assert tags <= allowed, f"{name} has unexpected {sorted(tags - allowed)}"
+    everything = set().union(*ALLOWED_STEPS.values()) | ALLOWED_NESTED | {"policies"}
+    for section in root:
+        for element in section.iter():
+            if element is not section:
+                assert element.tag in everything, f"unexpected element <{element.tag}>"
+
+
 def test_no_body_is_read(repo_root: Path) -> None:
-    # Reading either body buffers it, which breaks Streamable HTTP. Checked on the raw text so a
-    # reference in an attribute, an expression or a comment all fail.
+    # Reading a body buffers it, which breaks Streamable HTTP. Checked on the raw text, so any
+    # reference in an attribute, an expression or a comment fails, and an alias such as
+    # "var r = context.Request; r.Body" fails as well, not only the two literal spellings.
     text = _path(repo_root).read_text(encoding="utf-8")
-    assert "context.Request.Body" not in text
-    assert "context.Response.Body" not in text
+    assert not re.search(r"\.Body\b", text, re.IGNORECASE), "the policy reads a Body"
     # Only the error path sets a body, and that one is fixed text (see the on-error test).
     root = _root(repo_root)
     for section in ("inbound", "backend", "outbound"):
@@ -132,8 +177,7 @@ def test_on_error_body_is_fixed(repo_root: Path) -> None:
     bodies = list(on_error.iter("set-body"))
     assert len(bodies) == 1
     body = "".join(bodies[0].itertext())
-    assert "context.Response.StatusCode" in body
-    assert "error" in body
+    assert body == FIXED_ERROR_BODY
     serialized = ET.tostring(on_error, encoding="unicode")
     for forbidden in ("LastError", "Url", "Host", "Backend"):
         assert forbidden not in serialized, f"on-error mentions {forbidden}"
