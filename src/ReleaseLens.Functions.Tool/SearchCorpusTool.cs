@@ -24,7 +24,7 @@ public sealed class SearchCorpusTool(CorpusSearch search, ILogger<SearchCorpusTo
     // McpToolProperty parameters, so it is not read.
     [Function(nameof(SearchCorpus))]
     public async Task<string> SearchCorpus(
-        [McpToolTrigger(ToolName, "Searches the ReleaseLens corpus of issues, pull requests, discussions and releases. Returns the best matching passages, each with its artefact ID, type, an excerpt and a relevance score.")]
+        [McpToolTrigger(ToolName, "Searches the ReleaseLens corpus of commits, issues, pull requests and releases. Returns the best matching passages, each with its artefact ID, type, an excerpt and a relevance score.")]
         ToolInvocationContext context,
         [McpToolProperty("query", "What to look for, in plain words.", isRequired: true)]
         string query,
