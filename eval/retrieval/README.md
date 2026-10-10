@@ -198,7 +198,8 @@ dotnet run --project ../src/ReleaseLens.Worker -- retrieve bge-exact retrieval/q
 
 2. Apply `infra/search` from WSL, as its README's
    [Apply and destroy](../../infra/search/README.md#apply-and-destroy) says:
-   - Its inputs go in a git-ignored `infra/search/terraform.tfvars`, in your own window.
+   - Its inputs go in a git-ignored `infra/search/terraform.tfvars`, in your own window. They
+     include `tfstate_storage_account`, the account named below.
    - `terraform init -backend-config=storage_account_name=<state storage account>` sets up its
      state. In `infra/bootstrap`, `terraform output -raw tfstate_storage_account` prints the
      account's name.

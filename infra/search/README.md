@@ -16,6 +16,8 @@ in the [benchmark spec](../../docs/superpowers/specs/2026-10-02-azure-ai-search-
 | Search service | `srch-releaselens-<suffix>` | SKU `basic`, 1 replica, 1 partition, `australiaeast`; `local_authentication_enabled = false`; `semantic_search_sku = "free"` |
 | Role assignment | `owner_service_contributor` | the owner, `Search Service Contributor`, on the service only: to manage the index |
 | Role assignment | `owner_index_data_contributor` | the owner, `Search Index Data Contributor`, on the service only: to load and query |
+| Role assignment | `ingest_index_data_contributor` | the ingest identity (`id-releaselens-ingest`), `Search Index Data Contributor`, on the service only: to write each artefact's chunks and delete its stale ones |
+| Role assignment | `tool_index_data_reader` | the tool identity (`id-releaselens-tool`), `Search Index Data Reader`, on the service only: to query, never to write |
 
 `<suffix>` is six random lowercase letters and digits, generated on each apply. The output
 `endpoint` is `https://srch-releaselens-<suffix>.search.windows.net`, which `build-index` and
@@ -28,7 +30,12 @@ in the [benchmark spec](../../docs/superpowers/specs/2026-10-02-azure-ai-search-
   2026-10-02), ranked queries return a billing error instead of being billed (spec §6.3).
 - **The role assignments live here, not in bootstrap.** The rule that bootstrap holds every role
   assignment keeps role-assignment rights away from CI. Only the owner applies this stack, and
-  the owner holds those rights already. No other principal gets access.
+  the owner holds those rights already. No other principal gets access: the owner and the two
+  Function identities are the only ones.
+- **The two identities are bootstrap's.** Their principal IDs come from the bootstrap's state
+  (`ingest_identity_principal_id`, `tool_identity_principal_id`), read through
+  `terraform_remote_state` as the [gateway stack](../gateway/README.md) reads its own. The
+  bootstrap change that creates them must be applied before this stack.
 - **Nothing is registered from here.** Bootstrap registers `Microsoft.Search`.
 - **No `prevent_destroy`.** The stack is meant to be destroyed.
 
@@ -42,6 +49,7 @@ Contributor` on it, so the bootstrap change must be applied first.
 |---|---|---|
 | `subscription_id` | the subscription | none |
 | `owner_object_id` | the owner's Entra object ID: `az ad signed-in-user show --query id -o tsv` | none |
+| `tfstate_storage_account` | the state storage account, to read the bootstrap's outputs: `terraform -chdir=../bootstrap output -raw tfstate_storage_account` | none |
 | `location` | the region | `australiaeast` |
 
 Put them in a git-ignored `terraform.tfvars` in this folder, in your own window. Never commit them.
@@ -65,7 +73,7 @@ az group exists --name rg-releaselens-search
 ```
 
 Then plan, read the plan, and apply it. The plan must add a resource group, a search service, a
-random suffix and two role assignments, and nothing else:
+random suffix and four role assignments, and nothing else:
 
 ```bash
 terraform plan -out=tfplan

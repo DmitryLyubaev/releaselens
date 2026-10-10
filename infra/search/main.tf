@@ -51,3 +51,21 @@ resource "azurerm_role_assignment" "owner_index_data_contributor" {
   role_definition_name = "Search Index Data Contributor"
   principal_id         = var.owner_object_id
 }
+
+# The two Function identities' roles (spec §3.2), on the service only. The identities are
+# bootstrap's, read from its state; the roles are here, under the same exception as the owner's,
+# because the service they are scoped to belongs to this stack.
+
+# To write the chunks of each artefact the ingest app receives, and to delete its stale ones.
+resource "azurerm_role_assignment" "ingest_index_data_contributor" {
+  scope                = azurerm_search_service.search.id
+  role_definition_name = "Search Index Data Contributor"
+  principal_id         = local.bootstrap.ingest_identity_principal_id
+}
+
+# To query the index, and nothing more: the tool app never writes.
+resource "azurerm_role_assignment" "tool_index_data_reader" {
+  scope                = azurerm_search_service.search.id
+  role_definition_name = "Search Index Data Reader"
+  principal_id         = local.bootstrap.tool_identity_principal_id
+}

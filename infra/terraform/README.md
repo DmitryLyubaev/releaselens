@@ -3,7 +3,7 @@
 This is the half of ReleaseLens's Azure infrastructure that is deployed and destroyed every
 session. It holds the Container App and Postgres, and nothing long-lived. The long-lived half is
 [`../bootstrap`](../bootstrap/README.md). It holds the identities, the Azure OpenAI account, the
-state storage, the budget and every role assignment but the search stack's two.
+state storage, the budget and every role assignment but the search stack's four.
 
 **Deployed and destroyed twice on 1 October 2026** through the workflows. The
 [README's record](../../README.md#two-stack-deployment-1-october-2026) has the runs. The stack
