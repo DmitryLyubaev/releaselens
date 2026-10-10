@@ -5,6 +5,7 @@
     <ProjectReference Include="..\ReleaseLens.Storage\ReleaseLens.Storage.csproj" />
     <ProjectReference Include="..\ReleaseLens.Embedding\ReleaseLens.Embedding.csproj" />
     <ProjectReference Include="..\ReleaseLens.Core\ReleaseLens.Core.csproj" />
+    <ProjectReference Include="..\ReleaseLens.Functions.Common\ReleaseLens.Functions.Common.csproj" />
     <ProjectReference Include="..\ReleaseLens.Llm\ReleaseLens.Llm.csproj" />
   </ItemGroup>
 

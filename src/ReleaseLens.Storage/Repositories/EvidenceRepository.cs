@@ -149,6 +149,23 @@ public sealed class EvidenceRepository
             pullRequests, scope.Transaction, cancellationToken: cancellationToken));
     }
 
+    public async Task<PullRequestEvidence?> GetPullRequestAsync(TenantScope scope, int number, CancellationToken cancellationToken)
+    {
+        var row = await scope.Connection.QuerySingleOrDefaultAsync<PullRequestRow>(new CommandDefinition(
+            """
+            select tenant_id, number, title, body, state, merged_at, merge_commit_sha,
+                   base_ref, head_ref, author, created_at, url
+            from pull_requests where number = @number
+            """,
+            new { number }, scope.Transaction, cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new PullRequestEvidence(row.tenant_id, row.number, row.title, row.body, row.state,
+                row.merged_at, row.merge_commit_sha, row.base_ref, row.head_ref, row.author,
+                row.created_at, row.url);
+    }
+
     public Task<int> UpsertReleasesAsync(
         TenantScope scope, IReadOnlyList<ReleaseEvidence> releases, CancellationToken cancellationToken)
     {
@@ -215,6 +232,22 @@ public sealed class EvidenceRepository
         public string? author { get; init; }
         public DateTimeOffset created_at { get; init; }
         public DateTimeOffset? closed_at { get; init; }
+        public string url { get; init; } = "";
+    }
+
+    private sealed record PullRequestRow
+    {
+        public Guid tenant_id { get; init; }
+        public int number { get; init; }
+        public string title { get; init; } = "";
+        public string body { get; init; } = "";
+        public string state { get; init; } = "";
+        public DateTimeOffset? merged_at { get; init; }
+        public string? merge_commit_sha { get; init; }
+        public string base_ref { get; init; } = "";
+        public string head_ref { get; init; } = "";
+        public string? author { get; init; }
+        public DateTimeOffset created_at { get; init; }
         public string url { get; init; } = "";
     }
 

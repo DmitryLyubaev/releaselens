@@ -107,6 +107,37 @@ public class EvidenceRepositoryTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetPullRequest_ReturnsTheStoredPullRequest()
+    {
+        var (factory, tenantId) = await ArrangeTenantAsync("get-pr");
+        var mergedAt = new DateTimeOffset(2026, 3, 2, 10, 30, 0, TimeSpan.Zero);
+        var pullRequest = new PullRequestEvidence(
+            tenantId, 901, "Fix planner", "Closes #4211", "closed", mergedAt, "sha0901",
+            "main", "fix/planner", "alice", DateTimeOffset.UnixEpoch,
+            "https://github.com/microsoft/semantic-kernel/pull/901");
+
+        await using (var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken))
+        {
+            await _repository.UpsertPullRequestsAsync(scope, [pullRequest], TestContext.Current.CancellationToken);
+            await scope.CommitAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var read = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+        var stored = await _repository.GetPullRequestAsync(read, 901, TestContext.Current.CancellationToken);
+
+        Assert.Equal(pullRequest, stored);
+    }
+
+    [Fact]
+    public async Task GetPullRequest_ReturnsNullWhenAbsent()
+    {
+        var (factory, tenantId) = await ArrangeTenantAsync("pr-absent");
+        await using var scope = await factory.OpenAsync(tenantId, TestContext.Current.CancellationToken);
+
+        Assert.Null(await _repository.GetPullRequestAsync(scope, 999999, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task UpsertIssues_RoundTripsLabelsArray()
     {
         var (factory, tenantId) = await ArrangeTenantAsync("upsert-issues");
