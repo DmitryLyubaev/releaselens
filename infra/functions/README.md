@@ -21,12 +21,12 @@ the hour, so the session still ends with every stack destroyed.
 |---|---|---|
 | Resource group | `rg-releaselens-functions` | its own group: in `rg-releaselens`, the nightly destroy's empty-group check would find the apps and fail |
 | Plan | `asp-releaselens-functions` | Flex Consumption (`FC1`), Linux, `australiaeast` |
-| Ingest app (azapi) | `func-releaselens-ingest-<suffix>` | `Microsoft.Web/sites`, `functionapp,linux`; .NET 10 isolated; 2,048 MB instances, none always ready; the ingest identity, user-assigned; deploys from `deploy-ingest` in its own host account |
+| Ingest app (azapi) | `func-releaselens-ingest-<suffix>` | `Microsoft.Web/sites`, `functionapp,linux`; .NET 10 isolated; 2,048 MB instances, at most 10, none always ready; the ingest identity, user-assigned; deploys from `deploy-ingest` in its own host account |
 | Tool app (azapi) | `func-releaselens-tool-<suffix>` | the same, with the tool identity and `deploy-tool` in its own host account |
 | Basic publishing credentials (azapi) | `scm` and `ftp` on each app | `allow = false`: no username and password for the SCM (Kudu) or FTP endpoints |
-| Authentication (azapi) | `authsettingsV2` on each app | every route requires an Entra token: 401 without one; the tenant's v2 issuer; audiences the search tool's identifier URI and client ID; allowed application the gateway identity |
+| Authentication (azapi) | `authsettingsV2` on each app | every route requires an Entra token, no excluded path: 401 without one; the tenant's v2 issuer; audiences the search tool's identifier URI and client ID; allowed application the gateway identity |
 | Named values (azapi) | `tool-tenant-id`, `tool-gateway-app-client-id`, `tool-app-audience`, `tool-gateway-identity-client-id` | on the gateway's service; what the policy refers to as `{{name}}`; none secret |
-| MCP API (azapi) | `releaselens-search` | on the gateway's service, `2025-09-01-preview`, type `mcp`, path `releaselens-search`, HTTPS only, `subscriptionRequired = false`; Streamable HTTP passed through to the tool app's `/runtime/webhooks/mcp` |
+| MCP API (azapi) | `releaselens-search` | on the gateway's service, `2025-09-01-preview`, type `mcp` (and the create-time `apiType` `mcp`), path `releaselens-search`, HTTPS only, `subscriptionRequired = false`; Streamable HTTP passed through to the tool app's `/runtime/webhooks/mcp` |
 | Policy (azapi) | [`policies/mcp-api.xml`](policies/mcp-api.xml) | loaded with `file()`, format `xml` |
 | Diagnostic (azapi) | `applicationinsights` on the MCP API | through the gateway's `appi-releaselens` logger; every request sampled, no payload in front or behind, no client IP; metrics on, so `emit-metric` publishes |
 
@@ -136,7 +136,7 @@ The mocked tests cannot show these:
 - **The MCP API takes this diagnostic**: `metrics` on and `largeLanguageModel.logs` off on an
   API of type `mcp`, and `Tool Calls` then appears in `customMetrics`.
 - **The site body.** The app starts with identity-based host storage on an account with shared
-  keys off, and `maximumInstanceCount`, left out, takes the service's default.
+  keys off.
 - **Basic authentication off does not block the deploy**: the owner's Entra sign-in deploys both
   packages with SCM and FTP basic credentials disallowed.
 - **The policy round-trips.** API Management may return the policy's XML normalised, so azapi
