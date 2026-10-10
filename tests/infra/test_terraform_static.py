@@ -242,8 +242,9 @@ def test_search_stack_keeps_keys_off(repo_root):
         assert not [line for line in _code_lines(text) if keys.search(line)], name
 
 
-def test_search_stack_has_only_the_owners_two_role_assignments(repo_root):
-    assert len(_declarations(_stack(repo_root, "search"), "resource", "azurerm_role_assignment")) == 2
+def test_search_stack_has_only_the_owners_two_roles_and_the_two_function_identities(repo_root):
+    # The owner's two, and the ingest identity's write and the tool identity's read (spec §3.2).
+    assert len(_declarations(_stack(repo_root, "search"), "resource", "azurerm_role_assignment")) == 4
 
 
 def test_search_stack_is_not_in_the_app_group(repo_root):

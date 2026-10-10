@@ -21,3 +21,8 @@ variable "owner_object_id" {
     error_message = "owner_object_id must be an Entra object ID, a GUID."
   }
 }
+
+variable "tfstate_storage_account" {
+  type        = string
+  description = "Name of the storage account that holds every stack's state, to read the bootstrap's outputs from: terraform -chdir=../bootstrap output -raw tfstate_storage_account."
+}

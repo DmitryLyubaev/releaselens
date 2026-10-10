@@ -1,6 +1,20 @@
 variables {
-  subscription_id = "00000000-0000-0000-0000-000000000000"
-  owner_object_id = "22222222-2222-2222-2222-222222222222"
+  subscription_id         = "00000000-0000-0000-0000-000000000000"
+  owner_object_id         = "22222222-2222-2222-2222-222222222222"
+  tfstate_storage_account = "stexample"
+}
+
+# The bootstrap's two identity principals, as placeholders: the state is never read in a test.
+# Each is distinct from the owner's and from the other, so a role wired to the wrong principal
+# fails its assertion.
+override_data {
+  target = data.terraform_remote_state.bootstrap
+  values = {
+    outputs = {
+      ingest_identity_principal_id = "33333333-3333-3333-3333-333333333333"
+      tool_identity_principal_id   = "44444444-4444-4444-4444-444444444444"
+    }
+  }
 }
 
 mock_provider "azurerm" {
@@ -81,6 +95,20 @@ run "owner_roles" {
   assert {
     condition     = azurerm_role_assignment.owner_index_data_contributor.role_definition_name == "Search Index Data Contributor" && azurerm_role_assignment.owner_index_data_contributor.principal_id == "22222222-2222-2222-2222-222222222222" && azurerm_role_assignment.owner_index_data_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-search/providers/Microsoft.Search/searchServices/srch-releaselens-a1b2c3"
     error_message = "owner_index_data_contributor must give owner_object_id Search Index Data Contributor on the search service."
+  }
+}
+
+run "function_identity_roles" {
+  command = plan
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_index_data_contributor.role_definition_name == "Search Index Data Contributor" && azurerm_role_assignment.ingest_index_data_contributor.principal_id == "33333333-3333-3333-3333-333333333333" && azurerm_role_assignment.ingest_index_data_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-search/providers/Microsoft.Search/searchServices/srch-releaselens-a1b2c3"
+    error_message = "ingest_index_data_contributor must give the ingest identity Search Index Data Contributor on the search service."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_index_data_reader.role_definition_name == "Search Index Data Reader" && azurerm_role_assignment.tool_index_data_reader.principal_id == "44444444-4444-4444-4444-444444444444" && azurerm_role_assignment.tool_index_data_reader.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-search/providers/Microsoft.Search/searchServices/srch-releaselens-a1b2c3"
+    error_message = "tool_index_data_reader must give the tool identity Search Index Data Reader on the search service."
   }
 }
 
