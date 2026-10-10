@@ -159,9 +159,10 @@ run "apps" {
       app.body.properties.functionAppConfig.runtime.name == "dotnet-isolated" &&
       app.body.properties.functionAppConfig.runtime.version == "10.0" &&
       app.body.properties.functionAppConfig.scaleAndConcurrency.instanceMemoryMB == 2048 &&
+      app.body.properties.functionAppConfig.scaleAndConcurrency.maximumInstanceCount == 10 &&
       length(app.body.properties.functionAppConfig.scaleAndConcurrency.alwaysReady) == 0
     ])
-    error_message = "Each app must run .NET 10 isolated with 2,048 MB instances and no always-ready instance."
+    error_message = "Each app must run .NET 10 isolated with 2,048 MB instances, at most 10 of them, and no always-ready instance."
   }
 
   assert {
@@ -312,9 +313,10 @@ run "authentication" {
       auth.body.properties.platform.enabled == true &&
       auth.body.properties.globalValidation.requireAuthentication == true &&
       auth.body.properties.globalValidation.unauthenticatedClientAction == "Return401" &&
+      length(auth.body.properties.globalValidation.excludedPaths) == 0 &&
       auth.body.properties.httpSettings.requireHttps == true
     ])
-    error_message = "Each app must require authentication on every route, answer 401 without it, and require HTTPS."
+    error_message = "Each app must require authentication on every route, with no excluded path, answer 401 without it, and require HTTPS."
   }
 
   assert {
@@ -368,11 +370,12 @@ run "mcp_api" {
   assert {
     condition = (
       azapi_resource.mcp_api.body.properties.type == "mcp" &&
+      azapi_resource.mcp_api.body.properties.apiType == "mcp" &&
       azapi_resource.mcp_api.body.properties.path == "releaselens-search" &&
       azapi_resource.mcp_api.body.properties.protocols == ["https"] &&
       azapi_resource.mcp_api.body.properties.subscriptionRequired == false
     )
-    error_message = "The MCP API must be of type mcp, at path releaselens-search, HTTPS only, with no subscription key."
+    error_message = "The MCP API must be of type mcp (type and the create-time apiType), at path releaselens-search, HTTPS only, with no subscription key."
   }
 
   assert {

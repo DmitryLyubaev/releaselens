@@ -47,7 +47,11 @@ resource "azapi_resource" "mcp_api" {
 
   body = {
     properties = {
+      # type is the API's kind; apiType is the write-only selector the service reads on create.
+      # Both are mcp, or the service may create a plain HTTP API that answers every call 404.
+      # apiType is never read back, so it shows no drift.
       type                 = "mcp"
+      apiType              = "mcp"
       displayName          = "ReleaseLens search tool"
       description          = "The search_corpus tool of the ReleaseLens search Function app, over Streamable HTTP."
       path                 = local.mcp_api_path

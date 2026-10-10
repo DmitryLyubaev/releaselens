@@ -133,11 +133,12 @@ resource "azapi_resource" "app" {
           }
         }
         # No always-ready instance: one would bill about US$26 a month idle (research notes
-        # §8). The first call after idle waits for a cold start. maximumInstanceCount is left to
-        # the service's default.
+        # §8). The first call after idle waits for a cold start. At most 10 instances, so a burst
+        # of calls through the public gateway cannot scale an app's bill without bound.
         scaleAndConcurrency = {
-          instanceMemoryMB = 2048
-          alwaysReady      = []
+          instanceMemoryMB     = 2048
+          maximumInstanceCount = 10
+          alwaysReady          = []
         }
         runtime = {
           name    = "dotnet-isolated"
@@ -170,9 +171,12 @@ resource "azapi_update_resource" "auth" {
       platform = {
         enabled = true
       }
+      # No excluded path, written out: an update keeps what it does not set, so an excluded
+      # path added outside Terraform would otherwise survive every apply.
       globalValidation = {
         requireAuthentication       = true
         unauthenticatedClientAction = "Return401"
+        excludedPaths               = []
       }
       httpSettings = {
         requireHttps = true
