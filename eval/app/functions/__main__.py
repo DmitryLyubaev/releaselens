@@ -3,9 +3,13 @@
 `upload` puts artefact files in the `artefacts-in` container as the owner, one `new`, `changed` or
 `duplicate` kind at a time, or one malformed file (`broken`), and records each in
 `<out>/functions-session.json`: the session id its blob names carry, when each was uploaded, and
-what the checks need to judge it. `ingest-checks` reads that record and runs I1 to I4 against the
-index and the poison queue. `tool-checks` runs T1 to T4 against the gateway, the tool app and
-Application Insights. `report` renders the saved results.
+what the checks need to judge it. The folder is the one the Worker's `export-artefacts` wrote: its
+`manifest.json` gives each file's expected chunk count (counted by the C# chunker on the file's own
+JSON). `new` and `changed` also WATCH their 120 s window while it is open and record what they saw;
+`ingest-checks` judges I1 and I2 from that record and refuses, writing nothing, an upload that was not
+watched. I4 is judged by the poison message's own insertion time, so it does not depend on when it
+runs. `ingest-checks` runs I1 to I4; `tool-checks` runs T1 to T4 against the gateway, the tool app and
+Application Insights; `report` renders the saved results.
 
 Each check writes its own `check-<id>.json`, so a re-run overwrites only that check's result. T4's
 metric lags: `tool-checks --check t4` sends the burst once and records it in `check-t4-burst.json`;
@@ -29,7 +33,6 @@ import sys
 import tempfile
 import time
 import traceback
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta, timezone
@@ -40,7 +43,7 @@ import httpx
 import truststore
 
 from app.gateway import checks, freeze, metric
-from app.retrieval import corpus, search_index
+from app.retrieval import search_index
 from app.retrieval.azure_auth import TokenSource
 
 from . import ingest_checks as ic
@@ -50,17 +53,17 @@ from .mcp_http import McpError, McpSession
 
 EVAL = Path(__file__).resolve().parents[2]
 REPORTS = EVAL / "reports"
-DEFAULT_CORPUS = EVAL / "retrieval-data" / "chunks.jsonl"
 DEFAULT_QUESTIONS = EVAL / "retrieval" / "questions.jsonl"
 
 MANIFEST = "functions-session.json"
+EXPORT_MANIFEST = "manifest.json"       # what `export-artefacts` writes: file name -> expected chunk count
 BURST_FILE = "check-t4-burst.json"
 DIRECT_SCOPE = tc.DIRECT_SCOPE
 CALLER = "owner"                       # the label the owner's `oid` has in GATEWAY_CALLER_LABELS
 EMBEDDING_DEPLOYMENT = "releaselens-embed-small"
 HTTP_TIMEOUT_S = 60.0
 BURST_QUERY = "what changed in the latest release?"
-SINCE_MARGIN = timedelta(seconds=60)
+WINDOW_MARGIN = timedelta(seconds=10)      # clock skew between this machine and the gateway
 BROKEN_BYTES = b'{"entityType": "issue", "number": '       # cut off: not JSON, so every try fails
 
 # Looked up when a command runs, so a test can replace them.
@@ -152,22 +155,47 @@ def _reader(http: httpx.Client, endpoint: str, tokens: TokenSource) -> ic.ReadCh
 
 # --- upload --------------------------------------------------------------------------------------------
 
+def _strings(value) -> list[str]:
+    """Every string in a JSON value, keys excluded."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    return []
+
+
+def _export_counts(directory: Path) -> dict[str, int]:
+    """The expected chunk count of each exported file, from the manifest `export-artefacts` writes."""
+    path = directory / EXPORT_MANIFEST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and all(type(v) is int and v > 0 for v in data.values()):
+            return data
+    except (OSError, ValueError):
+        pass
+    raise Refused(f"{EXPORT_MANIFEST} is missing from {directory} or not a map of file name to chunk count: "
+                  "`export-artefacts` writes it beside the files; export them again")
+
+
 def run_upload(args) -> int:
     _guard(args)
     kind = args.kind
     if kind != "broken" and args.dir is None:
         raise Refused("--dir is needed for this kind of upload")
     if kind == "changed":
-        if not args.expect_chunks or not args.gone_text:
-            raise Refused("--kind changed needs --expect-chunks (how many chunks the shortened file yields) and "
-                          "--gone-text (a phrase only the cut-away text holds)")
-    elif args.expect_chunks or args.gone_text:
-        raise Refused("--expect-chunks and --gone-text are only for --kind changed")
+        if not args.gone_text:
+            raise Refused("--kind changed needs --gone-text, a phrase only the cut-away text holds")
+    elif args.gone_text:
+        raise Refused("--gone-text is only for --kind changed")
     _require_clean_text(args, args.gone_text or "")
 
     files: list[tuple[Path, str]] = []
     if kind != "broken":
         for path in sorted(args.dir.glob("*.json"), key=lambda p: p.name):
+            if path.name == EXPORT_MANIFEST:
+                continue
             try:
                 files.append((path, ic.artefact_of_stem(path.stem)))
             except ValueError:
@@ -180,11 +208,19 @@ def run_upload(args) -> int:
 
     expected: dict[str, int] = {}
     if kind in ("new", "duplicate"):
-        counts = Counter(chunk.artefact for chunk in corpus.load_chunks(args.corpus))
-        for _, artefact in files:
-            if artefact not in counts:
-                raise Refused(f"{artefact} is not in the corpus file: its expected chunk count is unknown")
-            expected[artefact] = counts[artefact]
+        counts = _export_counts(args.dir)
+        for path, artefact in files:
+            if path.name not in counts:
+                raise Refused(f"{artefact} ({path.name}) is not in {EXPORT_MANIFEST}: its expected chunk count is "
+                              "unknown; export it again with `export-artefacts`")
+            expected[artefact] = counts[path.name]
+    if kind == "changed":
+        try:
+            text_of_file = _strings(json.loads(files[0][0].read_text(encoding="utf-8")))
+        except ValueError:
+            raise Refused(f"{files[0][0].name} is not JSON") from None
+        if any(args.gone_text in text for text in text_of_file):
+            raise Refused("the shortened file still holds the --gone-text: cut that text away from the file")
 
     stored = None if args.new_session else _stored(args.out)
     previous = _stored(args.out) if args.new_session else None
@@ -198,47 +234,66 @@ def run_upload(args) -> int:
             read = _reader(http, args.search_endpoint, search)
 
             def put(name: str, data: bytes) -> float:
-                ic.upload_blob(http, args.blob_endpoint, storage.token, name, data)
+                # A duplicate overwrites on purpose; every other upload refuses a name already taken.
+                ic.upload_blob(http, args.blob_endpoint, storage.token, name, data, overwrite=(kind == "duplicate"))
                 return _now()
 
             if kind == "broken":
                 before = search_index.document_count(args.search_endpoint, search, http)
-                name = ic.blob_name(session, "broken")
+                name = ic.blob_name(session, f"broken-{ic.new_session_id()[:6]}")
                 done.append(ic.Upload("broken", "", name, put(name, BROKEN_BYTES), docs_before=before))
             else:
                 snapshots = {artefact: read(artefact) for _, artefact in files}
                 for path, artefact in files:
-                    if kind == "new" and snapshots[artefact]:
+                    held = snapshots[artefact]
+                    if kind == "new" and held:
                         raise Refused(f"{artefact} is already in the index: I1 needs an artefact held back from "
                                       "the bulk load")
-                    if kind == "changed" and not snapshots[artefact]:
-                        raise Refused(f"{artefact} is not in the index: I2 needs an artefact from the bulk-loaded corpus")
+                    if kind == "changed":
+                        if not held:
+                            raise Refused(f"{artefact} is not in the index: I2 needs an artefact from the "
+                                          "bulk-loaded corpus")
+                        if not all(c["chunk_id"].isdigit() for c in held):
+                            raise Refused(f"{artefact} holds keys that are not numeric: I2 needs an artefact still "
+                                          "under the bulk load's numeric keys (spec section 4.4), not one the ingest "
+                                          "app has already rewritten")
+                        if not any(args.gone_text in c["content"] for c in held):
+                            raise Refused("the --gone-text is not in the old content of the artefact in the index")
                 for path, artefact in files:
                     name = ic.blob_name(session, path.stem)
                     data = path.read_bytes()
                     if kind == "new":
                         done.append(ic.Upload("new", artefact, name, put(name, data), expected_chunks=expected[artefact]))
                     elif kind == "changed":
-                        done.append(ic.Upload("changed", artefact, name, put(name, data),
-                                              expected_chunks=args.expect_chunks, gone_text=args.gone_text,
-                                              old_keys=[c["chunk_id"] for c in snapshots[artefact]]))
+                        old = snapshots[artefact]
+                        done.append(ic.Upload("changed", artefact, name, put(name, data), gone_text=args.gone_text,
+                                              old_keys=[c["chunk_id"] for c in old],
+                                              old_hashes=[ic.content_hash(c["content"]) for c in old]))
                     else:
                         first = ic.Upload("duplicate", artefact, name, put(name, data), expected_chunks=expected[artefact])
-                        landed = ic.i1_new_searchable([first], read, clock=_now, sleep=_sleep_sync)
-                        if not landed.passed:
+                        landed = ic.watch_new([first], read, clock=_now, sleep=_sleep_sync)[0]
+                        if landed.observed_after is None:
                             raise Refused("the first upload did not become searchable, so it was not uploaded again: "
-                                          + landed.detail)
+                                          + str(landed.problem))
                         keys = [c["chunk_id"] for c in read(artefact)]
                         done.append(ic.Upload("duplicate", artefact, name, first.uploaded_at,
                                               expected_chunks=expected[artefact], keys_after_first=keys,
                                               second_uploaded_at=put(name, data)))
+                # The windows are watched here, while they are open: `ingest-checks` judges what was seen.
+                if kind == "new":
+                    done[:] = ic.watch_new(done, read, clock=_now, sleep=_sleep_sync)
+                elif kind == "changed":
+                    done[:] = [ic.watch_changed(done[0], read, clock=_now, sleep=_sleep_sync)]
     finally:
-        # What was uploaded stays on record even if a later upload failed: the checks read it.
+        # What was uploaded stays on record even if a later step failed: unwatched, so it is never judged.
         if done:
             if previous is not None:
                 (args.out / MANIFEST).rename(args.out / f"functions-session-{previous[0]}.json")
             _store(args, session, [*uploads, *done])
     print(f"uploaded {len(done)} {kind} artefact(s) in session {session}")
+    for upload in done:
+        if kind in ("new", "changed") and upload.observed_after is None:
+            print(f"{upload.artefact}: not searchable as expected within the window: {upload.problem}")
     return 0
 
 
@@ -273,21 +328,29 @@ def run_ingest_checks(args) -> int:
             raise Refused("the session holds no upload")
     if "i4" in wanted:
         _need(args, "--queue-endpoint")
+    # I1 and I2 are judged from what `upload` watched: refuse before anything is written if any was not.
+    for check in ("i1", "i2"):
+        if check in wanted:
+            ic.require_watched(check.upper(), by_kind[_KINDS[check]])
 
-    search = TokenSource(search_index.SCOPE, args.tenant)
+    cache: dict[str, TokenSource] = {}
+
+    def tokens(scope: str) -> TokenSource:
+        return cache.setdefault(scope, TokenSource(scope, args.tenant))
+
     results: list[checks.CheckResult] = []
     with _sync_client() as http:
-        read = _reader(http, args.search_endpoint, search)
+        clock = {"clock": _now, "sleep": _sleep_sync}
         for check in wanted:
-            clock = {"clock": _now, "sleep": _sleep_sync}
             if check == "i1":
-                result = ic.i1_new_searchable(by_kind["new"], read, **clock)
+                result = ic.i1_new_searchable(by_kind["new"])
             elif check == "i2":
-                result = _combined("I2", [ic.i2_changed_replaces(u, read, **clock) for u in by_kind["changed"]])
+                result = _combined("I2", [ic.i2_changed_replaces(u) for u in by_kind["changed"]])
             elif check == "i3":
+                read = _reader(http, args.search_endpoint, tokens(search_index.SCOPE))
                 result = _combined("I3", [ic.i3_duplicate_harmless(u, read, **clock) for u in by_kind["duplicate"]])
             else:
-                storage = TokenSource(ic.STORAGE_SCOPE, args.tenant)
+                search, storage = tokens(search_index.SCOPE), tokens(ic.STORAGE_SCOPE)
                 result = _combined("I4", [
                     ic.i4_broken_to_poison(
                         u, lambda: ic.peek_poison(http, args.queue_endpoint, storage.token),
@@ -300,17 +363,17 @@ def run_ingest_checks(args) -> int:
 
 # --- tool-checks ---------------------------------------------------------------------------------------------
 
-def _burst_record(burst: tc.Burst, since: str) -> str:
-    return json.dumps({**asdict(burst), "since": since}, indent=2) + "\n"
+def _burst_record(burst: tc.Burst, start: str, until: str) -> str:
+    return json.dumps({**asdict(burst), "start": start, "until": until}, indent=2) + "\n"
 
 
-def _load_burst(directory: Path) -> tuple[tc.Burst, str]:
+def _load_burst(directory: Path) -> tuple[tc.Burst, str, str]:
     path = directory / BURST_FILE
     if not path.exists():
         raise Refused(f"{BURST_FILE} is missing: run `tool-checks --check t4` first, which sends the burst")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return tc.Burst(**{f.name: data[f.name] for f in fields(tc.Burst)}), data["since"]
+        return tc.Burst(**{f.name: data[f.name] for f in fields(tc.Burst)}), data["start"], data["until"]
     except (ValueError, KeyError, TypeError):
         raise Refused(f"{BURST_FILE} is not a burst record") from None
 
@@ -335,7 +398,7 @@ def run_tool_checks(args) -> int:
         except (ValueError, OSError) as error:
             raise Refused(f"the question set cannot be used: {type(error).__name__}") from None
     labels: dict[str, str] = {}
-    burst_record: tuple[tc.Burst, str] | None = None
+    burst_record: tuple[tc.Burst, str, str] | None = None
     if "t4" in wanted or "t4-metric" in wanted:
         labels = metric.labels_from_env(os.environ)           # before any token: a missing map is the owner's to set
     if "t4-metric" in wanted:
@@ -352,8 +415,9 @@ def run_tool_checks(args) -> int:
             _finish(args, result)
             results.append(result)
 
-        def read_totals(since: str) -> Callable[[], dict[str, int]]:
-            return lambda: metric.totals(tc.tool_call_rows(args.app_id, tokens(metric.SCOPE).token(), since, http), labels)
+        def read_totals(start: str, until: str) -> Callable[[], dict[str, int]]:
+            return lambda: metric.totals(
+                tc.tool_call_rows(args.app_id, tokens(metric.SCOPE).token(), start, until, http), labels)
 
         for check in wanted:
             if check == "t1":
@@ -368,7 +432,7 @@ def run_tool_checks(args) -> int:
                 finish(tc.t3_no_bypass(McpSession(http, args.app_url, None),
                                        McpSession(http, args.app_url, tokens(args.scope).token())))
             elif check == "t4":
-                since = (_utcnow() - SINCE_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")
+                start = (_utcnow() - WINDOW_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")      # before the handshake
                 session = McpSession(http, args.mcp_url, tokens(args.scope).token())
                 try:
                     session.initialize()
@@ -379,14 +443,15 @@ def run_tool_checks(args) -> int:
                     finish(checks.CheckResult("T4", False, "the handshake before the burst got no response"))
                     continue
                 burst = tc.run_burst(tc.mcp_send(session, BURST_QUERY))
-                _save(args, args.out / BURST_FILE, _burst_record(burst, since))
-                finish(tc.t4_rate_limit(burst, read_totals(since), label=CALLER, clock=_now, sleep=_sleep_sync,
-                                        wait_s=args.metric_wait))
+                until = (_utcnow() + WINDOW_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")     # after the burst
+                _save(args, args.out / BURST_FILE, _burst_record(burst, start, until))
+                finish(tc.t4_rate_limit(burst, read_totals(start, until), label=CALLER, clock=_now,
+                                        sleep=_sleep_sync, wait_s=args.metric_wait))
             else:
                 assert burst_record is not None
-                burst, since = burst_record
-                finish(tc.t4_rate_limit(burst, read_totals(since), label=CALLER, clock=_now, sleep=_sleep_sync,
-                                        wait_s=args.metric_wait))
+                burst, start, until = burst_record
+                finish(tc.t4_rate_limit(burst, read_totals(start, until), label=CALLER, clock=_now,
+                                        sleep=_sleep_sync, wait_s=args.metric_wait))
     return 0 if all(r.passed for r in results) else 1
 
 
@@ -428,13 +493,11 @@ def _parser() -> argparse.ArgumentParser:
     sub = measured("upload", run_upload, "put artefact files in artefacts-in, and record them for the checks")
     sub.add_argument("--kind", choices=("new", "changed", "duplicate", "broken"), required=True,
                      help="new: I1; changed: I2; duplicate: I3 (each file twice); broken: I4 (one malformed file)")
-    sub.add_argument("--dir", type=Path, default=None, help="the folder of <base64url key>.json files (not for broken)")
+    sub.add_argument("--dir", type=Path, default=None,
+                     help="the folder `export-artefacts` wrote: <base64url key>.json files and manifest.json (not for broken)")
     sub.add_argument("--blob-endpoint", required=True, help="the ingestion account's blob endpoint")
     sub.add_argument("--search-endpoint", required=True, help="the search service's endpoint")
-    sub.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS,
-                     help="the corpus's chunks.jsonl: the expected chunk count of a new or duplicate artefact")
-    sub.add_argument("--expect-chunks", type=int, default=None, help="changed: the chunks the shortened file yields")
-    sub.add_argument("--gone-text", default=None, help="changed: a phrase only the cut-away text holds")
+    sub.add_argument("--gone-text", default=None, help="changed: a phrase that is in the old chunks and not in the shortened file")
     sub.add_argument("--new-session", action="store_true",
                      help="start a new session; the old record is kept as functions-session-<id>.json")
 
@@ -474,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.handler(args)
     except (Refused, freeze.MeasuredRunRefused, report.IdentifierError, metric.MetricQueryError, metric.LabelsError,
-            ic.IndexReadError, ic.UploadError, ic.QueueReadError, tc.DirectSearchError) as error:
+            ic.IndexReadError, ic.UploadError, ic.QueueReadError, ic.NotWatchedError, tc.DirectSearchError) as error:
         print(error, file=sys.stderr)
         return 1
     except Exception as error:

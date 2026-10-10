@@ -33,6 +33,8 @@ BURST_CALLS = 30            # spec §7: a burst of 30 calls at once
 TOOL_CALLS_METRIC = "Tool Calls"
 T4_METRIC_WAIT_S = 300      # Application Insights lags; a few minutes is usual
 T4_POLL_S = 30
+# `initialize` and `notifications/initialized` each pass the gateway policy, so each is one `Tool Calls`.
+HANDSHAKE_REQUESTS = 2
 DIRECT_SCOPE = "https://ai.azure.com/.default"      # the account's v1 API, and the wrong audience for T2
 
 Clock = Callable[[], float]
@@ -229,12 +231,18 @@ def t4_rate_limit(burst: Burst, read_totals: Callable[[], dict[str, int]], *, la
                   sleep: Sleep, wait_s: float = T4_METRIC_WAIT_S, interval_s: float = T4_POLL_S) -> CheckResult:
     """T4: the burst met a gateway 429 with `Retry-After`, and the `Tool Calls` metric shows the calls under `label`.
 
-    The metric lags. It is read until it holds at least as many calls as the gateway let through
-    (the 429s are refused before the metric is emitted), or until `wait_s` has passed.
+    `read_totals` is bound to the burst's own window (it starts before the handshake and ends after the
+    burst). The metric lags, so it is read until it holds at least the calls the gateway let through plus
+    the handshake's requests (the 429s are refused before `emit-metric`), or until `wait_s` has passed. A
+    burst in which no call got past the gateway fails: no metric row can then show anything.
     """
     if burst.refused_with_retry_after < 1:
         return CheckResult("T4", False, f"none of the {burst.sent} calls sent at once got a 429 with Retry-After "
                                         f"({burst.refused} got a 429, {burst.accepted} were answered)")
+    if burst.accepted < 1:
+        return CheckResult("T4", False, f"no call of the {burst.sent} got past the gateway: nothing could show in "
+                                        "the metric, so the rate limit is not shown to leave a caller's calls through")
+    required = burst.accepted + HANDSHAKE_REQUESTS
     start, seen, error = clock(), None, None
     while True:
         try:
@@ -242,33 +250,35 @@ def t4_rate_limit(burst: Burst, read_totals: Callable[[], dict[str, int]], *, la
             error = None
         except MetricQueryError as failure:
             error = str(failure)
-        if seen is not None and seen >= burst.accepted:
+        if seen is not None and seen >= required:
             return CheckResult("T4", True, f"{burst.refused_with_retry_after} of {burst.sent} calls at once got a 429 "
                                            f"with Retry-After; the {TOOL_CALLS_METRIC} metric shows {seen} calls under "
-                                           f"{label}, at least the {burst.accepted} the gateway let through")
+                                           f"{label} in the burst's window, at least the {required} expected "
+                                           f"({burst.accepted} let through and {HANDSHAKE_REQUESTS} for the handshake)")
         if clock() - start >= wait_s:
             break
         sleep(interval_s)
     shown = error or (f"{seen} calls under {label}" if seen is not None else f"no calls under {label}")
     return CheckResult("T4", False, f"{burst.refused_with_retry_after} of {burst.sent} calls got a 429 with Retry-After, "
-                                    f"but the {TOOL_CALLS_METRIC} metric shows {shown}, the gateway let {burst.accepted} "
-                                    "through: the metric lags, so re-run the metric check later")
+                                    f"but the {TOOL_CALLS_METRIC} metric shows {shown} in the burst's window, "
+                                    f"and {required} were expected: the metric lags, so re-run the metric check later")
 
 
 # --- the metric query -------------------------------------------------------------------------------------------
 
-def tool_call_rows(app_id: str, token: str, since: str, http: httpx.Client) -> list[dict]:
-    """`Tool Calls` per `Caller` since `since` (UTC, to the second), from Application Insights."""
-    check_since(since)
+def tool_call_rows(app_id: str, token: str, start: str, until: str, http: httpx.Client) -> list[dict]:
+    """`Tool Calls` per `Caller` between `start` and `until` (UTC, to the second), from Application Insights."""
+    check_since(start)
+    check_since(until)
     kql = (
         "customMetrics\n"
-        f"| where timestamp >= datetime({since})\n"
+        f"| where timestamp between (datetime({start}) .. datetime({until}))\n"
         f'| where name == "{TOOL_CALLS_METRIC}"\n'
         '| extend Caller = tostring(customDimensions["Caller"])\n'
         "| summarize total = sum(valueSum) by Caller"
     )
     response = http.post(QUERY_URL.format(app_id=app_id), headers={"Authorization": f"Bearer {token}"},
-                         json={"query": kql, "timespan": f"{since}/P3D"})
+                         json={"query": kql, "timespan": f"{start}/{until}"})
     if response.status_code != 200:
         raise MetricQueryError(f"the query API answered {response.status_code}")
     try:
@@ -277,4 +287,3 @@ def tool_call_rows(app_id: str, token: str, since: str, http: httpx.Client) -> l
         return [dict(zip(names, row, strict=True)) for row in table["rows"]]
     except (ValueError, KeyError, IndexError, TypeError):
         raise MetricQueryError("the query API's answer has no result table") from None
-
