@@ -1,8 +1,9 @@
 # Azure Functions: ingestion and a search tool — design
 
-**Status: specification, awaiting the owner's review.** Nothing is built, applied or measured.
-Every figure below is either read from a named source on a stated date, or labelled as an
-estimate. Claims that could not be checked are labelled *unverified* and listed in §12.
+**Status: specification, approved by the owner on 2026-10-10.** Nothing is built, applied or
+measured. Every figure below is either read from a named source on a stated date, or labelled as
+an estimate. Claims that could not be checked are labelled *unverified* and listed in §12. Changes
+made after approval are in §13, dated, each on the owner's decision.
 
 - Project 5 of the portfolio plan (phase 2), in ReleaseLens, `main` at `69e0c0a`
 - Builds on project 1 (the keyless Azure OpenAI account and the bootstrap stack), project 2 (the
