@@ -38,6 +38,15 @@
   <ItemGroup Label="Identity">
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
   </ItemGroup>
+  <ItemGroup Label="Functions">
+    <!-- The isolated worker model, the only one Flex Consumption runs on .NET 10. -->
+    <PackageVersion Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
+    <PackageVersion Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.1.0" />
+    <!-- The queue trigger, with the identity-based IngestQueue connection and host.json messageEncoding (5.x and later). -->
+    <PackageVersion Include="Microsoft.Azure.Functions.Worker.Extensions.Storage.Queues" Version="5.5.5" />
+    <!-- Reads the artefact blob with the managed identity. -->
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.30.1" />
+  </ItemGroup>
   <ItemGroup Label="Telemetry">
     <!--
       1.11.x is what Tasks 9/11/16 originally pinned, but OpenTelemetry.Api 1.11.1 and
