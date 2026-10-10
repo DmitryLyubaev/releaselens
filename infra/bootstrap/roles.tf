@@ -205,6 +205,20 @@ resource "azurerm_role_assignment" "tool_host_table_contributor" {
   principal_id         = azurerm_user_assigned_identity.tool.principal_id
 }
 
+# Application Insights has local authentication off, so each app sends its telemetry as its own
+# identity (APPLICATIONINSIGHTS_AUTHENTICATION_STRING in infra/functions), as the gateway does.
+resource "azurerm_role_assignment" "ingest_metrics_publisher" {
+  scope                = azurerm_application_insights.gateway.id
+  role_definition_name = "Monitoring Metrics Publisher"
+  principal_id         = azurerm_user_assigned_identity.ingest.principal_id
+}
+
+resource "azurerm_role_assignment" "tool_metrics_publisher" {
+  scope                = azurerm_application_insights.gateway.id
+  role_definition_name = "Monitoring Metrics Publisher"
+  principal_id         = azurerm_user_assigned_identity.tool.principal_id
+}
+
 # Event Grid delivers to the queue, and dead-letters, as the system topic's identity. The
 # subscription in ingestion.tf depends on both, so they exist before it is created.
 resource "azurerm_role_assignment" "eventgrid_queue_sender" {

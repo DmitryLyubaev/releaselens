@@ -43,7 +43,7 @@ stack as built, and that runbook. The design and its reasons are in the
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | twenty-nine Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
+| Role assignments | thirty-one Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
@@ -94,6 +94,8 @@ register them and CI is not, so it happens here. The provider also sets:
 | `tool_host_blob_owner` | tool identity | Storage Blob Data Owner | the tool host account |
 | `tool_host_queue_contributor` | tool identity | Storage Queue Data Contributor | the tool host account (the MCP extension's queues) |
 | `tool_host_table_contributor` | tool identity | Storage Table Data Contributor | the tool host account |
+| `ingest_metrics_publisher` | ingest identity | Monitoring Metrics Publisher | Application Insights |
+| `tool_metrics_publisher` | tool identity | Monitoring Metrics Publisher | Application Insights |
 | `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the `ingest-events` queue |
 | `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` |
 

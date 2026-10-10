@@ -335,6 +335,24 @@ run "authentication" {
   }
 }
 
+# Basic publishing credentials are a password: off for SCM and FTP on both apps, so code deploys
+# with the owner's Entra sign-in alone.
+run "basic_publishing_credentials" {
+  command = plan
+
+  assert {
+    condition = length(azapi_update_resource.basic_publishing) == 4 && alltrue([
+      for app in ["ingest", "tool"] : alltrue([
+        for kind in ["scm", "ftp"] :
+        azapi_update_resource.basic_publishing["${app}-${kind}"].type == "Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-11-01" &&
+        azapi_update_resource.basic_publishing["${app}-${kind}"].resource_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-functions/providers/Microsoft.Web/sites/func-releaselens-${app}-a1b2c3/basicPublishingCredentialsPolicies/${kind}" &&
+        azapi_update_resource.basic_publishing["${app}-${kind}"].body.properties.allow == false
+      ])
+    ])
+    error_message = "Each app must have basic publishing credentials off for both scm and ftp."
+  }
+}
+
 run "mcp_api" {
   command = plan
 
