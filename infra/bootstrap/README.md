@@ -15,7 +15,7 @@ stack as built, and that runbook. The design and its reasons are in the
 |---|---|---|
 | Resource group | `rg-releaselens-bootstrap` | holds everything below except the budget, `rg-releaselens`, and the deploy identity's Contributor assignment, which is scoped to `rg-releaselens` |
 | Management lock | `lock-releaselens-bootstrap` | `CanNotDelete` on that group; see [the standing rules](#standing-rules-after-r8) |
-| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only), `tfstate-app`, `tfstate-search` (owner only) and `tfstate-gateway` (owner only); shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
+| State storage account | `strlstate<suffix>` | containers `tfstate-bootstrap` (owner only), `tfstate-app`, `tfstate-search` (owner only), `tfstate-gateway` (owner only) and `tfstate-functions` (owner only); shared keys and local users off; OAuth by default; TLS 1.2; blob versioning; 7 days of blob and container soft delete; old versions deleted 90 days after they were written; `prevent_destroy` |
 | Deploy identity | `id-releaselens-deploy` | user-assigned; the identity the workflows sign in as |
 | Federated credential | `github-environment-azure` | on the deploy identity, with one subject, for the GitHub environment `azure`; it does not exist while `github_oidc_subject` is unset |
 | App identity | `id-releaselens-app` | user-assigned; the identity the Container App runs as |
@@ -29,24 +29,32 @@ stack as built, and that runbook. The design and its reasons are in the
 | Model deployment | `releaselens-chat-failover-test` (both accounts) | `gpt-4.1-mini` version `2025-04-14`, format `OpenAI`, SKU `GlobalStandard`, `NoAutoUpgrade`; capacity `1` on the australiaeast account, so it throttles on purpose, and `var.failover_capacity` on the second |
 | Gateway Entra app | `releaselens-ai-gateway` | the app registration API Management validates tokens for, single-tenant, version 2 tokens, identifier URI `api://<its client ID>`; one app role `Gateway.Invoke` (users and applications), one delegated scope `access_as_user` with the Azure CLI pre-authorised on it (its client ID comes from `azuread_application_published_app_ids`); the signed-in owner owns it; no secret and no certificate |
 | Gateway service principal | `releaselens-ai-gateway` | `app_role_assignment_required = true`: only an identity holding `Gateway.Invoke` can get a token |
+| Ingest identity | `id-releaselens-ingest` | user-assigned; the identity the ingest Function app runs as |
+| Tool identity | `id-releaselens-tool` | user-assigned; the identity the search tool's Function app runs as |
+| Ingestion storage account | `strlingest<suffix>` | containers `artefacts-in`, `deadletter-events`, `deploy-ingest` and `deploy-tool`, all private; queues `ingest-events` and `ingest-events-poison`; both Function apps' host storage; shared keys and local users off; OAuth by default; no public blob access; TLS 1.2 |
+| Event Grid system topic | `evgt-releaselens-ingest` | on the ingestion account, with a system-assigned identity |
+| Event Grid subscription | `artefacts-in-to-ingest-events` | `Microsoft.Storage.BlobCreated` only, subject beginning `/blobServices/default/containers/artefacts-in/` and ending `.json`; delivers to the `ingest-events` queue and dead-letters to `deadletter-events`, both as the topic's identity, with no key |
+| Search tool Entra app | `releaselens-search-tool` | the tool app's audience: single-tenant, version 2 tokens, identifier URI `api://<its client ID>`; one app role `Tool.Invoke` (applications only); no delegated scope and no pre-authorised client; the signed-in owner owns it; no secret and no certificate |
+| Search tool service principal | `releaselens-search-tool` | `app_role_assignment_required = true`: only an identity holding `Tool.Invoke`, the gateway identity, can get a token |
 | Log Analytics workspace | `log-releaselens` | `PerGB2018`, 30 days of retention, a daily ingestion cap of `0.1` GB, `local_authentication_enabled = false` |
 | Application Insights | `appi-releaselens` | workspace-based on the workspace above, `application_type = "other"`, `local_authentication_enabled = false`; the "custom metrics with dimensions" setting is a portal step in the gateway runbook, not Terraform |
 | Action group | `ag-releaselens-budget` | emails the alert address |
 | Subscription budget | `budget-releaselens-monthly` | at subscription scope, so the lock does not cover it |
 | App resource group | `rg-releaselens` | created empty; the app stack deploys into it |
-| Role assignments | twelve Azure role assignments and three Entra `Gateway.Invoke` assignments, all in `roles.tf` | see [Roles](#roles) |
+| Role assignments | twenty-eight Azure role assignments and four Entra app role assignments (three `Gateway.Invoke`, one `Tool.Invoke`), all in `roles.tf` | see [Roles](#roles) |
 
 `<suffix>` is six random lowercase letters and digits (`random_string.suffix`), generated once.
 
-Both identities stay in the bootstrap group and must never move into `rg-releaselens`. CI holds
+All five identities stay in the bootstrap group and must never move into `rg-releaselens`. CI holds
 Contributor on that group, which includes writing federated credentials. An identity there would
 let CI add a trust for itself outside the environment gate.
 
-The provider registers the ten resource providers that the stacks use: `Microsoft.Storage`,
+The provider registers the twelve resource providers that the stacks use: `Microsoft.Storage`,
 `Microsoft.ManagedIdentity`, `Microsoft.CognitiveServices`, `Microsoft.App`,
 `Microsoft.DBforPostgreSQL`, `Microsoft.Consumption`, `Microsoft.Insights`,
 `Microsoft.Search`, which the [search stack](../search/README.md) uses, and
-`Microsoft.ApiManagement` and `Microsoft.OperationalInsights`, which the AI gateway uses. The owner is allowed to
+`Microsoft.ApiManagement` and `Microsoft.OperationalInsights`, which the AI gateway uses, and
+`Microsoft.EventGrid` and `Microsoft.Web`, which the ingestion and the Function apps use. The owner is allowed to
 register them and CI is not, so it happens here. The provider also sets:
 - `storage_use_azuread = true`, so storage data-plane calls authenticate through Entra ID, which
   an account with shared keys off requires
@@ -69,16 +77,39 @@ register them and CI is not, so it happens here. The provider also sets:
 | `deploy_contributor` | deploy identity | Contributor | `rg-releaselens` |
 | `deploy_identity_operator` | deploy identity | Managed Identity Operator | the app identity |
 | `deploy_state_app` | deploy identity | Storage Blob Data Contributor | `tfstate-app` |
+| `owner_state_functions` | the owner | Storage Blob Data Contributor | `tfstate-functions` |
+| `owner_artefacts_in` | the owner | Storage Blob Data Contributor | `artefacts-in` |
+| `owner_deploy_ingest` | the owner | Storage Blob Data Contributor | `deploy-ingest` |
+| `owner_deploy_tool` | the owner | Storage Blob Data Contributor | `deploy-tool` |
+| `ingest_artefacts_reader` | ingest identity | Storage Blob Data Reader | `artefacts-in` |
+| `ingest_queue_events` | ingest identity | Storage Queue Data Contributor | the `ingest-events` queue |
+| `ingest_queue_poison` | ingest identity | Storage Queue Data Contributor | the `ingest-events-poison` queue |
+| `ingest_openai_user` | ingest identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
+| `ingest_host_blob_owner` | ingest identity | Storage Blob Data Owner | the ingestion account (host storage) |
+| `ingest_host_table_contributor` | ingest identity | Storage Table Data Contributor | the ingestion account (host storage) |
+| `tool_openai_user` | tool identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account |
+| `tool_host_blob_owner` | tool identity | Storage Blob Data Owner | the ingestion account (host storage) |
+| `tool_host_queue_contributor` | tool identity | Storage Queue Data Contributor | the ingestion account (host storage; the MCP extension's queues) |
+| `tool_host_table_contributor` | tool identity | Storage Table Data Contributor | the ingestion account (host storage) |
+| `eventgrid_queue_sender` | Event Grid topic's identity | Storage Queue Data Message Sender | the `ingest-events` queue |
+| `eventgrid_deadletter_writer` | Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` |
 
-Three more assignments are Entra app role assignments (`azuread_app_role_assignment`), not Azure
-roles. Each gives one identity `Gateway.Invoke` on the gateway's service principal, and nothing
-else can get a token for the gateway:
+The ingest identity holds no queue role on the whole account: the host's own queue use is the
+Event Grid blob trigger's and the MCP extension's, and the ingest app has neither, so its two
+queue roles are all its queue access. Storage Blob Data Owner on the account is the Functions
+host's documented minimum; it also covers each app's deployment container.
+
+Four more assignments are Entra app role assignments (`azuread_app_role_assignment`), not Azure
+roles. Three give one identity each `Gateway.Invoke` on the gateway's service principal, and
+nothing else can get a token for the gateway. The fourth gives the gateway identity `Tool.Invoke`
+on the search tool's service principal, and nothing else can get a token for the tool:
 
 | Assignment | Identity | App role | Resource |
 |---|---|---|---|
 | `gateway_invoke_owner` | the owner | `Gateway.Invoke` | the gateway's service principal |
 | `gateway_invoke_app` | app identity | `Gateway.Invoke` | the gateway's service principal |
 | `gateway_invoke_deploy` | deploy identity | `Gateway.Invoke` | the gateway's service principal |
+| `tool_invoke_gateway` | gateway identity | `Tool.Invoke` | the search tool's service principal |
 
 Role definitions are looked up by name, never by GUID. The deploy identity, which is what CI
 runs as, has:
@@ -137,6 +168,13 @@ by hand: `gateway_identity_id`, `gateway_identity_client_id`, `primary_openai_ba
 `app_insights_id` and `app_insights_connection_string`. The last is marked `sensitive`, because
 the string carries an instrumentation key even though local authentication is off. None is a
 credential.
+
+The functions stack reads these the same way: `ingest_identity_id`, `ingest_identity_client_id`,
+`ingest_identity_principal_id`, `tool_identity_id`, `tool_identity_client_id`,
+`tool_identity_principal_id`, `ingest_storage_account_name`, `ingest_storage_blob_endpoint`,
+`ingest_storage_queue_endpoint`, `search_tool_app_client_id` and `search_tool_app_identifier_uri`.
+They are identifiers and endpoints; no key, connection string or SAS of the ingestion account is
+output.
 
 ## Terraform runs in WSL
 
@@ -235,7 +273,7 @@ All four paths must be listed.
 
 ### R5. The budget first
 
-*Changes the subscription; bills nothing.* Even the plan registers the ten resource providers,
+*Changes the subscription; bills nothing.* Even the plan registers the twelve resource providers,
 because the provider registers them when it is configured. Registration is free.
 
 1. Create the git-ignored variables file. The budget's start date must be the first of the
@@ -371,8 +409,8 @@ estimate).
 The `azuread` provider signs in with the same `az` session. The owner needs the right to create
 app registrations in their tenant (the tenant setting "Users can register applications" on, or an
 Entra role that allows it, such as Application Developer), and the right to assign app roles on
-the gateway's own service principal, which owning it gives. Without them the apply fails at the
-gateway's Entra app.
+the gateway's and the search tool's own service principals, which owning them gives. Without them
+the apply fails at the first Entra app.
 
 ```bash
 echo 'github_oidc_subject = "<the sub recorded in R7>"' >> terraform.tfvars

@@ -177,3 +177,17 @@ run "gateway_state_container" {
     error_message = "The gateway state container must be in the state account."
   }
 }
+
+run "functions_state_container" {
+  command = plan
+
+  assert {
+    condition     = azurerm_storage_container.functions.name == "tfstate-functions" && azurerm_storage_container.functions.container_access_type == "private"
+    error_message = "The functions state container must be tfstate-functions, and private."
+  }
+
+  assert {
+    condition     = azurerm_storage_container.functions.storage_account_id == azurerm_storage_account.state.id
+    error_message = "The functions state container must be in the state account."
+  }
+}

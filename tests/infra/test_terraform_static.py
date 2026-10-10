@@ -22,6 +22,8 @@ BOOTSTRAP_PROVIDERS = [
     "Microsoft.Search",
     "Microsoft.ApiManagement",
     "Microsoft.OperationalInsights",
+    "Microsoft.EventGrid",
+    "Microsoft.Web",
 ]
 
 # Bootstrap owns every one of these; the app stack may neither create nor read them.
@@ -65,7 +67,7 @@ def _declarations(files: dict[str, str], kind: str, type_: str) -> list[str]:
     return [name for name, text in files.items() for _ in pattern.finditer(text)]
 
 
-def test_bootstrap_registers_exactly_the_ten_providers(repo_root):
+def test_bootstrap_registers_exactly_the_twelve_providers(repo_root):
     provider = _block(_stack(repo_root, "bootstrap")["versions.tf"], 'provider "azurerm"')
 
     registrations = _setting(provider, "resource_provider_registrations")
@@ -98,21 +100,38 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_twelve_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 12
+def test_bootstrap_has_the_twenty_eight_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 28
 
 
-def test_bootstrap_has_the_three_gateway_invoke_assignments_all_in_roles_tf(repo_root):
+def test_bootstrap_has_the_four_app_role_assignments_all_in_roles_tf(repo_root):
     files = _stack(repo_root, "bootstrap")
 
-    assert _declarations(files, "resource", "azuread_app_role_assignment") == ["roles.tf"] * 3
-    # The one role, on the gateway's own service principal, for the three principals.
+    assert _declarations(files, "resource", "azuread_app_role_assignment") == ["roles.tf"] * 4
+    # The gateway's one role, on the gateway's own service principal, for the three principals.
     for name in ["gateway_invoke_owner", "gateway_invoke_app", "gateway_invoke_deploy"]:
         assignment = _block(files["roles.tf"], f'resource "azuread_app_role_assignment" "{name}"')
         resource = _setting(assignment, "resource_object_id")
         assert resource and resource.group(1) == "azuread_service_principal.gateway.object_id"
         role = _setting(assignment, "app_role_id")
         assert role and role.group(1) == "random_uuid.gateway_invoke_role.result"
+    # The search tool's one role, on its own service principal, for the gateway's identity only.
+    assignment = _block(files["roles.tf"], 'resource "azuread_app_role_assignment" "tool_invoke_gateway"')
+    resource = _setting(assignment, "resource_object_id")
+    assert resource and resource.group(1) == "azuread_service_principal.search_tool.object_id"
+    role = _setting(assignment, "app_role_id")
+    assert role and role.group(1) == "random_uuid.tool_invoke_role.result"
+    principal = _setting(assignment, "principal_object_id")
+    assert principal and principal.group(1) == "azurerm_user_assigned_identity.gateway.principal_id"
+
+
+def test_search_tool_app_has_no_pre_authorised_client(repo_root):
+    # No user ever gets a token for the tool, so the Azure CLI is pre-authorised on the gateway's
+    # app only.
+    files = _stack(repo_root, "bootstrap")
+
+    assert _declarations(files, "resource", "azuread_application_pre_authorized") == ["gateway_app.tf"]
+    assert not [line for line in _code_lines(files["search_tool_app.tf"]) if "oauth2_permission_scope" in line]
 
 
 def test_bootstrap_has_no_app_secret(repo_root):
@@ -127,8 +146,12 @@ def test_bootstrap_has_no_app_secret(repo_root):
         "azuread_service_principal_certificate",
     ]:
         assert _declarations(files, "resource", type_) == [], type_
-    application = _block(files["gateway_app.tf"], 'resource "azuread_application" "gateway"')
-    assert not re.search(r"^\s*password\s*\{", application, re.MULTILINE)
+    for file, header in [
+        ("gateway_app.tf", 'resource "azuread_application" "gateway"'),
+        ("search_tool_app.tf", 'resource "azuread_application" "search_tool"'),
+    ]:
+        application = _block(files[file], header)
+        assert not re.search(r"^\s*password\s*\{", application, re.MULTILINE), header
     # No line of code may carry a secret out of either provider.
     secrets = re.compile(r"client_secret|password|certificate")
     for name, text in files.items():
@@ -141,7 +164,7 @@ def test_bootstrap_has_no_literal_client_id_in_the_gateway_app(repo_root):
 
     # The Azure CLI's ID comes from the published-app-IDs data source, and the role's and the
     # scope's IDs are generated, so no GUID appears in the stack's code.
-    for name in ["gateway_app.tf", "monitoring.tf", "roles.tf"]:
+    for name in ["gateway_app.tf", "search_tool_app.tf", "ingestion.tf", "monitoring.tf", "roles.tf"]:
         assert not [line for line in _code_lines(files[name]) if guid.search(line)], name
 
 
@@ -167,6 +190,27 @@ def test_failover_account_keeps_keys_off(repo_root):
     keys = re.compile(r"primary_access_key|secondary_access_key|api_key")
     for name, text in _stack(repo_root, "bootstrap").items():
         assert not [line for line in _code_lines(text) if keys.search(line)], name
+
+
+def test_ingestion_account_keeps_shared_keys_off(repo_root):
+    account = _block(_stack(repo_root, "bootstrap")["ingestion.tf"], 'resource "azurerm_storage_account" "ingest"')
+
+    shared_keys = _setting(account, "shared_access_key_enabled")
+    assert shared_keys and shared_keys.group(1) == "false"
+    oauth = _setting(account, "default_to_oauth_authentication")
+    assert oauth and oauth.group(1) == "true"
+
+
+def test_bootstrap_has_no_shared_key_or_sas_output(repo_root):
+    files = _stack(repo_root, "bootstrap")
+
+    # No SAS is generated, through either data source, and no storage account's key or connection
+    # string is read anywhere, so none can reach an output.
+    for type_ in ["azurerm_storage_account_sas", "azurerm_storage_account_blob_container_sas"]:
+        assert _declarations(files, "data", type_) == [], type_
+    leaks = re.compile(r"azurerm_storage_account\.\w+\.\w*(access_key|connection_string)|\bsas\b|_sas\b|sas_token")
+    for name, text in files.items():
+        assert not [line for line in _code_lines(text) if leaks.search(line)], name
 
 
 def test_bootstrap_has_one_federated_credential(repo_root):

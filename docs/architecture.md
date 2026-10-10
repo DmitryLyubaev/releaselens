@@ -387,13 +387,16 @@ What sits where:
 
 ### Identities and roles
 
-Three user-assigned managed identities, and one Entra app registration, which no one signs in as:
+Five user-assigned managed identities, and two Entra app registrations, which no one signs in as:
 - the **deploy identity**, `id-releaselens-deploy`, which the workflows sign in as
 - the **app identity**, `id-releaselens-app`, which the Container App runs as
 - the **gateway identity**, `id-releaselens-gateway`, which the AI gateway's API Management signs in as to call the models and to publish metrics
+- the **ingest identity**, `id-releaselens-ingest`, which the ingest Function app runs as
+- the **tool identity**, `id-releaselens-tool`, which the search tool's Function app runs as
 - the **gateway app**, `releaselens-ai-gateway`, an app registration with one app role, `Gateway.Invoke`, and one delegated scope, `access_as_user`. It holds no secret and no certificate. Its service principal requires an assignment, so only an identity that holds the role can get a token for the gateway
+- the **search tool app**, `releaselens-search-tool`, the tool app's audience: one app role, `Tool.Invoke`, for applications only, no delegated scope, no secret and no certificate. Its service principal requires an assignment, and only the gateway identity holds the role
 
-All three identities live in the bootstrap group. Contributor on `rg-releaselens` includes writing federated
+All five identities live in the bootstrap group. Contributor on `rg-releaselens` includes writing federated
 credentials, so an identity in that group would let CI add a trust for itself outside the
 environment gate.
 
@@ -403,9 +406,18 @@ The bootstrap stack makes every Azure role assignment but two, and looks each ro
 |---|---|---|---|
 | App identity | Cognitive Services OpenAI User | the Azure OpenAI account | inference. The role also grants the account's assistants, responses and file-read data plane |
 | Owner | Cognitive Services OpenAI User | the Azure OpenAI account | local runs through `az login` |
-| Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app`, `tfstate-search` and `tfstate-gateway` (four assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
+| Owner | Storage Blob Data Contributor | `tfstate-bootstrap`, `tfstate-app`, `tfstate-search`, `tfstate-gateway` and `tfstate-functions` (five assignments) | the Owner role has no data actions. Without these, the owner could not migrate state or run the app or search stack locally |
+| Owner | Storage Blob Data Contributor | `artefacts-in`, `deploy-ingest` and `deploy-tool` (three assignments) | the demo's uploads, and deploying both Function apps' packages with the owner's sign-in |
 | Gateway identity | Cognitive Services OpenAI User | each of the two Azure OpenAI accounts (two assignments) | API Management calls the models as this identity, so no key exists |
 | Gateway identity | Monitoring Metrics Publisher | Application Insights only | the gateway publishes its token metric with Entra ID, since local authentication is off |
+| Ingest identity | Storage Blob Data Reader | `artefacts-in` only | read the artefact a queue message names |
+| Ingest identity | Storage Queue Data Contributor | `ingest-events` and `ingest-events-poison` (two assignments) | the queue trigger receives and deletes; the runtime writes the poison message after the third failure |
+| Ingest identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account | embed chunks |
+| Ingest identity | Storage Blob Data Owner, Storage Table Data Contributor | the ingestion account (two assignments) | identity-based host storage. No queue role on the account: the app's only queues are its own two |
+| Tool identity | Cognitive Services OpenAI User | the australiaeast Azure OpenAI account | embed the query |
+| Tool identity | Storage Blob Data Owner, Storage Queue Data Contributor, Storage Table Data Contributor | the ingestion account (three assignments) | identity-based host storage; the MCP extension uses queues |
+| Event Grid topic's identity | Storage Queue Data Message Sender | `ingest-events` only | deliver blob events to the queue with no key |
+| Event Grid topic's identity | Storage Blob Data Contributor | `deadletter-events` only | dead-letter events Event Grid cannot deliver |
 | Deploy identity | Contributor | `rg-releaselens` only | create and destroy the app stack |
 | Deploy identity | Managed Identity Operator | the app identity only | attach an identity from another resource group to the Container App |
 | Deploy identity | Storage Blob Data Contributor | `tfstate-app` only | read and write the app stack's state, including its lock |
@@ -413,14 +425,15 @@ The bootstrap stack makes every Azure role assignment but two, and looks each ro
 The owner is whoever applies bootstrap. The owner's assignments use the object ID of the
 principal that is signed in.
 
-The gateway app's role is assigned in the same stack, as three Entra app role assignments that
-are not Azure roles, and are in addition to the table above:
+The two apps' roles are assigned in the same stack, as four Entra app role assignments that are
+not Azure roles, and are in addition to the table above:
 
 | Principal | App role | Resource | Why |
 |---|---|---|---|
 | Owner | `Gateway.Invoke` | the gateway's service principal | local runs and the harness, through `az login` |
 | App identity | `Gateway.Invoke` | the gateway's service principal | the deployed API calls the gateway |
 | Deploy identity | `Gateway.Invoke` | the gateway's service principal | CI's check calls the gateway |
+| Gateway identity | `Tool.Invoke` | the search tool's service principal | API Management calls the search tool as this identity, and nothing else may |
 
 The other two are in the search stack, which only the owner applies, and which gives the owner
 `Search Service Contributor` and `Search Index Data Contributor` on its search service, and on
