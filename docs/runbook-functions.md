@@ -48,6 +48,9 @@ Azure. The findings table is empty until the session fills it.
 - **Terraform runs only in WSL (Ubuntu),** with its own data directory for each stack:
   `TF_DATA_DIR=$HOME/tfdata/bootstrap-live`, `$HOME/tfdata/gateway-live`, `$HOME/tfdata/search`
   and `$HOME/tfdata/functions-live`. Never plan or apply from Windows.
+- **Every PowerShell block that depends on the directory starts by setting it,** relative to the
+  repository's root: `Set-Location (git rev-parse --show-toplevel)` for the root, and the same
+  joined with `eval` for the harness. Run each block whole.
 - **The harness runs from `eval/`,** in PowerShell, as `.venv/Scripts/python.exe -m app.functions
   <command>`, and writes to `reports/functions` (git-ignored). Its commands are in
   "The harness" below.
@@ -133,7 +136,7 @@ app's own chunker. The harness reads both.
 To see candidates, from `eval/` (it prints public artefact IDs, nothing else):
 
 ```powershell
-cd eval
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 @'
 import collections, json, random
 counts = collections.Counter(json.loads(line)["artefact"] for line in open("retrieval-data/chunks.jsonl", encoding="utf-8"))
@@ -150,6 +153,7 @@ Then export them, with `RELEASELENS_DB` set to `releaselens_eval` (see the
 `eval/reports/`, which git ignores, so the tree stays clean:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 dotnet run --project ../src/ReleaseLens.Worker -- export-artefacts reports/functions-export/new <key1> <key2> <key3> <key4> <key5>
 dotnet run --project ../src/ReleaseLens.Worker -- export-artefacts reports/functions-export/changed <I2 key>
 dotnet run --project ../src/ReleaseLens.Worker -- export-artefacts reports/functions-export/duplicate <I3 key>
@@ -174,6 +178,7 @@ unshortened count; I2 does not use it.
 copy of the data without them. From `eval/`:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 @'
 import base64, json, pathlib, sys
 import numpy as np
@@ -298,7 +303,7 @@ ACCOUNT=$(az storage account list --resource-group rg-releaselens-bootstrap --qu
 terraform init -input=false -backend-config=storage_account_name="$ACCOUNT"
 acctok                                                    # must print True
 terraform plan -out=tfplan
-terraform show -no-color tfplan | grep -E 'shared_access_key_enabled|local_user_enabled|app_role_assignment_required|requested_access_token_version|included_event_types|subject_(begins|ends)_with|CustomMetricsOptedInType'
+terraform show -no-color tfplan | grep -E 'shared_access_key_enabled|local_user_enabled|app_role_assignment_required|requested_access_token_version|Microsoft\.Storage\.BlobCreated|subject_(begins|ends)_with|CustomMetricsOptedInType'
 ```
 
 The plan reads the owner's git-ignored `terraform.tfvars`, which needs no new variable. Read the
@@ -312,9 +317,9 @@ whole plan, then check:
   wrong by itself, but read why before applying.
 - **The grep shows:** `shared_access_key_enabled = false` and `local_user_enabled = false` on all
   three new accounts; `app_role_assignment_required = true` on the search tool's service
-  principal; `requested_access_token_version = 2`; `included_event_types` with only
-  `Microsoft.Storage.BlobCreated`; the subject filter beginning
-  `/blobServices/default/containers/artefacts-in/` and ending `.json`; and
+  principal; `requested_access_token_version = 2`; `"Microsoft.Storage.BlobCreated"`, which must
+  be the only entry of `included_event_types` (read that list in the plan); the subject filter
+  beginning `/blobServices/default/containers/artefacts-in/` and ending `.json`; and
   `CustomMetricsOptedInType = "WithDimensions"`.
 
 ### 1b. Apply
@@ -403,7 +408,7 @@ it to the controller afterwards.
 From `eval/`:
 
 ```powershell
-cd eval
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.gateway smoke --tenant $env:GW_TENANT --direct-url $env:GW_DIRECT_URL --gateway-url $env:GW_BASE --scope $env:GW_SCOPE --out reports/functions-gw-smoke
 ```
 
@@ -428,6 +433,7 @@ estimates against the owner's 10,000-token minute bucket; the refused ones cost 
 `eval/`:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.gateway minute-budget --tenant $env:GW_TENANT --base-url $env:GW_BASE --scope $env:GW_SCOPE --out reports/functions-gw-b1
 ```
 
@@ -452,6 +458,7 @@ The search stack now reads the bootstrap's state for the two identities, so its 
 root:
 
 ```powershell
+Set-Location (git rev-parse --show-toplevel)
 $sub = az account show --query id -o tsv
 $oid = az ad signed-in-user show --query id -o tsv
 $st  = tfout bootstrap bootstrap-live tfstate_storage_account
@@ -469,13 +476,17 @@ ACCOUNT=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir=../bootstra
 terraform init -input=false -backend-config=storage_account_name="$ACCOUNT"
 az group exists --name rg-releaselens-search    # must print false
 terraform plan -out=tfplan
-terraform apply tfplan
 ```
 
-The plan must be `Plan: 7 to add, 0 to change, 0 to destroy.`: the resource group, the suffix,
-the search service and four role assignments (the owner's two, Search Index Data Contributor for
-the ingest identity and Search Index Data Reader for the tool identity). See the stack's
-[Apply and destroy](../infra/search/README.md#apply-and-destroy).
+Read the plan. It must be `Plan: 7 to add, 0 to change, 0 to destroy.`: the resource group, the
+suffix, the search service and four role assignments (the owner's two, Search Index Data
+Contributor for the ingest identity and Search Index Data Reader for the tool identity). See the
+stack's [Apply and destroy](../infra/search/README.md#apply-and-destroy). **If it shows anything
+else, stop:** do not apply, and find out why. Only then, in the same WSL window:
+
+```bash
+terraform apply tfplan
+```
 
 Then, in PowerShell:
 
@@ -488,6 +499,7 @@ $env:FN_SEARCH = tfout search search endpoint
 From `eval/`, from the copy without I1's five ("Before the session"):
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.retrieval build-index --data reports/functions-bulk --endpoint $env:FN_SEARCH --tenant $env:GW_TENANT
 ```
 
@@ -510,6 +522,7 @@ The stack's git-ignored `terraform.tfvars` needs `subscription_id` and
 repository root:
 
 ```powershell
+Set-Location (git rev-parse --show-toplevel)
 $sub = az account show --query id -o tsv
 $st  = tfout bootstrap bootstrap-live tfstate_storage_account
 Set-Content infra/functions/terraform.tfvars @("subscription_id = `"$sub`"", "tfstate_storage_account = `"$st`"")
@@ -526,27 +539,60 @@ ACCOUNT=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir=../bootstra
 terraform init -input=false -backend-config=storage_account_name="$ACCOUNT"
 az group exists --name rg-releaselens-functions    # must print false
 terraform plan -out=tfplan
-terraform show -no-color tfplan | grep -E 'AzureWebJobsStorage|CONNECTION_STRING|requireAuthentication|unauthenticatedClientAction|"allow"|subscriptionRequired|maximumInstanceCount|webhooks'
-terraform apply tfplan
+terraform show -no-color tfplan | grep -E 'AzureWebJobsStorage|requireAuthentication|unauthenticatedClientAction|\ballow = |subscriptionRequired|maximumInstanceCount|^Plan:'
+terraform show -no-color tfplan | grep -A1 'APPLICATIONINSIGHTS_CONNECTION_STRING'
 ```
 
 Read the whole plan. It must be `Plan: 18 to add, 0 to change, 0 to destroy.`: the resource
 group, the suffix, the Flex plan, the two apps, two authentication updates, four basic-publishing
-updates, four named values, the MCP API, its policy and its diagnostic. The grep must show the
-three `AzureWebJobsStorage__` settings on each app and no `AzureWebJobsStorage` connection
-string; `APPLICATIONINSIGHTS_CONNECTION_STRING` as `(sensitive value)`; `requireAuthentication =
-true` and `Return401`; `"allow" = false` four times; `subscriptionRequired = false`;
-`maximumInstanceCount = 10`; and the service URL ending `/runtime/webhooks`.
+updates, four named values, the MCP API, its policy and its diagnostic. Terraform prints azapi
+body keys unquoted (`+ allow = false`), and the greps must show:
+- the three `AzureWebJobsStorage__` settings (`accountName`, `clientId`, `credential`) on each
+  app, and no setting named `AzureWebJobsStorage` alone, which would be a connection string;
+- `APPLICATIONINSIGHTS_CONNECTION_STRING` twice, each followed on the next line by
+  `value = (sensitive value)`;
+- `requireAuthentication = true` and `unauthenticatedClientAction = "Return401"`, twice each;
+- `allow = false` four times (SCM and FTP on each app);
+- `subscriptionRequired = false`, and `maximumInstanceCount = 10` twice.
+
+The MCP API's service URL is known only after the apply; the type check below and step 5's
+`initialize` settle it. **If the plan or a grep shows anything else, stop:** do not apply, and
+find out why. Only then, in the same WSL window:
+
+```bash
+terraform apply tfplan
+```
 
 **What to watch for in the apply** (the stack README's
 [Live checks](../infra/functions/README.md#live-checks) has the detail):
 - **The MCP API's diagnostic may be refused** because of its `largeLanguageModel` block, on an
-  API of type `mcp`. If the apply stops there, delete the `largeLanguageModel` block from
-  `azapi_resource.mcp_diagnostic` in `infra/functions/mcp_api.tf` (payload bytes 0 alone keep the
-  bodies out), run the stack's tests, commit the change, and plan and apply again. Commit it
-  before step 6: the measured commands refuse a dirty tree. The azapi bodies were checked only
-  against mocks, so the first apply is where any other body error shows: record its text, without
-  any identifier, and take it to the controller.
+  API of type `mcp`. Payload bytes 0 alone keep the bodies out, so the block can go. If the apply
+  stops there:
+  1. In `infra/functions/mcp_api.tf`, delete the three lines of the `largeLanguageModel` block
+     from `azapi_resource.mcp_diagnostic`.
+  2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_diagnostic"`'s third assert,
+     delete the line `azapi_resource.mcp_diagnostic.body.properties.largeLanguageModel.logs ==
+     "disabled"` and the ` &&` that ends the line before it.
+  3. Run the stack's tests in WSL, from `infra/functions`, with a data directory of their own, so
+     the live one is untouched. The tests' own `variables` block overrides the live
+     `terraform.tfvars`, so that file can stay (checked offline on a copy that held one):
+
+     ```bash
+     TF_DATA_DIR="$HOME/tfdata/test-functions" terraform init -backend=false -input=false
+     TF_DATA_DIR="$HOME/tfdata/test-functions" terraform test
+     terraform fmt -check mcp_api.tf tests/functions.tftest.hcl
+     ```
+
+     The test must end `Success! 9 passed, 0 failed.` and `fmt` must print nothing.
+  4. Commit both files in PowerShell, before step 6, because the measured commands refuse a dirty
+     tree: `Set-Location (git rev-parse --show-toplevel)`, `git add infra/functions/mcp_api.tf
+     infra/functions/tests/functions.tftest.hcl`, then `git commit -m "fix(infra): the MCP API's
+     diagnostic without the largeLanguageModel block the service refused"`.
+  5. Back in the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan, check and apply
+     again as above.
+
+  The azapi bodies were checked only against mocks, so the first apply is where any other body
+  error shows: record its text, without any identifier, and take it to the controller.
 - **The apps may fail to start** on accounts with shared keys off (spec §12 item 2). That shows in
   4c.
 
@@ -585,7 +631,7 @@ owner's Entra sign-in through `az`. Build and zip each app, from the repository 
 are in `artifacts/`, which git ignores:
 
 ```powershell
-cd $(git rev-parse --show-toplevel)
+Set-Location (git rev-parse --show-toplevel)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 foreach ($app in 'Ingest', 'Tool') {
   $out = "artifacts/functions/$($app.ToLower())"
@@ -685,7 +731,9 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
      the cold start (spec §12 item 10).
 2. **The notification answers `202` or `200`,** and the tool list prints `search_corpus`.
 3. **A call without `top` gives 5 hits:** `200`, `isError` empty or `False`, and `5`. The tool
-   reads a missing `top` as null and uses 5.
+   reads a missing `top` as null and uses 5. A tool error `search failed` within about 10 minutes
+   of step 3's apply may be the tool identity's new search role still propagating: wait a few
+   minutes and call again before recording it as a finding.
 4. **An empty query is a tool error with the tool's own text.** `isError` `True` and the text
    `query must not be empty` is what the code throws. Write down exactly what came back,
    whichever way the host renders it (a tool result with `isError`, or a JSON-RPC `error` with its
@@ -701,6 +749,7 @@ corpus has six artefacts of more than 50 chunks, so read the largest through the
 and compare. From `eval/`, it prints two numbers and an artefact ID:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 @'
 import collections, json, os
 import httpx, truststore
@@ -738,6 +787,7 @@ each message:
 
 ```powershell
 function poisonpeek {
+Push-Location (Join-Path (git rev-parse --show-toplevel) eval)
 @'
 import os
 import httpx, truststore
@@ -749,13 +799,17 @@ with httpx.Client(timeout=60) as http:
     messages = ic.peek_poison(http, os.environ["FN_QUEUE"], tokens.token)
 print(len(messages), "message(s); first characters:", sorted({m.text[:1] for m in messages}))
 '@ | .venv/Scripts/python.exe -
+Pop-Location
 }
 poisonpeek
 ```
 
-It must print `0 message(s)`. It also reads the queue's metadata first, as I4 does, so an answer
-other than an error shows that Storage Queue Data Reader allows Get Queue Metadata under Entra. A
-`QueueReadError` with `403` means it does not: record it and take it to the controller.
+It should print `0 message(s)`. Messages left from an earlier session do not stop the session: I4
+matches its own upload's unique name and refuses only a queue of more than 32, and the owner can
+only read the queue, not clear it. Record the count. It also reads the queue's metadata first, as I4
+does, so an answer other than an error shows that Storage Queue Data Reader allows Get Queue
+Metadata under Entra. A `QueueReadError` with `403` means it does not: record it and take it to the
+controller.
 
 ### 6b. Ingestion: I1, I2 and I3 first
 
@@ -763,6 +817,7 @@ I4 compares the index's document count before and after its upload, so it needs 
 quiet: run I1 to I3 to the end before I4's upload.
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions upload --kind new --dir reports/functions-export/new --blob-endpoint $env:FN_BLOB --search-endpoint $env:FN_SEARCH --tenant $env:GW_TENANT --out reports/functions --new-session
 .venv/Scripts/python.exe -m app.functions upload --kind changed --dir reports/functions-export/changed --gone-text '<the gone text>' --blob-endpoint $env:FN_BLOB --search-endpoint $env:FN_SEARCH --tenant $env:GW_TENANT --out reports/functions
 .venv/Scripts/python.exe -m app.functions upload --kind duplicate --dir reports/functions-export/duplicate --blob-endpoint $env:FN_BLOB --search-endpoint $env:FN_SEARCH --tenant $env:GW_TENANT --out reports/functions
@@ -801,12 +856,14 @@ traces
 | summarize lines = count(), median_ms = percentile(ms, 50), max_ms = max(ms)
 ```
 
-`lines` should be at least the seven ingestions (five, one, and the duplicate's two). None means
+`lines` should be at least eight: one for each of I1's five uploads, one for I2's, and two for
+I3's two uploads of the same file. A redelivered event adds a line. None means
 the worker's logs do not reach Application Insights through the host: record it.
 
 ### 6c. Ingestion: I4
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions upload --kind broken --blob-endpoint $env:FN_BLOB --search-endpoint $env:FN_SEARCH --tenant $env:GW_TENANT --out reports/functions
 .venv/Scripts/python.exe -m app.functions ingest-checks --check i4 --search-endpoint $env:FN_SEARCH --queue-endpoint $env:FN_QUEUE --tenant $env:GW_TENANT --out reports/functions
 ```
@@ -819,9 +876,12 @@ poison message's own insertion time, so it does not depend on when it runs. Then
 poisonpeek
 ```
 
-It must now print `1 message(s)`. The first character settles the message encoding (spec §12
-item 3): `{` or `[` is plain JSON; `e` or `W` is base64 (of `{"` and `[{`). The runtime copies the
-message to the poison queue as it was. The parser accepts both, so nothing depends on the answer.
+It must now print one or two more messages than 6a's count. Event Grid delivers at least once, so
+the same `BlobCreated` event can reach the queue twice, and each copy fails three times and lands in
+the poison queue on its own. I4 counts the first. The first character settles the message encoding
+(spec §12 item 3): `{` or `[` is plain JSON; `e` or `W` is base64 (of `{"` and `[{`). The runtime
+copies the message to the poison queue as it was. The parser accepts both, so nothing depends on the
+answer.
 
 In the portal, the Event Grid system topic `evgt-releaselens-ingest`, **Metrics**: the
 subscription's **Delivered Events** count the uploads, and **Dead Lettered Events** is 0. The
@@ -832,6 +892,7 @@ owner has no role on the dead-letter container by design, so the portal's metric
 Leave a minute after any earlier tool call (the smoke test), then:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions tool-checks --check t1 --check t2 --check t3 --mcp-url $env:FN_MCP_URL --app-url $env:FN_APP_URL --scope $env:GW_SCOPE --search-endpoint $env:FN_SEARCH --openai-base-url $env:GW_DIRECT_URL --tenant $env:GW_TENANT --out reports/functions
 ```
 
@@ -850,6 +911,7 @@ Nothing else may call the tool now: no Claude Code session with the tool configu
 until step 7), no smoke call, no second window.
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions tool-checks --check t4 --mcp-url $env:FN_MCP_URL --scope $env:GW_SCOPE --app-id $env:APPI_ID --tenant $env:GW_TENANT --out reports/functions
 ```
 
@@ -860,6 +922,7 @@ calls the gateway let through plus the two handshake requests. If the metric is 
 when it gives up, read it again later without sending anything:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions tool-checks --check t4-metric --app-id $env:APPI_ID --tenant $env:GW_TENANT --out reports/functions
 ```
 
@@ -892,6 +955,7 @@ written into Claude Code's configuration. It lives outside the repository, and h
 scope, which the window writes into it without printing:
 
 ```powershell
+Set-Location (git rev-parse --show-toplevel)     # the local scope is keyed by this project's path
 New-Item -ItemType Directory -Force "$HOME\.releaselens" | Out-Null
 @"
 `$env:REQUESTS_CA_BUNDLE = "`$env:USERPROFILE\.azure\ca-bundle-with-norton.pem"
@@ -899,7 +963,7 @@ New-Item -ItemType Directory -Force "$HOME\.releaselens" | Out-Null
 @{ Authorization = "Bearer `$t" } | ConvertTo-Json -Compress
 "@ | Set-Content "$HOME\.releaselens\gateway-headers.ps1"
 $PSNativeCommandArgumentPassing = 'Standard'
-$config = @{ type = 'http'; url = $env:FN_MCP_URL; headersHelper = "pwsh -NoProfile -File $HOME\.releaselens\gateway-headers.ps1" } | ConvertTo-Json -Compress
+$config = @{ type = 'http'; url = $env:FN_MCP_URL; headersHelper = "pwsh -NoProfile -File $($HOME -replace '\\', '/')/.releaselens/gateway-headers.ps1" } | ConvertTo-Json -Compress
 claude mcp add-json --scope local releaselens-search $config
 $config = $null
 claude mcp list | Select-String releaselens-search | ForEach-Object { $_ -replace 'https://\S+', '<url>' }
@@ -935,6 +999,7 @@ made in between waits in the queue and drains. Skip it if time is short, and wri
    repository root):
 
    ```powershell
+   Set-Location (git rev-parse --show-toplevel)
    $acct = tfout bootstrap bootstrap-live ingest_storage_account_name
    $file = Get-ChildItem eval/reports/functions-export/new -Filter *.json | Where-Object Name -ne manifest.json | Select-Object -First 1
    az storage blob upload --auth-mode login --account-name $acct --container-name artefacts-in --name "recreate-$(Get-Date -Format yyyyMMddHHmmss).json" --file $file.FullName -o none --only-show-errors
@@ -961,6 +1026,7 @@ Then remove `$acct` and `$file` from the window.
 anything is committed after the checks, so that it cites the commit they ran from. From `eval/`:
 
 ```powershell
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
 .venv/Scripts/python.exe -m app.functions report --dir reports/functions --report-out ../docs/functions-report.md
 ```
 
@@ -979,6 +1045,7 @@ every check below passes.**
    destroy finds them gone.
 2. **The gateway,** as the [gateway runbook's step 8](runbook-gateway.md#step-8-destroy-the-gateway)
    says, with its revision 2 fallback and its purge. Revision 2 was not released in this session.
+   Skip that step's "Delete the two session secrets": this session sets no GitHub secrets.
 3. **The search stack.** WSL, `infra/search`, `TF_DATA_DIR=$HOME/tfdata/search`:
    `terraform destroy`.
 
@@ -1010,6 +1077,7 @@ uniquely named and tiny.
 Then clean up this machine:
 
 ```powershell
+Set-Location (git rev-parse --show-toplevel)     # the local scope is keyed by this project's path
 claude mcp remove --scope local releaselens-search
 Remove-Item -Recurse -Force "$HOME\.releaselens"
 Remove-Item Env:GW_TENANT, Env:GW_DIRECT_URL, Env:GW_BASE, Env:GW_SCOPE, Env:APPI_ID, Env:GATEWAY_CALLER_LABELS, Env:FN_SEARCH, Env:FN_MCP_URL, Env:FN_APP_URL, Env:FN_BLOB, Env:FN_QUEUE
