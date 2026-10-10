@@ -19,17 +19,20 @@ public class ArtefactChunksTests
 
         var result = await IngestFixtures.Ingest(stub).IngestAsync(parsed, Ct);
 
-        Assert.Equal(result.Chunks, count);
+        Assert.Equal(count, result.Chunks);
         var upserted = Assert.Single(stub.Requests, r => r.Uri.AbsolutePath.EndsWith("/docs/index", StringComparison.Ordinal));
         Assert.Equal(count, JsonNode.Parse(upserted.Body)!["value"]!.AsArray().Count);
     }
 
     [Fact]
-    public void Count_IsTheNumberOfChunksOf()
+    public void Count_IsTheNumberOfChunksOf_UnderTheAppsOptions()
     {
-        var issue = IngestFixtures.Issue(sentences: 3);
-        Assert.Equal(ArtefactChunks.Of(issue).Count, ArtefactChunks.Count(issue));
-        Assert.Equal(IngestFixtures.ChunksOf(issue).Count, ArtefactChunks.Count(issue));
+        var issue = IngestFixtures.Issue();
+        var count = ArtefactChunks.Count(issue);
+
+        Assert.True(count > 1, "A single chunk would be the same under any options.");
+        Assert.Equal(ArtefactChunks.Of(issue).Count, count);
+        Assert.Equal(IngestFixtures.ChunksOf(issue).Count, count);
     }
 
     [Fact]
