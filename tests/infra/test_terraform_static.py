@@ -100,8 +100,8 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_twenty_eight_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 28
+def test_bootstrap_has_the_twenty_nine_role_assignments_all_in_roles_tf(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 29
 
 
 def test_bootstrap_has_the_four_app_role_assignments_all_in_roles_tf(repo_root):
@@ -192,13 +192,18 @@ def test_failover_account_keeps_keys_off(repo_root):
         assert not [line for line in _code_lines(text) if keys.search(line)], name
 
 
-def test_ingestion_account_keeps_shared_keys_off(repo_root):
-    account = _block(_stack(repo_root, "bootstrap")["ingestion.tf"], 'resource "azurerm_storage_account" "ingest"')
+@pytest.mark.parametrize("name", ["ingest", "ingest_host", "tool_host"])
+def test_ingestion_and_host_accounts_keep_shared_keys_off(repo_root, name):
+    account = _block(_stack(repo_root, "bootstrap")["ingestion.tf"], f'resource "azurerm_storage_account" "{name}"')
 
     shared_keys = _setting(account, "shared_access_key_enabled")
     assert shared_keys and shared_keys.group(1) == "false"
     oauth = _setting(account, "default_to_oauth_authentication")
     assert oauth and oauth.group(1) == "true"
+    public = _setting(account, "allow_nested_items_to_be_public")
+    assert public and public.group(1) == "false"
+    tls = _setting(account, "min_tls_version")
+    assert tls and tls.group(1) == '"TLS1_2"'
 
 
 def test_bootstrap_has_no_shared_key_or_sas_output(repo_root):

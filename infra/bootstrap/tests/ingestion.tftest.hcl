@@ -67,6 +67,26 @@ override_resource {
   }
 }
 
+# Each app's host account has its own ID and endpoint, so a container or output wired to the wrong
+# account fails.
+override_resource {
+  target          = azurerm_storage_account.ingest_host
+  override_during = plan
+  values = {
+    id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesthosta1b2c3"
+    primary_blob_endpoint = "https://strlingesthosta1b2c3.blob.core.windows.net/"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_account.tool_host
+  override_during = plan
+  values = {
+    id                    = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strltoolhosta1b2c3"
+    primary_blob_endpoint = "https://strltoolhosta1b2c3.blob.core.windows.net/"
+  }
+}
+
 override_resource {
   target          = azurerm_storage_container.deadletter_events
   override_during = plan
@@ -114,6 +134,38 @@ override_data {
 
 run "ingestion_account" {
   command = plan
+
+  # The ingestion account holds the artefacts and the queues; each app's host storage and
+  # deployment package are in an account of its own, so neither app's host roles reach the
+  # artefacts or the other app (spec §3.1, as amended).
+  assert {
+    condition = (
+      azurerm_storage_account.ingest_host.name == "strlingesthosta1b2c3" &&
+      azurerm_storage_account.tool_host.name == "strltoolhosta1b2c3" &&
+      length(azurerm_storage_account.ingest_host.name) <= 24 &&
+      length(azurerm_storage_account.tool_host.name) <= 24
+    )
+    error_message = "The host accounts must be strlingesthost<suffix> and strltoolhost<suffix>, within the 24-character limit."
+  }
+
+  assert {
+    condition = alltrue([
+      for a in [
+        azurerm_storage_account.ingest,
+        azurerm_storage_account.ingest_host,
+        azurerm_storage_account.tool_host,
+        ] : (
+        a.shared_access_key_enabled == false &&
+        a.default_to_oauth_authentication == true &&
+        a.local_user_enabled == false &&
+        a.allow_nested_items_to_be_public == false &&
+        a.min_tls_version == "TLS1_2" &&
+        a.account_tier == "Standard" && a.account_replication_type == "LRS" &&
+        a.resource_group_name == "rg-releaselens-bootstrap" && a.location == "australiaeast"
+      )
+    ])
+    error_message = "All three accounts must be keyless (shared keys and local users off, OAuth by default), with no public blob access, TLS 1.2, Standard LRS, in the bootstrap group in australiaeast."
+  }
 
   assert {
     condition     = azurerm_storage_account.ingest.name == "strlingesta1b2c3"
@@ -166,9 +218,27 @@ run "ingestion_containers_and_queues" {
         azurerm_storage_container.deadletter_events,
         azurerm_storage_container.deploy_ingest,
         azurerm_storage_container.deploy_tool,
-      ] : c.container_access_type == "private" && c.storage_account_id == azurerm_storage_account.ingest.id
+      ] : c.container_access_type == "private"
     ])
-    error_message = "Every ingestion container must be private, in the ingestion account."
+    error_message = "Every ingestion container must be private."
+  }
+
+  assert {
+    condition = (
+      azurerm_storage_container.artefacts_in.storage_account_id == azurerm_storage_account.ingest.id &&
+      azurerm_storage_container.deadletter_events.storage_account_id == azurerm_storage_account.ingest.id
+    )
+    error_message = "artefacts-in and deadletter-events must be in the ingestion account."
+  }
+
+  assert {
+    condition     = azurerm_storage_container.deploy_ingest.storage_account_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesthosta1b2c3"
+    error_message = "deploy-ingest must be in the ingest app's host account."
+  }
+
+  assert {
+    condition     = azurerm_storage_container.deploy_tool.storage_account_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strltoolhosta1b2c3"
+    error_message = "deploy-tool must be in the tool app's host account."
   }
 
   assert {
@@ -195,8 +265,8 @@ run "ingestion_containers_and_queues" {
 
   # The state account is a different account: nothing of the ingestion lands in it.
   assert {
-    condition     = azurerm_storage_account.ingest.id != azurerm_storage_account.state.id
-    error_message = "The ingestion account must not be the state account."
+    condition     = length(toset([azurerm_storage_account.state.id, azurerm_storage_account.ingest.id, azurerm_storage_account.ingest_host.id, azurerm_storage_account.tool_host.id])) == 4
+    error_message = "The state, ingestion and two host accounts must be four different accounts."
   }
 }
 
@@ -329,6 +399,24 @@ run "ingestion_outputs" {
       output.ingest_storage_queue_endpoint == "https://strlingesta1b2c3.queue.core.windows.net/"
     )
     error_message = "The ingestion account's outputs must be its name and its blob and queue endpoints."
+  }
+
+  assert {
+    condition = (
+      output.ingest_host_storage_account_name == "strlingesthosta1b2c3" &&
+      output.ingest_host_blob_endpoint == "https://strlingesthosta1b2c3.blob.core.windows.net/" &&
+      output.ingest_host_deploy_container == "deploy-ingest"
+    )
+    error_message = "The ingest app's host outputs must be its host account's name and blob endpoint, and its deploy container's name."
+  }
+
+  assert {
+    condition = (
+      output.tool_host_storage_account_name == "strltoolhosta1b2c3" &&
+      output.tool_host_blob_endpoint == "https://strltoolhosta1b2c3.blob.core.windows.net/" &&
+      output.tool_host_deploy_container == "deploy-tool"
+    )
+    error_message = "The tool app's host outputs must be its host account's name and blob endpoint, and its deploy container's name."
   }
 }
 
