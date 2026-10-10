@@ -30,6 +30,7 @@ PUBLIC_ENDPOINTS = {
     "cognitiveservices.azure.com",  # the token audience for the gateway's call to a model
     "management.azure.com",         # the Azure Resource Manager
     "search.azure.com",             # the token audience for Azure AI Search
+    "storage.azure.com",            # the token audience for Azure Storage (the Functions harness reads queues)
 }
 # Names the repository's own unit tests use for an account that does not exist.
 EXAMPLE_HOSTS = {
