@@ -386,3 +386,7 @@ volume (US$0.000037 per GB-second after a 100,000 GB-second free grant, research
   artefacts back, so the runbook bulk-loads from a filtered copy of the saved index data, in
   `eval/reports/functions-bulk` (git-ignored): the chunks and their saved vectors without the five.
   Nothing is embedded again.
+- **2026-10-10, §2 and §3.2: the index schema is not changed.** Project 2's schema
+  (`eval/app/retrieval/search_index.py`) already declares `artefact` filterable, so §2's "not
+  filterable" and §3.2's added `"filterable": true` were both wrong, and no schema change was made.
+  The filter by artefact (§4.4) and search results are as designed.
