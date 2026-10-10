@@ -1,6 +1,7 @@
 """T1 to T4 on fixtures, and the direct query T1 compares with."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -356,3 +357,25 @@ def test_tool_call_rows_refuse_a_time_that_is_not_utc_and_raise_the_status_only(
     with pytest.raises(MetricQueryError) as raised:
         tc.tool_call_rows("a", "t", "2026-10-10T01:30:00Z", "2026-10-10T01:31:10Z", client)
     assert str(raised.value) == "the query API answered 403"
+
+
+def _at(second: float) -> datetime:
+    whole = int(second)
+    return datetime(2026, 10, 10, 3, 30, whole, int((second - whole) * 1_000_000), tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("second,wait", [(0, 75), (14, 61), (15, 60), (59, 16), (14.5, 60.5)])
+def test_the_wait_ends_15_s_past_the_next_whole_minute(second, wait):
+    assert tc.seconds_until_burst(_at(second)) == wait
+    after = _at(second).timestamp() + wait
+    assert after % 60 == 15 and after > _at(second).timestamp()
+
+
+def test_the_wait_is_at_most_75_seconds():
+    assert max(tc.seconds_until_burst(_at(s)) for s in range(60)) == 75
+
+
+def test_the_floor_is_the_whole_minute():
+    assert tc.floor_to_minute(_at(30.7)) == datetime(2026, 10, 10, 3, 30, tzinfo=timezone.utc)
+    assert tc.floor_to_minute(_at(0)) == datetime(2026, 10, 10, 3, 30, tzinfo=timezone.utc)
+    assert tc.floor_to_minute(_at(59.999)).second == 0

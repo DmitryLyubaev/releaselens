@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -181,6 +182,23 @@ def t3_no_bypass(without_token: McpSession, with_gateway_token: McpSession) -> C
     return _both_401("T3", ("the direct call with no token", without_token),
                      ("the direct call with the gateway token", with_gateway_token),
                      "the tool app refused direct calls")
+
+
+def floor_to_minute(moment: datetime) -> datetime:
+    """The whole minute `moment` falls in."""
+    return moment.replace(second=0, microsecond=0)
+
+
+MINUTE_SETTLE_S = 15
+
+
+def seconds_until_burst(now: datetime) -> float:
+    """How long T4 waits before its handshake: until MINUTE_SETTLE_S past the next whole minute (16 to 75 s).
+
+    The handshake then lands in a minute that opens after everything before it, so the whole-minute window
+    that starts there holds only T4's own calls.
+    """
+    return (60 - (now.second + now.microsecond / 1_000_000)) + MINUTE_SETTLE_S
 
 
 # --- T4 ------------------------------------------------------------------------------------------------------

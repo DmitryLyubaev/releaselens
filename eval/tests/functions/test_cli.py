@@ -188,7 +188,9 @@ def env(tmp_path, monkeypatch, clock):
     monkeypatch.setattr(cli, "_run", env.run)
     monkeypatch.setattr(cli, "_now", clock)
     monkeypatch.setattr(cli, "_sleep_sync", clock.sleep)
-    monkeypatch.setattr(cli, "_utcnow", lambda: datetime(2026, 10, 10, 3, 30, 15, tzinfo=timezone.utc))
+    # The wall clock follows the fake clock, so a wait moves it: it starts at 03:30:45 UTC.
+    clock.now = datetime(2026, 10, 10, 3, 30, 45, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(cli, "_utcnow", lambda: datetime.fromtimestamp(clock.now, timezone.utc))
     monkeypatch.setattr(cli, "_sync_client", lambda: httpx.Client(transport=httpx.MockTransport(env.handler)))
     monkeypatch.setattr(cli.truststore, "inject_into_ssl", lambda: None)
     monkeypatch.setenv("GATEWAY_CALLER_LABELS", json.dumps({OWNER_OID: "owner"}))
@@ -671,13 +673,66 @@ def test_tool_checks_t4_sends_thirty_at_once_records_the_burst_and_reads_the_met
     assert "T4: pass" in capsys.readouterr().out
     burst = json.loads((env.out / "check-t4-burst.json").read_text(encoding="utf-8"))
     assert burst["sent"] == 30 and burst["refused_with_retry_after"] > 0
-    # the window opens just before the handshake and closes just after the burst (the clock is fixed here)
-    assert burst["start"] == "2026-10-10T03:30:05Z" and burst["until"] == "2026-10-10T03:30:25Z"
+    # 45 s past the minute: wait 30 s to 03:31:15, so the handshake is in the minute that opens the window,
+    # and the window closes 10 s after the burst
+    assert env.clock.sleeps[:1] == [30.0]
+    assert burst["start"] == "2026-10-10T03:31:00Z" and burst["until"] == "2026-10-10T03:31:25Z"
     query = next(r for r in env.requests if r.url.host == "api.applicationinsights.io")
     sent = json.loads(query.content)
     assert "Tool Calls" in sent["query"] and query.headers["authorization"] == "Bearer t-insights"
-    assert "between (datetime(2026-10-10T03:30:05Z) .. datetime(2026-10-10T03:30:25Z))" in sent["query"]
+    assert "between (datetime(2026-10-10T03:31:00Z) .. datetime(2026-10-10T03:31:25Z))" in sent["query"]
     assert not any(OWNER_OID in text for text in (_everything_written(env),))
+
+
+def test_tool_checks_t4_waits_before_its_handshake_and_says_so(env, questions_file, capsys, monkeypatch):
+    env.tool_limit = 20
+    at_sleep = []
+    monkeypatch.setattr(cli, "_sleep_sync", lambda s: (at_sleep.append((s, len(env.requests))), env.clock.sleep(s)))
+
+    assert _tool(env, questions_file, "--check", "t4") == 0
+
+    assert at_sleep[0] == (30.0, 0)                  # nothing was sent before the wait
+    out = capsys.readouterr().out
+    assert "T4: waiting 30 s" in out and "whole minute" in out
+
+
+def test_tool_checks_t4_start_is_the_floor_of_the_handshake_minute_whatever_second_it_lands_on(env, questions_file):
+    env.tool_limit = 20
+    env.clock.now = datetime(2026, 10, 10, 3, 30, 0, tzinfo=timezone.utc).timestamp()      # waits the full 75 s
+    assert _tool(env, questions_file, "--check", "t4") == 0
+    burst = json.loads((env.out / "check-t4-burst.json").read_text(encoding="utf-8"))
+    assert env.clock.sleeps[0] == 75.0 and burst["start"] == "2026-10-10T03:31:00Z"
+
+
+def test_tool_checks_t1_records_when_it_ended(env, questions_file):
+    assert _tool(env, questions_file, "--check", "t1") == 0
+    ended = json.loads((env.out / "check-t1-ended.json").read_text(encoding="utf-8"))
+    assert ended == {"ended": "2026-10-10T03:30:45Z"}
+    assert "check-t1-ended.json" not in [r.check for r in cli.report.load_results(env.out)]
+
+
+def test_tool_checks_t4_refuses_when_t1_ended_inside_its_window_and_sends_no_burst(env, questions_file, capsys):
+    env.out.mkdir()
+    (env.out / "check-t1-ended.json").write_text('{"ended": "2026-10-10T03:31:05Z"}', encoding="utf-8")
+
+    assert _tool(env, questions_file, "--check", "t4") == 1
+
+    assert "T1" in capsys.readouterr().err
+    assert not any(json.loads(r.content).get("method") == "tools/call" for r in env.requests if r.url.host == "gateway.example.com")
+    assert not (env.out / "check-t4-burst.json").exists()
+
+
+def test_tool_checks_t4_accepts_a_t1_that_ended_before_the_window_opened(env, questions_file):
+    env.tool_limit = 20
+    env.out.mkdir()
+    (env.out / "check-t1-ended.json").write_text('{"ended": "2026-10-10T03:30:59Z"}', encoding="utf-8")
+    assert _tool(env, questions_file, "--check", "t4") == 0
+
+
+def test_tool_checks_t4_refuses_a_t1_end_time_it_cannot_read(env, questions_file, capsys):
+    env.out.mkdir()
+    (env.out / "check-t1-ended.json").write_text("not json", encoding="utf-8")
+    assert _tool(env, questions_file, "--check", "t4") == 1 and "check-t1-ended.json" in capsys.readouterr().err
 
 
 def test_tool_checks_t4_fails_clearly_when_no_burst_call_got_past_the_gateway(env, questions_file, capsys):

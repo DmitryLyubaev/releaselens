@@ -63,7 +63,18 @@ CALLER = "owner"                       # the label the owner's `oid` has in GATE
 EMBEDDING_DEPLOYMENT = "releaselens-embed-small"
 HTTP_TIMEOUT_S = 60.0
 BURST_QUERY = "what changed in the latest release?"
-WINDOW_MARGIN = timedelta(seconds=10)      # clock skew between this machine and the gateway
+_UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+# T4's metric window. `emit-metric` reaches Application Insights pre-aggregated, so a `customMetrics` row is
+# probably stamped with the START of its aggregation period, aligned to the whole minute (UNCONFIRMED LIVE:
+# project 4 never looked at the timestamps). A window that opened a few seconds before the handshake would
+# then miss the rows stamped at the start of the handshake's minute, and re-reading the metric later could
+# never fix that. So T4 waits until 15 s past a whole minute before its handshake, and the window opens at
+# that whole minute (`floor_to_minute(handshake)`): it holds T4's calls and, as long as no other tool call
+# is made in that minute, nothing else. It closes WINDOW_MARGIN after the burst, for clock skew between this
+# machine and the gateway. If the live metric turns out to be stamped differently, this is the one place
+# to change.
+WINDOW_MARGIN = timedelta(seconds=10)
+T1_ENDED_FILE = "check-t1-ended.json"     # {"ended": <UTC time>}: not a check result, so `report` ignores it
 BROKEN_BYTES = b'{"entityType": "issue", "number": '       # cut off: not JSON, so every try fails
 
 # Looked up when a command runs, so a test can replace them.
@@ -378,6 +389,20 @@ def _load_burst(directory: Path) -> tuple[tc.Burst, str, str]:
         raise Refused(f"{BURST_FILE} is not a burst record") from None
 
 
+def _require_t1_outside(directory: Path, start: datetime, handshake: datetime) -> None:
+    """Refuse a T4 whose window already holds T1's tool calls: their metric rows would count as T4's."""
+    path = directory / T1_ENDED_FILE
+    if not path.exists():
+        return
+    try:
+        ended = datetime.strptime(json.loads(path.read_text(encoding="utf-8"))["ended"], _UTC_FORMAT).replace(tzinfo=timezone.utc)
+    except (ValueError, KeyError, TypeError):
+        raise Refused(f"{T1_ENDED_FILE} is not a T1 end time: run T1 again, or remove the file") from None
+    if start <= ended < handshake:
+        raise Refused(f"T1's tool calls ended inside T4's metric window (the whole minute that opens at "
+                      f"{start.strftime(_UTC_FORMAT)}), so their metric rows would count as T4's: run T4 again")
+
+
 def run_tool_checks(args) -> int:
     _guard(args)
     wanted = list(dict.fromkeys(args.check or ["t1", "t2", "t3", "t4"]))
@@ -425,6 +450,8 @@ def run_tool_checks(args) -> int:
                                          tokens(DIRECT_SCOPE), tokens(search_index.SCOPE), sleep=_sleep_sync)
                 session = McpSession(http, args.mcp_url, tokens(args.scope).token())
                 finish(tc.t1_same_search(session, direct, questions))
+                # When its tool calls ended: T4 refuses a window that holds them (its metric rows would count too).
+                _save(args, args.out / T1_ENDED_FILE, json.dumps({"ended": _utcnow().strftime(_UTC_FORMAT)}) + "\n")
             elif check == "t2":
                 finish(tc.t2_gateway_refuses(McpSession(http, args.mcp_url, None),
                                              McpSession(http, args.mcp_url, tokens(DIRECT_SCOPE).token())))
@@ -432,8 +459,15 @@ def run_tool_checks(args) -> int:
                 finish(tc.t3_no_bypass(McpSession(http, args.app_url, None),
                                        McpSession(http, args.app_url, tokens(args.scope).token())))
             elif check == "t4":
-                start = (_utcnow() - WINDOW_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")      # before the handshake
-                session = McpSession(http, args.mcp_url, tokens(args.scope).token())
+                session = McpSession(http, args.mcp_url, tokens(args.scope).token())    # the token is fetched before the wait
+                wait = tc.seconds_until_burst(_utcnow())
+                print(f"T4: waiting {wait:.0f} s, to {tc.MINUTE_SETTLE_S} s past the next whole minute, so the "
+                      "burst's metric rows stand alone in a whole-minute window")
+                _sleep_sync(wait)
+                handshake = _utcnow()
+                start_time = tc.floor_to_minute(handshake)                               # computed after the wait
+                _require_t1_outside(args.out, start_time, handshake)
+                start = start_time.strftime(_UTC_FORMAT)
                 try:
                     session.initialize()
                 except McpError as error:
@@ -443,7 +477,7 @@ def run_tool_checks(args) -> int:
                     finish(checks.CheckResult("T4", False, "the handshake before the burst got no response"))
                     continue
                 burst = tc.run_burst(tc.mcp_send(session, BURST_QUERY))
-                until = (_utcnow() + WINDOW_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")     # after the burst
+                until = (_utcnow() + WINDOW_MARGIN).strftime(_UTC_FORMAT)               # after the burst
                 _save(args, args.out / BURST_FILE, _burst_record(burst, start, until))
                 finish(tc.t4_rate_limit(burst, read_totals(start, until), label=CALLER, clock=_now,
                                         sleep=_sleep_sync, wait_s=args.metric_wait))
