@@ -38,8 +38,9 @@ resource "azapi_resource" "named_value" {
 
 # The path split is the research notes' shape (§4), unverified live: the service URL ends at
 # /runtime/webhooks and the one endpoint's template is /mcp, so a call reaches the tool app's
-# /runtime/webhooks/mcp. No subscription key: the Entra token the policy validates is the only
-# credential, and no product or subscription exists.
+# /runtime/webhooks/mcp. If initialize through the gateway gets a 404, the runbook's step 5a has
+# the two other shapes to try, with their test edits. No subscription key: the Entra token the
+# policy validates is the only credential, and no product or subscription exists.
 resource "azapi_resource" "mcp_api" {
   type      = "Microsoft.ApiManagement/service/apis@2025-09-01-preview"
   name      = "releaselens-search"
