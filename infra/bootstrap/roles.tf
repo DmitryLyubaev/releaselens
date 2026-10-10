@@ -223,9 +223,10 @@ resource "azurerm_role_assignment" "tool_metrics_publisher" {
 
 # Event Grid delivers to the queue, and dead-letters, as the system topic's identity. The
 # subscription in ingestion.tf depends on both, so they exist before it is created.
-# The sender role is on the ingestion account, not the ingest-events queue: Event Grid's check at
-# subscription creation refused a queue-scoped role for 34 minutes (live session, 2026-10-10 UTC).
-# The only other queue in that account is ingest-events-poison.
+# Both roles are on the ingestion account, not on the queue and the container: Event Grid's check
+# at subscription creation refused a queue-scoped sender role for 34 minutes, then a
+# container-scoped dead-letter role, and accepted account-scoped ones (live session, 2026-10-10
+# UTC). That account holds only ingestion data: artefacts-in, deadletter-events and the two queues.
 resource "azurerm_role_assignment" "eventgrid_queue_sender" {
   scope                = azurerm_storage_account.ingest.id
   role_definition_name = "Storage Queue Data Message Sender"
@@ -233,7 +234,7 @@ resource "azurerm_role_assignment" "eventgrid_queue_sender" {
 }
 
 resource "azurerm_role_assignment" "eventgrid_deadletter_writer" {
-  scope                = azurerm_storage_container.deadletter_events.id
+  scope                = azurerm_storage_account.ingest.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_eventgrid_system_topic.ingest.identity[0].principal_id
 }
