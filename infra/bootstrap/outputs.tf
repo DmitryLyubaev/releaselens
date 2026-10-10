@@ -117,3 +117,61 @@ output "app_insights_connection_string" {
   value       = azurerm_application_insights.gateway.connection_string
   sensitive   = true
 }
+
+# The functions stack reads these through terraform_remote_state (spec §3.3). Identifiers and
+# endpoints, not credentials: the ingestion account has no usable key, and no key, connection
+# string or SAS of it is output.
+output "ingest_identity_id" {
+  description = "Resource ID of the ingest identity. The functions stack attaches it to the ingest app."
+  value       = azurerm_user_assigned_identity.ingest.id
+}
+
+output "ingest_identity_client_id" {
+  description = "Client ID of the ingest identity: the ingest app's AzureWebJobsStorage__clientId and AZURE_CLIENT_ID."
+  value       = azurerm_user_assigned_identity.ingest.client_id
+}
+
+output "ingest_identity_principal_id" {
+  description = "Principal ID of the ingest identity. The search stack gives it Search Index Data Contributor."
+  value       = azurerm_user_assigned_identity.ingest.principal_id
+}
+
+output "tool_identity_id" {
+  description = "Resource ID of the tool identity. The functions stack attaches it to the tool app."
+  value       = azurerm_user_assigned_identity.tool.id
+}
+
+output "tool_identity_client_id" {
+  description = "Client ID of the tool identity: the tool app's AzureWebJobsStorage__clientId and AZURE_CLIENT_ID."
+  value       = azurerm_user_assigned_identity.tool.client_id
+}
+
+output "tool_identity_principal_id" {
+  description = "Principal ID of the tool identity. The search stack gives it Search Index Data Reader."
+  value       = azurerm_user_assigned_identity.tool.principal_id
+}
+
+output "ingest_storage_account_name" {
+  description = "Name of the ingestion storage account, which holds artefacts-in, both queues, both apps' host storage and their deployment containers. It is AzureWebJobsStorage__accountName for both apps."
+  value       = azurerm_storage_account.ingest.name
+}
+
+output "ingest_storage_blob_endpoint" {
+  description = "The ingestion account's blob endpoint, with a trailing slash. The deployment containers' URLs are built from it."
+  value       = azurerm_storage_account.ingest.primary_blob_endpoint
+}
+
+output "ingest_storage_queue_endpoint" {
+  description = "The ingestion account's queue endpoint, with a trailing slash."
+  value       = azurerm_storage_account.ingest.primary_queue_endpoint
+}
+
+output "search_tool_app_client_id" {
+  description = "Client ID of the search tool's Entra app. The tool app's authentication takes it as its client ID; version 2 tokens carry it as the audience."
+  value       = azuread_application.search_tool.client_id
+}
+
+output "search_tool_app_identifier_uri" {
+  description = "The search tool app's identifier URI, api://<client ID>. The gateway asks for a token for it when it calls the tool."
+  value       = azuread_application_identifier_uri.search_tool.identifier_uri
+}

@@ -144,6 +144,116 @@ override_resource {
   }
 }
 
+# The ingestion account, its four containers and two queues, the state container for the
+# functions stack, the two Function identities and the Event Grid topic's identity each get their
+# own ID, so a role given a neighbour's scope or principal fails its assertion.
+override_resource {
+  target          = azurerm_storage_account.ingest
+  override_during = plan
+  values = {
+    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_container.artefacts_in
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/artefacts-in"
+    url = "https://strlingesta1b2c3.blob.core.windows.net/artefacts-in"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_container.deadletter_events
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deadletter-events"
+    url = "https://strlingesta1b2c3.blob.core.windows.net/deadletter-events"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_container.deploy_ingest
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deploy-ingest"
+    url = "https://strlingesta1b2c3.blob.core.windows.net/deploy-ingest"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_container.deploy_tool
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deploy-tool"
+    url = "https://strlingesta1b2c3.blob.core.windows.net/deploy-tool"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_container.functions
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlstatea1b2c3/blobServices/default/containers/tfstate-functions"
+    url = "https://strlstatea1b2c3.blob.core.windows.net/tfstate-functions"
+  }
+}
+
+# In azurerm 5.x a queue created with storage_account_id has its Resource Manager ID in id, as a
+# container does. url is the data-plane URL, which is not a valid role scope.
+override_resource {
+  target          = azurerm_storage_queue.ingest_events
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events"
+    url = "https://strlingesta1b2c3.queue.core.windows.net/ingest-events"
+  }
+}
+
+override_resource {
+  target          = azurerm_storage_queue.ingest_events_poison
+  override_during = plan
+  values = {
+    id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events-poison"
+    url = "https://strlingesta1b2c3.queue.core.windows.net/ingest-events-poison"
+  }
+}
+
+override_resource {
+  target          = azurerm_user_assigned_identity.ingest
+  override_during = plan
+  values = {
+    id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-ingest"
+    principal_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    client_id    = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+  }
+}
+
+override_resource {
+  target          = azurerm_user_assigned_identity.tool
+  override_during = plan
+  values = {
+    id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-releaselens-tool"
+    principal_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    client_id    = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+  }
+}
+
+override_resource {
+  target          = azurerm_eventgrid_system_topic.ingest
+  override_during = plan
+  values = {
+    id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.EventGrid/systemTopics/evgt-releaselens-ingest"
+    # A block's computed attributes are given as one object, which the mock applies to the
+    # block's one element.
+    identity = {
+      principal_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+      tenant_id    = "11111111-1111-1111-1111-111111111111"
+    }
+  }
+}
+
 # The owner is whoever applies the stack: the signed-in principal.
 override_data {
   target = data.azurerm_client_config.current
@@ -211,6 +321,22 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
         azurerm_role_assignment.gateway_metrics_publisher,
+        azurerm_role_assignment.ingest_artefacts_reader,
+        azurerm_role_assignment.ingest_queue_events,
+        azurerm_role_assignment.ingest_queue_poison,
+        azurerm_role_assignment.ingest_openai_user,
+        azurerm_role_assignment.ingest_host_blob_owner,
+        azurerm_role_assignment.ingest_host_table_contributor,
+        azurerm_role_assignment.tool_openai_user,
+        azurerm_role_assignment.tool_host_blob_owner,
+        azurerm_role_assignment.tool_host_queue_contributor,
+        azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.eventgrid_queue_sender,
+        azurerm_role_assignment.eventgrid_deadletter_writer,
+        azurerm_role_assignment.owner_artefacts_in,
+        azurerm_role_assignment.owner_deploy_ingest,
+        azurerm_role_assignment.owner_deploy_tool,
+        azurerm_role_assignment.owner_state_functions,
       ] : lower(trimsuffix(a.scope, "/")) != lower("/subscriptions/${var.subscription_id}")
     ])
     error_message = "No role assignment may be scoped to the subscription."
@@ -232,6 +358,22 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
         azurerm_role_assignment.gateway_metrics_publisher,
+        azurerm_role_assignment.ingest_artefacts_reader,
+        azurerm_role_assignment.ingest_queue_events,
+        azurerm_role_assignment.ingest_queue_poison,
+        azurerm_role_assignment.ingest_openai_user,
+        azurerm_role_assignment.ingest_host_blob_owner,
+        azurerm_role_assignment.ingest_host_table_contributor,
+        azurerm_role_assignment.tool_openai_user,
+        azurerm_role_assignment.tool_host_blob_owner,
+        azurerm_role_assignment.tool_host_queue_contributor,
+        azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.eventgrid_queue_sender,
+        azurerm_role_assignment.eventgrid_deadletter_writer,
+        azurerm_role_assignment.owner_artefacts_in,
+        azurerm_role_assignment.owner_deploy_ingest,
+        azurerm_role_assignment.owner_deploy_tool,
+        azurerm_role_assignment.owner_state_functions,
       ] : startswith(lower(a.scope), lower("/subscriptions/${var.subscription_id}/resourceGroups/"))
     ])
     error_message = "Every role assignment must be scoped inside one of this subscription's resource groups."
@@ -255,6 +397,22 @@ run "role_assignments" {
         azurerm_role_assignment.gateway_openai_user_failover,
         azurerm_role_assignment.owner_state_gateway,
         azurerm_role_assignment.gateway_metrics_publisher,
+        azurerm_role_assignment.ingest_artefacts_reader,
+        azurerm_role_assignment.ingest_queue_events,
+        azurerm_role_assignment.ingest_queue_poison,
+        azurerm_role_assignment.ingest_openai_user,
+        azurerm_role_assignment.ingest_host_blob_owner,
+        azurerm_role_assignment.ingest_host_table_contributor,
+        azurerm_role_assignment.tool_openai_user,
+        azurerm_role_assignment.tool_host_blob_owner,
+        azurerm_role_assignment.tool_host_queue_contributor,
+        azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.eventgrid_queue_sender,
+        azurerm_role_assignment.eventgrid_deadletter_writer,
+        azurerm_role_assignment.owner_artefacts_in,
+        azurerm_role_assignment.owner_deploy_ingest,
+        azurerm_role_assignment.owner_deploy_tool,
+        azurerm_role_assignment.owner_state_functions,
         ] : !(a.principal_id == azurerm_user_assigned_identity.deploy.principal_id && (
           startswith(lower("${azurerm_cognitive_account.openai.id}/"), lower("${trimsuffix(a.scope, "/")}/")) ||
           startswith(lower(a.scope), lower("${azurerm_cognitive_account.openai.id}/"))
@@ -283,6 +441,132 @@ run "gateway_role_assignments" {
   assert {
     condition     = azurerm_role_assignment.owner_state_gateway.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_state_gateway.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlstatea1b2c3/blobServices/default/containers/tfstate-gateway" && azurerm_role_assignment.owner_state_gateway.principal_id == "22222222-2222-2222-2222-222222222222"
     error_message = "owner_state_gateway must give the owner Storage Blob Data Contributor on the tfstate-gateway container's Resource Manager ID."
+  }
+}
+
+# The ingestion's roles (spec §3.1): the two Function identities, the Event Grid topic's identity
+# and the owner, each on exactly its scope. Every principal and scope is distinct, so a role given
+# a neighbour's principal or scope fails here.
+run "function_role_assignments" {
+  command = plan
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_artefacts_reader.role_definition_name == "Storage Blob Data Reader" && azurerm_role_assignment.ingest_artefacts_reader.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/artefacts-in" && azurerm_role_assignment.ingest_artefacts_reader.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_artefacts_reader must give the ingest identity Storage Blob Data Reader on the artefacts-in container's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_queue_events.role_definition_name == "Storage Queue Data Contributor" && azurerm_role_assignment.ingest_queue_events.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events" && azurerm_role_assignment.ingest_queue_events.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_queue_events must give the ingest identity Storage Queue Data Contributor on the ingest-events queue's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_queue_poison.role_definition_name == "Storage Queue Data Contributor" && azurerm_role_assignment.ingest_queue_poison.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events-poison" && azurerm_role_assignment.ingest_queue_poison.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_queue_poison must give the ingest identity Storage Queue Data Contributor on the ingest-events-poison queue's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_openai_user.role_definition_name == "Cognitive Services OpenAI User" && azurerm_role_assignment.ingest_openai_user.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.CognitiveServices/accounts/aoai-releaselens-a1b2c3" && azurerm_role_assignment.ingest_openai_user.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_openai_user must give the ingest identity Cognitive Services OpenAI User on the australiaeast account."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_host_blob_owner.role_definition_name == "Storage Blob Data Owner" && azurerm_role_assignment.ingest_host_blob_owner.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.ingest_host_blob_owner.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_host_blob_owner must give the ingest identity Storage Blob Data Owner on the ingestion account, for its host storage."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.ingest_host_table_contributor.role_definition_name == "Storage Table Data Contributor" && azurerm_role_assignment.ingest_host_table_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.ingest_host_table_contributor.principal_id == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    error_message = "ingest_host_table_contributor must give the ingest identity Storage Table Data Contributor on the ingestion account, for its host storage."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_openai_user.role_definition_name == "Cognitive Services OpenAI User" && azurerm_role_assignment.tool_openai_user.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.CognitiveServices/accounts/aoai-releaselens-a1b2c3" && azurerm_role_assignment.tool_openai_user.principal_id == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    error_message = "tool_openai_user must give the tool identity Cognitive Services OpenAI User on the australiaeast account."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_host_blob_owner.role_definition_name == "Storage Blob Data Owner" && azurerm_role_assignment.tool_host_blob_owner.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.tool_host_blob_owner.principal_id == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    error_message = "tool_host_blob_owner must give the tool identity Storage Blob Data Owner on the ingestion account, for its host storage."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_host_queue_contributor.role_definition_name == "Storage Queue Data Contributor" && azurerm_role_assignment.tool_host_queue_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.tool_host_queue_contributor.principal_id == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    error_message = "tool_host_queue_contributor must give the tool identity Storage Queue Data Contributor on the ingestion account, for its host storage."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.tool_host_table_contributor.role_definition_name == "Storage Table Data Contributor" && azurerm_role_assignment.tool_host_table_contributor.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3" && azurerm_role_assignment.tool_host_table_contributor.principal_id == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    error_message = "tool_host_table_contributor must give the tool identity Storage Table Data Contributor on the ingestion account, for its host storage."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.eventgrid_queue_sender.role_definition_name == "Storage Queue Data Message Sender" && azurerm_role_assignment.eventgrid_queue_sender.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/queueServices/default/queues/ingest-events" && azurerm_role_assignment.eventgrid_queue_sender.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    error_message = "eventgrid_queue_sender must give the Event Grid topic's identity Storage Queue Data Message Sender on the ingest-events queue's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.eventgrid_deadletter_writer.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.eventgrid_deadletter_writer.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deadletter-events" && azurerm_role_assignment.eventgrid_deadletter_writer.principal_id == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    error_message = "eventgrid_deadletter_writer must give the Event Grid topic's identity Storage Blob Data Contributor on the deadletter-events container's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.owner_artefacts_in.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_artefacts_in.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/artefacts-in" && azurerm_role_assignment.owner_artefacts_in.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_artefacts_in must give the owner Storage Blob Data Contributor on the artefacts-in container's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.owner_deploy_ingest.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_deploy_ingest.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deploy-ingest" && azurerm_role_assignment.owner_deploy_ingest.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_deploy_ingest must give the owner Storage Blob Data Contributor on the deploy-ingest container's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.owner_deploy_tool.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_deploy_tool.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlingesta1b2c3/blobServices/default/containers/deploy-tool" && azurerm_role_assignment.owner_deploy_tool.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_deploy_tool must give the owner Storage Blob Data Contributor on the deploy-tool container's Resource Manager ID."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.owner_state_functions.role_definition_name == "Storage Blob Data Contributor" && azurerm_role_assignment.owner_state_functions.scope == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-bootstrap/providers/Microsoft.Storage/storageAccounts/strlstatea1b2c3/blobServices/default/containers/tfstate-functions" && azurerm_role_assignment.owner_state_functions.principal_id == "22222222-2222-2222-2222-222222222222"
+    error_message = "owner_state_functions must give the owner Storage Blob Data Contributor on the tfstate-functions container's Resource Manager ID."
+  }
+
+  # The ingest app uses no queue but its own two (research notes §7: the account-scope queue role
+  # serves the blob trigger's and the MCP extension's queues, which it has neither), so it holds no
+  # queue role on the whole account or above it.
+  assert {
+    condition = alltrue([
+      for a in [
+        azurerm_role_assignment.app_openai_user,
+        azurerm_role_assignment.owner_openai_user,
+        azurerm_role_assignment.owner_state_bootstrap,
+        azurerm_role_assignment.owner_state_app,
+        azurerm_role_assignment.owner_state_search,
+        azurerm_role_assignment.deploy_contributor,
+        azurerm_role_assignment.deploy_identity_operator,
+        azurerm_role_assignment.deploy_state_app,
+        azurerm_role_assignment.gateway_openai_user_primary,
+        azurerm_role_assignment.gateway_openai_user_failover,
+        azurerm_role_assignment.owner_state_gateway,
+        azurerm_role_assignment.gateway_metrics_publisher,
+        azurerm_role_assignment.ingest_artefacts_reader,
+        azurerm_role_assignment.ingest_queue_events,
+        azurerm_role_assignment.ingest_queue_poison,
+        azurerm_role_assignment.ingest_openai_user,
+        azurerm_role_assignment.ingest_host_blob_owner,
+        azurerm_role_assignment.ingest_host_table_contributor,
+        azurerm_role_assignment.tool_openai_user,
+        azurerm_role_assignment.tool_host_blob_owner,
+        azurerm_role_assignment.tool_host_queue_contributor,
+        azurerm_role_assignment.tool_host_table_contributor,
+        azurerm_role_assignment.eventgrid_queue_sender,
+        azurerm_role_assignment.eventgrid_deadletter_writer,
+        azurerm_role_assignment.owner_artefacts_in,
+        azurerm_role_assignment.owner_deploy_ingest,
+        azurerm_role_assignment.owner_deploy_tool,
+        azurerm_role_assignment.owner_state_functions,
+      ] : !(a.principal_id == azurerm_user_assigned_identity.ingest.principal_id && startswith(a.role_definition_name, "Storage Queue") && startswith(lower("${azurerm_storage_account.ingest.id}/"), lower("${trimsuffix(a.scope, "/")}/")))
+    ])
+    error_message = "The ingest identity must have no queue role on the whole ingestion account: only on its two queues."
   }
 }
 

@@ -1,4 +1,4 @@
-# Both identities live in the bootstrap group and must never move into rg-releaselens. The
+# Every identity lives in the bootstrap group and must never move into rg-releaselens. The
 # spec gives CI Contributor on that group, which includes writing federated credentials, so
 # an identity there would let CI add a trust for itself outside the environment gate
 # (spec §4.9).
@@ -20,6 +20,22 @@ resource "azurerm_user_assigned_identity" "app" {
 # in the bootstrap group for the reason above.
 resource "azurerm_user_assigned_identity" "gateway" {
   name                = "id-releaselens-gateway"
+  resource_group_name = azurerm_resource_group.bootstrap.name
+  location            = azurerm_resource_group.bootstrap.location
+}
+
+# The two Function apps' identities (spec §3.1): the ingest app's and the search tool's. The apps
+# are created and destroyed every session; the identities are not, so their role assignments
+# exist and have propagated before a session starts, and the functions stack needs no right to
+# assign roles. They live in the bootstrap group for the reason at the top of this file.
+resource "azurerm_user_assigned_identity" "ingest" {
+  name                = "id-releaselens-ingest"
+  resource_group_name = azurerm_resource_group.bootstrap.name
+  location            = azurerm_resource_group.bootstrap.location
+}
+
+resource "azurerm_user_assigned_identity" "tool" {
+  name                = "id-releaselens-tool"
   resource_group_name = azurerm_resource_group.bootstrap.name
   location            = azurerm_resource_group.bootstrap.location
 }

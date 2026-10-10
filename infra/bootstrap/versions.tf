@@ -47,6 +47,8 @@ provider "azurerm" {
     "Microsoft.Search",
     "Microsoft.ApiManagement",
     "Microsoft.OperationalInsights",
+    "Microsoft.EventGrid",
+    "Microsoft.Web",
   ]
 
   # Storage data-plane calls authenticate with Entra ID instead of account keys, so they
