@@ -387,12 +387,20 @@ switch (command)
         // The others are written even when some keys are missing.
         Directory.CreateDirectory(directory);
         var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var written = new List<(string FileName, string Json)>();
         foreach (var record in found)
         {
-            await File.WriteAllTextAsync(
-                Path.Combine(directory, ArtefactKeys.FileName(record.Key)),
-                ArtefactJson.Serialize(record), utf8, cancellation.Token);
+            var fileName = ArtefactKeys.FileName(record.Key);
+            var json = ArtefactJson.Serialize(record);
+            await File.WriteAllTextAsync(Path.Combine(directory, fileName), json, utf8, cancellation.Token);
+            written.Add((fileName, json));
         }
+
+        // manifest.json: each file's expected chunk count, counted from the file's own JSON parsed back the
+        // way the ingest app parses it, for the harness's checks. Earlier entries in the directory are kept.
+        var manifestPath = Path.Combine(directory, ArtefactChunks.ManifestFileName);
+        var earlier = File.Exists(manifestPath) ? await File.ReadAllTextAsync(manifestPath, cancellation.Token) : null;
+        await File.WriteAllTextAsync(manifestPath, ArtefactChunks.Manifest(earlier, written), utf8, cancellation.Token);
 
         logger.LogInformation(
             "Exported {Count} artefact(s) to {Directory}", found.Count, Path.GetFullPath(directory));
