@@ -662,8 +662,8 @@ fixed before any run, is in `eval/app/gateway/`, and "failover held", "did not h
 
 ## Azure Functions
 
-**Not yet run.** The code, the infrastructure and the measured checks are built and tested
-offline; nothing has been applied or measured.
+**Measured once, on 11 October 2026: 8 of 8 checks passed** ([report](docs/functions-report.md)).
+Every per-session stack was destroyed at the end of the session.
 
 Two Azure Function apps show, measured, what serverless functions add to ReleaseLens:
 - **Ingestion.** A GitHub artefact dropped into Storage as a JSON file becomes searchable on its
