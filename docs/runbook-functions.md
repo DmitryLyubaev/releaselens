@@ -12,8 +12,11 @@ below) and §12 (what is unverified, one findings row each). The stacks are desc
 [`infra/gateway/README.md`](../infra/gateway/README.md). This runbook points to their "Apply and
 destroy" and "Live checks" sections and does not repeat them.
 
-**Not yet run.** Every command below was written against the code and has not been run against
-Azure. The findings table is empty until the session fills it.
+**Run on 2026-10-11, over two days.** The bootstrap and the first day ran from the evening of
+2026-10-10 UTC into the morning of 2026-10-11; the stacks were destroyed for the night, rebuilt in
+the evening of 2026-10-11 UTC, and the measured checks, the demo and the destroys ran then. The
+steps below now reflect what worked. The results are in the [report](functions-report.md) (8 of 8
+checks passed) and the findings table at the end.
 
 ## Rules
 
@@ -117,7 +120,8 @@ All of this is free, and none of it calls Azure.
   `releaselens-embed-small.ids.json`. The corpus is never embedded again.
 - The restored `releaselens_eval` database is running in Docker, as the
   [retrieval README](../eval/retrieval/README.md#before-every-step) describes, with WSL kept
-  running by an open window.
+  running by an open window. Start the container first, in WSL:
+  `docker start releaselens-postgres`, before the export.
 - About 3 hours free.
 
 ### Choose and export the artefacts
@@ -329,10 +333,20 @@ whole plan, then check:
 terraform apply tfplan
 ```
 
-- **The Event Grid subscription may fail on the first apply.** The topic's identity must hold its
-  queue and dead-letter roles before the subscription is created, and a new role assignment can
-  take minutes to propagate. If the apply stops there, wait five minutes, then run
-  `terraform plan -out=tfplan` and `terraform apply tfplan` again. Write it in the findings.
+- **The Event Grid subscription may fail on the first apply,** with a "Managed Identity
+  Authorization Error" (the destination is not authorised). Event Grid checks, when it creates the
+  subscription, that the topic's identity can write to the queue and to the dead-letter container.
+  In the live session that check refused a queue-scoped sender role for 34 minutes, so not
+  propagation, and then a container-scoped dead-letter role. Both roles are now on the ingestion
+  account, which it accepted: the subscription was created 16 seconds after the dead-letter role.
+  If the apply still stops there, wait five minutes, then run `terraform plan -out=tfplan` and
+  `terraform apply tfplan` again. If it fails the same way again, stop and take the error to the
+  controller. Write it in the findings.
+- **The bootstrap's `CanNotDelete` lock blocks any replacement.** A bootstrap plan that deletes or
+  replaces something (moving a role assignment's scope is a delete and a create) fails at the
+  delete while the lock is on. With the owner's yes, lift it with `az lock delete` on
+  `rg-releaselens-bootstrap`; the apply re-creates it, because Terraform manages the lock. Check
+  that it is back afterwards.
 - If it fails at the app registration, the signed-in owner lacks the right to register
   applications or assign app roles (R8 of the bootstrap README).
 
@@ -545,9 +559,11 @@ terraform show -no-color tfplan | grep -A1 'APPLICATIONINSIGHTS_CONNECTION_STRIN
 ```
 
 Read the whole plan. It must be `Plan: 20 to add, 0 to change, 0 to destroy.`: the resource
-group, the suffix, the two Flex plans (one per app: Flex allows one site per plan), the two apps, two authentication updates, four basic-publishing
-updates, four named values, the MCP backend, the MCP API, its policy and its diagnostic. Terraform prints azapi
-body keys unquoted (`+ allow = false`), and the greps must show:
+group, the suffix, the two Flex plans (one per app: Flex allows one site per plan, and the service
+refused a second app on a shared one), the two apps, two authentication updates, four
+basic-publishing updates, four named values, the MCP backend, the MCP API, its policy and its
+diagnostic. Terraform prints azapi body keys unquoted (`+ allow = false`), and the greps must
+show:
 - the three `AzureWebJobsStorage__` settings (`accountName`, `clientId`, `credential`) on each
   app, and no setting named `AzureWebJobsStorage` alone, which would be a connection string;
 - `APPLICATIONINSIGHTS_CONNECTION_STRING` twice, each followed on the next line by
@@ -556,7 +572,7 @@ body keys unquoted (`+ allow = false`), and the greps must show:
 - `allow = false` four times (SCM and FTP on each app);
 - `subscriptionRequired = false`, and `maximumInstanceCount = 10` twice.
 
-The MCP API's service URL is known only after the apply; the type check below and step 5's
+The MCP backend's URL is known only after the apply; the type check below and step 5's
 `initialize` settle it. **If the plan or a grep shows anything else, stop:** do not apply, and
 find out why. Only then, in the same WSL window:
 
@@ -564,11 +580,18 @@ find out why. Only then, in the same WSL window:
 terraform apply tfplan
 ```
 
+On the live session's second day, this plan applied clean the first time.
+
+**Every later plan shows both apps `will be updated in-place`.** The service hands
+`serverFarmId` back with `serverfarms` in lower case, and the body has `serverFarms`. The update
+writes the same value again; it is harmless.
+
 **What to watch for in the apply** (the stack README's
 [Live checks](../infra/functions/README.md#live-checks) has the detail):
-- **The MCP API's diagnostic may be refused** because of its `largeLanguageModel` block, on an
-  API of type `mcp`. Payload bytes 0 alone keep the bodies out, so the block can go. If the apply
-  stops there:
+- **The MCP API's diagnostic could be refused** because of its `largeLanguageModel` block, on an
+  API of type `mcp`. The live session's apply accepted it, so the fallback below was not needed;
+  it stays in case the service changes. Payload bytes 0 alone keep the bodies out, so the block
+  can go. If the apply stops there:
   1. In `infra/functions/mcp_api.tf`, delete the three lines of the `largeLanguageModel` block
      from `azapi_resource.mcp_diagnostic`.
   2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_diagnostic"`'s third assert,
@@ -600,11 +623,13 @@ terraform apply tfplan
      terraform show -no-color tfplan | grep -E '^Plan:|^  # '
      ```
 
-     The one change allowed is `azapi_resource.mcp_policy will be updated in-place`, if it appears: API
-     Management may hand the policy's XML back normalised, and the update writes the same file
-     again (the stack README's [Live checks](../infra/functions/README.md#live-checks)). Anything
-     else changed, or anything destroyed: stop, do not apply, and take the plan to the controller.
-     Only then `terraform apply tfplan`.
+     The changes allowed are the two apps (`azapi_resource.app["ingest"]` and `["tool"]`) updated
+     in place, for the `serverFarmId` letter case above, and
+     `azapi_resource.mcp_policy will be updated in-place`, if it appears: API Management may hand
+     the policy's XML back normalised, and the update writes the same file again (the stack
+     README's [Live checks](../infra/functions/README.md#live-checks)). Anything else changed, or
+     anything destroyed: stop, do not apply, and take the plan to the controller. Only then
+     `terraform apply tfplan`.
 
   The azapi bodies were checked only against mocks, so the first apply is where any other body
   error shows: record its text, without any identifier, and take it to the controller.
@@ -669,13 +694,15 @@ it anywhere. `ZipFile` writes forward slashes in the entry names, which the Linu
 
 ### 4c. Did both apps start?
 
-After a minute, each must print `Running` and then `1` (one function each, `ingest` and
-`search_corpus`):
+After a minute, each must print `Running` and then `1` (one function each: `ingest`, and
+`SearchCorpus`, the tool app's C# function, which serves the MCP tool `search_corpus`).
+`az functionapp show --query state` prints nothing for a Flex app, so the state is read from the
+site's properties:
 
 ```powershell
-az functionapp show --resource-group rg-releaselens-functions --name $ingest --query state -o tsv
+az resource show --resource-group rg-releaselens-functions --name $ingest --resource-type Microsoft.Web/sites --query properties.state -o tsv
 az functionapp function list --resource-group rg-releaselens-functions --name $ingest --query "length(@)" -o tsv
-az functionapp show --resource-group rg-releaselens-functions --name $tool --query state -o tsv
+az resource show --resource-group rg-releaselens-functions --name $tool --resource-type Microsoft.Web/sites --query properties.state -o tsv
 az functionapp function list --resource-group rg-releaselens-functions --name $tool --query "length(@)" -o tsv
 ```
 
@@ -691,133 +718,87 @@ in the portal shows why. Record it without any identifier.
 
 ### 5a. The tool through the gateway
 
-This helper sends one JSON-RPC request to the tool's gateway URL with a fresh owner token, and
-returns the status and the parsed reply. It prints nothing by itself and keeps no token:
+The smoke test runs through the harness's own MCP client, `app.functions.mcp_http.McpSession`,
+with a fresh owner token. Do not use PowerShell's `Invoke-WebRequest` for it: on Windows the
+owner's TLS-inspecting antivirus holds back the bodies of short replies (the empty `202` to the
+`initialized` notification, and 401s), and `Invoke-WebRequest` waits for them for about two
+minutes. The harness's client reads a refusal from its status line and never reads a
+notification's body, so it is not held up. From `eval/`, it prints the server's name, the tool
+list, a hit count and the empty query's answer, and no URL or token:
 
 ```powershell
-$script:McpSessionId = $null
-function mcp($method, $params) {
-  $token = az account get-access-token --scope $env:GW_SCOPE --query accessToken -o tsv
-  $body = @{ jsonrpc = '2.0'; method = $method }
-  if ($method -notlike 'notifications/*') { $body.id = Get-Random -Maximum 100000 }
-  if ($null -ne $params) { $body.params = $params }
-  $headers = @{ Authorization = "Bearer $token"; Accept = 'application/json, text/event-stream' }
-  if ($script:McpSessionId) { $headers['Mcp-Session-Id'] = $script:McpSessionId }
-  $r = Invoke-WebRequest -Method Post -Uri $env:FN_MCP_URL -ContentType 'application/json' -Headers $headers -Body ($body | ConvertTo-Json -Depth 10 -Compress) -SkipHttpErrorCheck
-  $token = $null
-  if ($r.Headers['Mcp-Session-Id']) { $script:McpSessionId = [string]$r.Headers['Mcp-Session-Id'] }
-  $text = [string]$r.Content
-  if ($text -match '(?m)^data: ?(.+)$') { $text = $Matches[1].Trim() }      # one event-stream message
-  $reply = $null
-  if ($text) { try { $reply = $text | ConvertFrom-Json } catch { } }
-  [pscustomobject]@{ Status = [int]$r.StatusCode; Reply = $reply }
-}
+Set-Location (Join-Path (git rev-parse --show-toplevel) eval)
+@'
+import json, os, time
+import httpx, truststore
+truststore.inject_into_ssl()
+from app.functions.mcp_http import McpSession, McpToolError, text_of
+from app.retrieval.azure_auth import TokenSource
+token = TokenSource(os.environ["GW_SCOPE"], os.environ["GW_TENANT"]).token()
+with httpx.Client(timeout=180) as http:
+    session = McpSession(http, os.environ["FN_MCP_URL"], token)
+    started = time.monotonic()
+    server = session.initialize()["serverInfo"]["name"]
+    print("initialize:", server, f"{time.monotonic() - started:.1f} s")
+    print("tools:", session.list_tools())
+    hits = json.loads(text_of(session.call("search_corpus", {"query": "what changed in the latest release?"})))
+    print("hits:", len(hits), "longest excerpt:", max(len(hit["excerpt"]) for hit in hits))
+    try:
+        session.call("search_corpus", {"query": " "})
+        print("empty query: no error")
+    except McpToolError as error:
+        print("empty query: tool error:", error)
+'@ | .venv/Scripts/python.exe -
 ```
 
-Then, in order. The tool app has been idle since its deploy, so the first call is a cold start:
+A refusal ends it with `McpHttpError: HTTP <status>`. Any other traceback may name the host: do
+not paste it anywhere. The same calls can also be made from WSL with `curl` and a token from WSL's
+own `az`, where the antivirus does not reach.
 
-```powershell
-$sw = [Diagnostics.Stopwatch]::StartNew()
-$init = mcp 'initialize' @{ protocolVersion = '2025-06-18'; capabilities = @{}; clientInfo = @{ name = 'runbook-smoke'; version = '1.0' } }
-$sw.Stop()
-"{0} {1} {2:n1} s" -f $init.Status, $init.Reply.result.serverInfo.name, $sw.Elapsed.TotalSeconds
-(mcp 'notifications/initialized').Status
-(mcp 'tools/list' @{}).Reply.result.tools.name
-$hits = mcp 'tools/call' @{ name = 'search_corpus'; arguments = @{ query = 'what changed in the latest release?' } }
-$hits.Status; $hits.Reply.result.isError; @($hits.Reply.result.content[0].text | ConvertFrom-Json).Count
-$bad = mcp 'tools/call' @{ name = 'search_corpus'; arguments = @{ query = ' ' } }
-$bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Reply.error.message
-```
+The tool app has been idle since its deploy, so the first call is a cold start. Then:
 
-1. **`initialize` answers `200 releaselens-search`.** That one line shows the MCP pass-through
-   path (by default the API's service URL ending `/runtime/webhooks` plus the endpoint `/mcp`
-   reaches the app's `/runtime/webhooks/mcp`), App Service authentication accepting the gateway
-   identity's v2 token (audience the client ID), and the host honouring
-   `extensions.mcp.system.webhookAuthorizationLevel = "Anonymous"` with no `mcp_extension` key.
-   - A **404** is most likely the path split. Microsoft's "expose an existing MCP server"
-     walkthrough takes the server's full endpoint as the base URL, so the gateway may forward the
-     call to the service URL alone, the app's `/runtime/webhooks`, which answers 404. Neither shape
-     below changes the `tool_mcp_url` output, the gateway-side URL that the harness and Claude Code
-     call (`<gateway host>/releaselens-search/mcp`, built from the API's path), so
-     `$env:FN_MCP_URL` stays as it is. Shape A keeps the gateway answering there; shape B may not
-     (its item 7 has the probe). First record whether the 404 is the gateway's own or the app's,
-     from Application Insights as for a 401 below. Then:
-     1. **Shape A: the service URL is the app's whole MCP endpoint.** In
-        `infra/functions/mcp_api.tf`, in `azapi_resource.mcp_api`, change
-        `serviceUrl           = "https://${local.tool_host}/runtime/webhooks"` to
-        `serviceUrl           = "https://${local.tool_host}/runtime/webhooks/mcp"`. Leave the
-        endpoint (`message = { uriTemplate = "/mcp" }`) as it is: it is the path callers use
-        after the API's path, as in the walkthrough's client URL `<path>/mcp`.
-     2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_api"`'s third assert, change
-        the end of the `serviceUrl` line,
-        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks"`,
-        to `.../runtime/webhooks/mcp"`. The `uriTemplate == "/mcp"` line stays.
-     3. Run the stack's tests in WSL, from `infra/functions`, with their own data directory, as in
-        step 4a's fallback:
+1. **`initialize` answers `releaselens-search`.** That one line shows the MCP pass-through path,
+   App Service authentication accepting the gateway identity's v2 token (audience the client ID),
+   and the host honouring `extensions.mcp.system.webhookAuthorizationLevel = "Anonymous"` with no
+   `mcp_extension` key. The path that worked live: the MCP API has no service URL; it names a
+   gateway backend (`Microsoft.ApiManagement/service/backends`, through `backendId`) whose URL is
+   `https://<tool host>/runtime/webhooks`, and its `mcpProperties.endpoints` is
+   `{ mcp = { uriTemplate = "/mcp" } }`, an object keyed by name, not the array of
+   `{ name, uriTemplate }` Microsoft's docs show (the service refuses the array at apply). The
+   gateway appends the caller's path after the API's path to the backend's URL, so
+   `<gateway host>/releaselens-search/mcp` reaches `<tool host>/runtime/webhooks/mcp`.
+   - **If `initialize` fails,** tell the two failure modes the live session met apart before
+     changing anything, and record which it was in findings row 22:
+     - **`serverInfo.name` is "Azure API Management",** with no tools: the gateway is answering
+       as its own MCP server, not passing through. It did that with a `serviceUrl` on the API.
+       The API must have `backendId` and no `serviceUrl` (`infra/functions/mcp_api.tf`).
+     - **A 404 from the app:** the backend's URL and the caller's path do not add up. The gateway
+       appends the caller's path, not the endpoint's template, to the backend's URL: with the
+       app's root as the backend's URL, the call went to `<tool host>/mcp`. In Application
+       Insights, the MCP API's request has a backend dependency with result 404, and the
+       dependency's URL shows what the gateway called (read its path, not its host): it must end
+       `/runtime/webhooks/mcp`.
 
-        ```bash
-        TF_DATA_DIR="$HOME/tfdata/test-functions" terraform init -backend=false -input=false
-        TF_DATA_DIR="$HOME/tfdata/test-functions" terraform test
-        terraform fmt -check mcp_api.tf tests/functions.tftest.hcl
-        ```
-
-        The test must end `Success! 9 passed, 0 failed.` and `fmt` must print nothing.
-     4. Commit both files in PowerShell, because the measured commands refuse a dirty tree:
-        `Set-Location (git rev-parse --show-toplevel)`, `git add infra/functions/mcp_api.tf
-        infra/functions/tests/functions.tftest.hcl`, then `git commit -m "fix(infra): the MCP API's
-        service URL is the tool app's whole MCP endpoint"`.
-     5. In the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan and check:
-
-        ```bash
-        terraform plan -out=tfplan
-        terraform show -no-color tfplan | grep -E '^Plan:|^  # |serviceUrl|uriTemplate'
-        ```
-
-        It must show `azapi_resource.mcp_api will be updated in-place`, the `serviceUrl` (and for
-        Shape B the `uriTemplate`) changing, and `Plan: 0 to add, 1 to change, 0 to destroy.` The
-        only other change allowed is `azapi_resource.mcp_policy will be updated in-place` (`2 to change`),
-        the normalised XML step 4a's fallback describes. Anything added, destroyed or replaced:
-        stop, do not apply, and take the plan to the controller. Only then
-        `terraform apply tfplan`.
-     6. Run this step again from the top, with `$script:McpSessionId = $null` first. A `200`
-        settles the split: record the shape that worked in findings row 22.
-     7. **Shape B, if Shape A also gets a 404: the service URL is the app's root and the endpoint
-        carries the whole path.** In `mcp_api.tf`, set
-        `serviceUrl           = "https://${local.tool_host}"` and
-        `uriTemplate = "/runtime/webhooks/mcp"`. In the tftest, the `serviceUrl` line becomes
-        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com" &&` and the
-        `uriTemplate` line becomes `...endpoints.message.uriTemplate == "/runtime/webhooks/mcp"`. Then steps 3 to 6 again, committing with
-        `git commit -m "fix(infra): the MCP API's service URL is the tool app's root, and its
-        endpoint the whole MCP path"`. If the gateway also takes the endpoint's template as the
-        callers' path, this shape moves the gateway side to `/releaselens-search/runtime/webhooks/mcp`
-        and the call at `$env:FN_MCP_URL` gets the gateway's own 404. To tell that from a wrong
-        split, probe the moved path once, without changing the output:
-        `$env:FN_MCP_URL = $env:FN_MCP_URL -replace '/mcp$', '/runtime/webhooks/mcp'`, then
-        `$script:McpSessionId = $null` and this step's `initialize` again. Record its status in
-        findings row 22, set `$env:FN_MCP_URL` back with `tfout` as in step 5, and stop: a `200`
-        there means the output must follow the path, which is a code change for the controller,
-        not a session edit.
-     8. **If both shapes get a 404,** stop. Record each shape's status, and whether each 404 was
-        the gateway's own or the app's, and take it to the controller: T1 to T4 cannot run without
-        the path.
+     Anything else, or a fix that would change `mcp_api.tf`: record the status and the error text
+     without any identifier, and take it to the controller. T1 to T4 cannot run without the path.
    - A **401** comes either from the gateway (the owner's token: check `$env:GW_SCOPE` and the
      owner's `Gateway.Invoke`) or from App Service authentication behind it (the gateway's token
      for the tool: the allowed audiences or the allowed application). Application Insights tells
      them apart: in `requests` for the MCP API, a 401 with no backend dependency is the gateway's
      own, and a dependency with result 401 is the app's.
-   - The elapsed time includes about two seconds for `az` to issue the token. Write it down: it is
-     the cold start (spec §12 item 10).
-2. **The notification answers `202` or `200`,** and the tool list prints `search_corpus`.
-3. **A call without `top` gives 5 hits:** `200`, `isError` empty or `False`, and `5`. The tool
-   reads a missing `top` as null and uses 5. A tool error `search failed` within about 10 minutes
-   of step 3's apply may be the tool identity's new search role still propagating: wait a few
-   minutes and call again before recording it as a finding.
-4. **An empty query is a tool error with the tool's own text.** `isError` `True` and the text
-   `query must not be empty` is what the code throws. Write down exactly what came back,
-   whichever way the host renders it (a tool result with `isError`, or a JSON-RPC `error` with its
-   own message). If the host replaces the text with a generic message, that is a finding, not a
-   failure. The other fixed message, `search failed`, appears only on a backend error and is not
-   provoked here.
+   - The time printed is the handshake alone (the token is fetched before it starts). Write it
+     down: it is the cold start (spec §12 item 10). On the live session's second day it was
+     4.4 s.
+2. **The tool list prints `search_corpus`.** The `initialized` notification's `202` is checked
+   inside `initialize`, by its status only.
+3. **A call without `top` gives 5 hits,** each excerpt at most 500 characters. The tool reads a
+   missing `top` as null and uses 5. A tool error `search failed` within about 10 minutes of step
+   3's apply may be the tool identity's new search role still propagating: wait a few minutes and
+   call again before recording it as a finding.
+4. **An empty query is a tool error.** The code throws `query must not be empty`, but the live
+   host replaced it with its own generic text, "An error occurred invoking 'search_corpus'."
+   Write down exactly what came back. A generic message is a finding, not a failure. The other
+   fixed message, `search failed`, appears only on a backend error and is not provoked here.
 
 ### 5b. The index's paging, live
 
@@ -977,6 +958,8 @@ answer.
 In the portal, the Event Grid system topic `evgt-releaselens-ingest`, **Metrics**: the
 subscription's **Delivered Events** count the uploads, and **Dead Lettered Events** is 0. The
 owner has no role on the dead-letter container by design, so the portal's metric is the check.
+The live session read the same counts with `az monitor metrics list` instead (the metrics
+`DeliverySuccessCount`, `DeadLetteredCount` and `DroppedEventCount`).
 
 ### 6d. The tool: T1, T2 and T3
 
@@ -1029,9 +1012,11 @@ customMetrics
 | summarize rows = count(), calls = sum(valueSum) by second = datetime_part("second", timestamp), caller_set = isnotempty(tostring(customDimensions["Caller"]))
 ```
 
-- **Every row is at second 0.** The harness assumes `emit-metric` rows are stamped at the start of
-  their whole minute. Rows at other seconds mean T4's window may cut some off: record it, and treat
-  a T4 metric shortfall as unproven rather than failed.
+- **The seconds the rows are stamped at.** The harness assumes `emit-metric` rows are stamped at
+  the start of their whole minute, second 0. In the live session they were not: `Tool Calls` rows
+  were stamped at second 1 and at second 54. T4's window still caught its row there. Record the
+  seconds seen. Rows at other seconds mean T4's window may cut some off, so treat a T4 metric
+  shortfall as unproven rather than failed.
 - **`caller_set` is true.** `Tool Calls` carries the `Caller` dimension (spec §12 item 12). Project
   4 found that custom metrics carry no namespace dimension, so the query picks the metric by name.
 
@@ -1073,6 +1058,19 @@ Then start a new Claude Code session in this repository (`claude`), run `/mcp` a
 fixed a named problem, and check that Claude calls `search_corpus` and cites the artefact IDs it
 returns. Record a short excerpt in the scratch file: the question, that the tool was called, and
 the cited artefact IDs. No URL, hostname or account goes into it.
+
+**Or run it headless,** as the live session did, after the `claude mcp add-json` above, from the
+repository root, with the search tool as the only tool allowed:
+
+```powershell
+claude -p "<question>" --allowedTools mcp__releaselens-search__search_corpus
+```
+
+- **Claude Code's MCP client got through the handshake on Windows,** despite the antivirus that
+  holds up `Invoke-WebRequest` (step 5a).
+- **If `claude -p` fails with a 401 for an OAuth token,** it is the CLI's own Anthropic sign-in
+  that has expired, not the gateway's token. Run `claude`, then `/login`, choose "Claude account
+  with subscription", and try again.
 
 Write down:
 - whether the first connection after the tool app was idle succeeded within Claude Code's MCP
@@ -1144,6 +1142,9 @@ every check below passes.**
 3. **The search stack.** WSL, `infra/search`, `TF_DATA_DIR=$HOME/tfdata/search`:
    `terraform destroy`.
 
+As rough guides, the live session's destroys took about 1.5 minutes for the functions stack, 4 to
+9 minutes for the gateway, and about 1 minute for the search stack.
+
 Then the checks, in PowerShell after `acctok` prints `True`:
 
 ```powershell
@@ -1208,42 +1209,53 @@ findings too.
 
 | # | Item | Step | Finding |
 |---|---|---|---|
-| 1 | Spec §12.1: Flex Consumption is offered in australiaeast, and a .NET 10 isolated app starts there | 4 | |
-| 2 | Spec §12.2: an azapi-created Flex app with identity-based host storage starts on an account with shared keys off; code deploys with the owner's Entra sign-in and basic authentication off | 4 | |
-| 3 | Spec §12.3: Event Grid delivers to the queue with the topic's identity; the message encoding, plain or base64 (the poison message's first character) | 6 | |
-| 4 | Spec §12.4: the poison write needs no role beyond the ingest identity's queue roles (I4 passes) | 6 | |
-| 5 | Spec §12.5: the two identities' roles on a newly created search service propagate within the session (how long after step 3's apply the tool's smoke call and I1 worked) | 3, 5, 6 | |
-| 6 | Spec §12.6: the MCP extension with the anonymous webhook level plus App Service authentication accepts the gateway identity's token (smoke, T1) and refuses anything else (T3) | 5, 6 | |
-| 7 | Spec §12.7: the gateway's MCP pass-through reaches `/runtime/webhooks/mcp`; `initialize`, `tools/list` and `tools/call` work through Basic v2 (with the harness's own Streamable HTTP client, not the `mcp` SDK, by the planning ruling; Claude Code is the real client) | 5, 6, 7 | |
-| 8 | Spec §12.8: `validate-azure-ad-token` and `rate-limit-by-key` on `oid` work on the MCP API (T2, T4), and how many of T4's 30 calls the token bucket let through | 6 | |
-| 9 | Spec §12.9: Claude Code connects with `headersHelper` and does not attempt OAuth discovery on a 401 | 7 | |
-| 10 | Spec §12.10: the first `search_corpus` call after idle starts within Claude Code's MCP timeout without an always-ready instance (the smoke test's cold start in seconds; Claude Code's first connection) | 5, 7 | |
-| 11 | Spec §12.11: destroying and recreating the functions stack leaves the Event Grid subscription working and queued messages draining (or "not tested") | 7 | |
-| 12 | Spec §12.12: `emit-metric` records `Tool Calls` with the `Caller` dimension | 6 | |
-| 13 | AI Search's paging (page size 50, `@search.nextPageParameters` with `skip`), stubbed offline: the largest artefact read back in full | 5 | |
-| 14 | The ingest worker's log lines reach Application Insights through the Functions host, with no worker Application Insights package (counts and durations seen) | 6 | |
-| 15 | Whether Event Grid's subject holds the raw or the percent-encoded blob name (an encoded name would 404 and go to the poison queue); the session used plain names only | 6 | |
-| 16 | How the host shows the tool's thrown errors to an MCP caller (`query must not be empty` seen as what) | 5 | |
-| 17 | A call without `top` arrives as null and gives 5 hits | 5 | |
-| 18 | The host reads `extensions.mcp.system.webhookAuthorizationLevel`, so no `mcp_extension` key is needed | 5 | |
-| 19 | The first bootstrap apply failed at the Event Grid subscription for role propagation, and was re-run (or did not) | 1 | |
-| 20 | The tool app's registration issues v2 tokens (audience the client ID), and App Service authentication accepts them | 5 | |
-| 21 | `azurerm_storage_queue.id` is the Resource Manager ID in azurerm 5.x, so the queue role scopes are valid | 1 | |
-| 22 | The MCP pass-through path split works: the default (`/runtime/webhooks` plus `/mcp`), or step 5a's shape A or B (say which); the Flex apps' `maximumInstanceCount` reads 10 | 4, 5 | |
-| 23 | The service accepted the MCP API diagnostic's `largeLanguageModel` block on an `mcp` API (or it was dropped); any other azapi body error on the first apply | 4 | |
-| 24 | The MCP API reports type `mcp` after the apply (`apiType` is write-only) | 4 | |
-| 25 | I1 to I3 ran before I4's broken upload; the poison queue was empty at the start (the peek's count) | 6 | |
-| 26 | Any upload watch that crashed or was interrupted, and how it was re-uploaded under a new name | 6 | |
-| 27 | `emit-metric`'s `customMetrics` rows are stamped at the whole minute (T4's window is floored to it); Storage Queue Data Reader allows Get Queue Metadata under Entra (I4's count read) | 6 | |
-| 28 | T4 ran with no other tool calls in progress, Claude Code included | 6 | |
-| 29 | Project 4's follow-up: the bootstrap plan showed `azapi_update_resource.appi_custom_metrics`, and the portal reads "With dimensions" | 1, 2 | |
-| 30 | Project 4's follow-up: revision 2's own `metrics = true` makes its calls emit the token metric | 2 | |
-| 31 | Project 4's follow-up: B1, a burst of 60 at once, re-measured (the line it printed, and the backend-dependency query) | 2 | |
-| 32 | The bootstrap plan only added: 41 to add (or the number, and why) | 1 | |
-| 33 | The code packages: built with `dotnet publish`, zipped with `ZipFile`, deployed with `az functionapp deployment source config-zip`; both apps indexed one function | 4 | |
-| 34 | The semantic ranker's free allowance was not exceeded (no ranked query refused) | 6 | |
-| 35 | The Claude Code demo's excerpt is recorded, identifier-free, in the report | 7, 8 | |
+| 1 | Spec §12.1: Flex Consumption is offered in australiaeast, and a .NET 10 isolated app starts there | 4 | Yes. Both apps applied in australiaeast and reported `Running`, each with its one function indexed, on both days |
+| 2 | Spec §12.2: an azapi-created Flex app with identity-based host storage starts on an account with shared keys off; code deploys with the owner's Entra sign-in and basic authentication off | 4 | Yes. Both apps started with identity-based host storage on accounts with shared keys off; `config-zip` deployed both packages with the owner's Entra sign-in and basic publishing off (exit 0) |
+| 3 | Spec §12.3: Event Grid delivers to the queue with the topic's identity; the message encoding, plain or base64 (the poison message's first character) | 6 | Yes, once the topic's two roles were on the ingestion account (row 19). Event Grid metrics over the last hour: 9 delivered, 0 dead-lettered, 0 dropped. The poison message began with `e`: base64 |
+| 4 | Spec §12.4: the poison write needs no role beyond the ingest identity's queue roles (I4 passes) | 6 | Yes. I4 passed: the poison message came 159 s after the upload, with no role beyond the ingest identity's queue roles |
+| 5 | Spec §12.5: the two identities' roles on a newly created search service propagate within the session (how long after step 3's apply the tool's smoke call and I1 worked) | 3, 5, 6 | Yes. The owner's index role worked within about a minute of the search apply (the bulk load met no 403). On day 2 the smoke test's tool call came about 16 minutes after the apply and I1's upload about 37 minutes after; neither met a 403 or `search failed` |
+| 6 | Spec §12.6: the MCP extension with the anonymous webhook level plus App Service authentication accepts the gateway identity's token (smoke, T1) and refuses anything else (T3) | 5, 6 | Yes. `initialize`, the smoke test and T1 worked through the gateway with the anonymous webhook level and App Service authentication; T3's two direct calls both got 401 |
+| 7 | Spec §12.7: the gateway's MCP pass-through reaches `/runtime/webhooks/mcp`; `initialize`, `tools/list` and `tools/call` work through Basic v2 (with the harness's own Streamable HTTP client, not the `mcp` SDK, by the planning ruling; Claude Code is the real client) | 5, 6, 7 | Yes, after two fixes: the API passes through to a gateway backend (`backendId`, no `serviceUrl`), and the harness's client reads status first (the antivirus). `initialize`, `tools/list` and `tools/call` worked on Basic v2 with the harness's client and with Claude Code |
+| 8 | Spec §12.8: `validate-azure-ad-token` and `rate-limit-by-key` on `oid` work on the MCP API (T2, T4), and how many of T4's 30 calls the token bucket let through | 6 | Yes. T2: no token 401, wrong audience 401. T4: 11 of 30 got 429 with `Retry-After`, so the bucket let 19 through; with the 2 handshake requests that is 21 against 20 a minute, one more than the limit |
+| 9 | Spec §12.9: Claude Code connects with `headersHelper` and does not attempt OAuth discovery on a 401 | 7 | Yes. `claude mcp list` showed it connected with the `headersHelper`; no OAuth prompt (headless; the helper's `Authorization` header was used) |
+| 10 | Spec §12.10: the first `search_corpus` call after idle starts within Claude Code's MCP timeout without an always-ready instance (the smoke test's cold start in seconds; Claude Code's first connection) | 5, 7 | Yes. The smoke test's cold `initialize` took 4.4 s (day 2). Claude Code's first connection after about 40 minutes idle succeeded within the default MCP timeout |
+| 11 | Spec §12.11: destroying and recreating the functions stack leaves the Event Grid subscription working and queued messages draining (or "not tested") | 7 | Not tested: the recreate check was skipped at the owner's request |
+| 12 | Spec §12.12: `emit-metric` records `Tool Calls` with the `Caller` dimension | 6 | Yes. `caller_set` is true. Calls refused with 401 emit no metric |
+| 13 | AI Search's paging (page size 50, `@search.nextPageParameters` with `skip`), stubbed offline: the largest artefact read back in full | 5 | Yes. `pull_request:11017`: 129 chunks in the bulk load, 129 read back over 3 pages of 50, on both days |
+| 14 | The ingest worker's log lines reach Application Insights through the Functions host, with no worker Application Insights package (counts and durations seen) | 6 | Yes. 8 `Ingested` lines through the Functions host: median 1,258 ms, maximum 1,511 ms |
+| 15 | Whether Event Grid's subject holds the raw or the percent-encoded blob name (an encoded name would 404 and go to the poison queue); the session used plain names only | 6 | Not tested: the session used plain names only, as planned |
+| 16 | How the host shows the tool's thrown errors to an MCP caller (`query must not be empty` seen as what) | 5 | As a tool result with `isError` true, but with the host's generic text, "An error occurred invoking 'search_corpus'.", not `query must not be empty` |
+| 17 | A call without `top` arrives as null and gives 5 hits | 5 | Yes. 5 hits, excerpts at most 500 characters, of types release, commit and pull request |
+| 18 | The host reads `extensions.mcp.system.webhookAuthorizationLevel`, so no `mcp_extension` key is needed | 5 | Yes. The host honoured the `Anonymous` webhook level, with no `mcp_extension` key |
+| 19 | The first bootstrap apply failed at the Event Grid subscription for role propagation, and was re-run (or did not) | 1 | Yes, but not for propagation. The first apply failed at the subscription after 135 s ("Managed Identity Authorization Error"), and retries failed the same way. Event Grid's creation-time check refused the queue-scoped sender role (34 minutes) and then the container-scoped dead-letter role; both moved to the ingestion account, and the subscription was created 16 s after the second. The lock was lifted for each move and re-created by the apply |
+| 20 | The tool app's registration issues v2 tokens (audience the client ID), and App Service authentication accepts them | 5 | Yes. App Service authentication accepted the gateway identity's v2 token |
+| 21 | `azurerm_storage_queue.id` is the Resource Manager ID in azurerm 5.x, so the queue role scopes are valid | 1 | Yes. The queue role's scope is in the Resource Manager form (the check printed 1) |
+| 22 | The MCP pass-through path split works: the default (`/runtime/webhooks` plus `/mcp`), or step 5a's shape A or B (say which); the Flex apps' `maximumInstanceCount` reads 10 | 4, 5 | The default did not: with a service URL, the gateway answered as its own MCP server ("Azure API Management", no tools). Shapes A and B were superseded, not tried. What works: a gateway backend at `https://<tool host>/runtime/webhooks`, the API with `backendId` and no service URL, and the endpoints `{ mcp = { uriTemplate = "/mcp" } }`. The gateway appends the caller's path, so `/releaselens-search/mcp` reaches `/runtime/webhooks/mcp`. `maximumInstanceCount` reads 10 on both apps |
+| 23 | The service accepted the MCP API diagnostic's `largeLanguageModel` block on an `mcp` API (or it was dropped); any other azapi body error on the first apply | 4 | Accepted; no fallback needed. Other first-apply errors: the second app on one Flex plan ("one site per Flex Consumption serverfarm"), fixed with a plan per app, and `mcpProperties.endpoints` refused as an array (the service wants an object keyed by name; azapi's schema validation is off for it) |
+| 24 | The MCP API reports type `mcp` after the apply (`apiType` is write-only) | 4 | Yes, `mcp`, on both days |
+| 25 | I1 to I3 ran before I4's broken upload; the poison queue was empty at the start (the peek's count) | 6 | Yes. I1 to I3 ran to the end before I4's upload; the poison queue held 0 messages at the start, on both days |
+| 26 | Any upload watch that crashed or was interrupted, and how it was re-uploaded under a new name | 6 | None recorded. Day 1's I1 passed, but the stacks were destroyed overnight, and I1 ran again on day 2's fresh index, in a new session |
+| 27 | `emit-metric`'s `customMetrics` rows are stamped at the whole minute (T4's window is floored to it); Storage Queue Data Reader allows Get Queue Metadata under Entra (I4's count read) | 6 | No: the `Tool Calls` rows were stamped at second 1 and second 54, not 0. T4's window still caught its row, so its pass stands. Storage Queue Data Reader does allow Get Queue Metadata under Entra |
+| 28 | T4 ran with no other tool calls in progress, Claude Code included | 6 | Yes. Claude Code was configured only in step 7, after T4, and the window held exactly the 21 calls expected |
+| 29 | Project 4's follow-up: the bootstrap plan showed `azapi_update_resource.appi_custom_metrics`, and the portal reads "With dimensions" | 1, 2 | Yes. The plan showed `CustomMetricsOptedInType = "WithDimensions"`, and the setting reads `WithDimensions` (read with `az rest`, not the portal) |
+| 30 | Project 4's follow-up: revision 2's own `metrics = true` makes its calls emit the token metric | 2 | Yes. Both gateway calls emitted: one per-minute row with 2 emissions (700 tokens: 620 prompt, 80 completion), because `API ID` does not name the revision. Project 4's "no token metric" may have been the same folding, counted as rows (unverified) |
+| 31 | Project 4's follow-up: B1, a burst of 60 at once, re-measured (the line it printed, and the backend-dependency query) | 2 | Fail: 60 of 60 accepted, about 21,000 tokens (18,600 prompt, 2,400 completion) against 10,000 a minute with `estimate-prompt-tokens = true`. No request was refused, so the backend query did not apply. A simultaneous burst is not refused by `llm-token-limit` on Basic v2 (the counter is probably updated after concurrent requests pass its check: an inference) |
+| 32 | The bootstrap plan only added: 41 to add (or the number, and why) | 1 | Yes: 41 to add, 0 to change, 0 to destroy. After the two role moves, the bootstrap plan is clean |
+| 33 | The code packages: built with `dotnet publish`, zipped with `ZipFile`, deployed with `az functionapp deployment source config-zip`; both apps indexed one function | 4 | Yes. `dotnet publish`, `ZipFile` and `config-zip` worked for both. The functions indexed: `ingest`, and `SearchCorpus` (the C# name; the MCP tool is `search_corpus`) |
+| 34 | The semantic ranker's free allowance was not exceeded (no ranked query refused) | 6 | No refusal seen: T1's direct queries and every tool call returned their hits |
+| 35 | The Claude Code demo's excerpt is recorded, identifier-free, in the report | 7, 8 | Yes, in the report's notes on the run |
 
 ### Session notes
 
-None yet.
+- **Day 1 (2026-10-10/11 UTC):** the bootstrap, after the two Event Grid role moves (row 19); the
+  gateway, project 4's follow-ups and B1; search and the bulk load (41,817 chunks); the functions
+  stack, after the one-plan-per-app and endpoints-object fixes; the deploys; the smoke test, after
+  the backend fix (row 22) and the client's notification fix; and I1, which passed. The stacks
+  were then destroyed for the night.
+- **Day 2 (2026-10-11 UTC, evening):** search, the gateway and the functions stack rebuilt, each
+  applied clean the first time; the deploys, the smoke test, I1 to I4, T1 to T4 (T2 and T3 after
+  the client's status-first fix), the headless Claude Code demo, the report and the destroys.
+  Every stack's state was empty afterwards, and the gateway was purged.
+- **Open afterwards:** the `serverFarmId` letter-case diff on every plan (harmless); the host's
+  generic text for a tool error (row 16); B1's burst, in the
+  [amendment to project 4's report](gateway-report.md); and the recreate check (row 11).
