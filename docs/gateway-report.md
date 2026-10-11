@@ -38,3 +38,22 @@ Latencies are descriptive only; they decide nothing.
 - The region signal frozen before the first measured request (freeze.json): `x-ms-region`.
 - The commit: `344ed07691383e3513555cd0fc19e72a23defd90`, HEAD when this report was made. Measured commands refuse a tree with uncommitted changes, so it is the commit that ran unless one was made since.
 - Callers appear as labels. No identifier, hostname or account name is in this report.
+
+## Amendment, 2026-10-11: project 4's follow-ups, verified live in project 5's first gateway session
+
+The sections above are unchanged. Project 5's session applied the same gateway stack and checked
+project 4's three follow-ups ([functions runbook](runbook-functions.md#findings), rows 29 to 31):
+
+- **Custom metrics with dimensions, set by Terraform: confirmed.** The bootstrap's plan showed
+  `CustomMetricsOptedInType = "WithDimensions"`, and the setting read `WithDimensions` after the
+  apply, with no portal step.
+- **Revision 2's own token metric: both gateway calls emitted.** One call through revision 1 and
+  one through revision 2 gave a single per-minute row with 2 emissions (700 tokens: 620 prompt, 80
+  completion), because `API ID` does not name the revision. Project 4's "revision 2 emitted no
+  token metric" may have been the same folding, counted as rows rather than emissions
+  (unverified).
+- **B1 as a burst of 60 at once: fail.** 60 of 60 requests were accepted: about 21,000 tokens
+  (18,600 prompt and 2,400 completion) against 10,000 a minute, with
+  `estimate-prompt-tokens = true`. No request was refused, so the backend-reach query did not
+  apply. A simultaneous burst is not refused by `llm-token-limit` on Basic v2; the counter is
+  probably updated after concurrent requests pass its check (an inference, not measured).
