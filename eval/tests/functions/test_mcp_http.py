@@ -92,6 +92,15 @@ def test_a_refused_notification_still_raises_with_its_status():
     assert raised.value.status == 401
 
 
+@pytest.mark.parametrize("status", [401, 429])
+def test_a_refused_request_raises_from_its_status_without_reading_its_body(status):
+    server = Server()
+    server.overrides["initialize"] = httpx.Response(status, headers={"retry-after": "7"}, stream=_NeverEndingBody())
+    with pytest.raises(McpHttpError) as raised:
+        _session(server).initialize()
+    assert raised.value.status == status and raised.value.retry_after == "7"
+
+
 def test_without_a_token_no_authorization_header_is_sent():
     server = Server()
     _session(server, token=None).initialize()

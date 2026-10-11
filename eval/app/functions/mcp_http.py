@@ -117,15 +117,18 @@ class McpSession:
         return headers
 
     def _post(self, message: dict) -> httpx.Response:
-        response = self._http.post(self._url, headers=self._headers(), content=json.dumps(message))
-        if not response.is_success:
-            raise McpHttpError(response.status_code, response.headers.get("retry-after"))
+        """Send a request; a refusal raises from its status line alone, and only a success's body is
+        read. A TLS-inspecting proxy on the owner's machine held back the bodies of short replies (the
+        401s, an empty 202) so that reading them waited forever (live session 2026-10-11)."""
+        with self._http.stream("POST", self._url, headers=self._headers(), content=json.dumps(message)) as response:
+            if not response.is_success:
+                raise McpHttpError(response.status_code, response.headers.get("retry-after"))
+            response.read()
         return response
 
     def _notify(self, message: dict) -> None:
         """Send a notification and check only its status: its 202 has no body, and the body is never
-        read. A TLS-inspecting proxy on the owner's machine turned the empty 202 into a chunked reply
-        that never ends (live session 2026-10-11), so reading it would wait forever."""
+        read (see `_post`)."""
         with self._http.stream("POST", self._url, headers=self._headers(), content=json.dumps(message)) as response:
             if not response.is_success:
                 raise McpHttpError(response.status_code, response.headers.get("retry-after"))
