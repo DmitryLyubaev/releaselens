@@ -386,7 +386,7 @@ run "mcp_api" {
       !contains(keys(azapi_resource.mcp_api.body.properties), "serviceUrl") &&
       azapi_resource.mcp_api.body.properties.mcpProperties.transportType == "streamable" &&
       length(azapi_resource.mcp_api.body.properties.mcpProperties.endpoints) == 1 &&
-      azapi_resource.mcp_api.body.properties.mcpProperties.endpoints.mcp.uriTemplate == "/runtime/webhooks/mcp"
+      azapi_resource.mcp_api.body.properties.mcpProperties.endpoints.mcp.uriTemplate == "/mcp"
     )
     error_message = "The MCP API must pass Streamable HTTP through its backend (no serviceUrl) to the tool app's /runtime/webhooks/mcp."
   }
@@ -396,7 +396,7 @@ run "mcp_api" {
       azapi_resource.mcp_backend.type == "Microsoft.ApiManagement/service/backends@2025-09-01-preview" &&
       azapi_resource.mcp_backend.name == "releaselens-search-tool" &&
       azapi_resource.mcp_backend.parent_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3" &&
-      azapi_resource.mcp_backend.body.properties.url == "https://func-releaselens-tool-a1b2c3.sites.example.com" &&
+      azapi_resource.mcp_backend.body.properties.url == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks" &&
       azapi_resource.mcp_backend.body.properties.protocol == "http" &&
       !contains(keys(azapi_resource.mcp_backend.body.properties), "credentials")
     )

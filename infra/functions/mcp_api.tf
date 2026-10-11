@@ -46,15 +46,16 @@ resource "azapi_resource" "mcp_backend" {
   body = {
     properties = {
       description = "The ReleaseLens search tool Function app."
-      url         = "https://${local.tool_host}"
+      url         = "https://${local.tool_host}/runtime/webhooks"
       protocol    = "http"
     }
   }
 }
 
 # A pass-through MCP API: it takes its URL from the backend above (backendId, no serviceUrl), and
-# its one endpoint, keyed mcp, is the server's path on that backend, so a call to
-# <gateway>/releaselens-search/mcp reaches the tool app's /runtime/webhooks/mcp. Microsoft's docs
+# forwards the caller's path after the API's path, /mcp, onto the backend's URL, so a call to
+# <gateway>/releaselens-search/mcp reaches the tool app's /runtime/webhooks/mcp (seen live: the
+# endpoint's template is not appended to the backend URL; the caller's path is). Microsoft's docs
 # show serviceUrl and an array of { name, uriTemplate }: the live service refused the array, and
 # with serviceUrl it answered as its own MCP server with no tools (live session 2026-10-11). This
 # is the shape a Microsoft Q&A answer found working. No subscription key: the Entra token the
@@ -85,7 +86,7 @@ resource "azapi_resource" "mcp_api" {
         transportType = "streamable"
         endpoints = {
           mcp = {
-            uriTemplate = "/runtime/webhooks/mcp"
+            uriTemplate = "/mcp"
           }
         }
       }
