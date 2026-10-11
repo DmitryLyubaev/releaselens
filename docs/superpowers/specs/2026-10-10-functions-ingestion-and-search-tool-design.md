@@ -390,3 +390,25 @@ volume (US$0.000037 per GB-second after a 100,000 GB-second free grant, research
   (`eval/app/retrieval/search_index.py`) already declares `artefact` filterable, so §2's "not
   filterable" and §3.2's added `"filterable": true` were both wrong, and no schema change was made.
   The filter by artefact (§4.4) and search results are as designed.
+- **2026-10-11, §3.1: Event Grid's roles are on the ingestion account.** The topic's identity
+  holds Storage Queue Data Message Sender and Storage Blob Data Contributor on the ingestion
+  account, not on `ingest-events` and the dead-letter container. Event Grid's check at
+  subscription creation refused the queue-scoped sender role for 34 minutes, so not propagation,
+  and then the container-scoped dead-letter role, and accepted both at account scope (live
+  session). The cost: the topic's identity can also send to `ingest-events-poison` and read and
+  write `artefacts-in`. That account holds only ingestion data.
+- **2026-10-11, §3.3: one Flex Consumption plan per app.** Flex allows one site per plan: the
+  service refused the second app on a shared plan. Each app has its own `FC1` plan; a plan costs
+  nothing, and Flex bills executions.
+- **2026-10-11, §3.3 and §5.2: the MCP pass-through shape.** The MCP API has no service URL. It
+  names a gateway backend (`Microsoft.ApiManagement/service/backends`) through `backendId`, whose
+  URL is the tool app's `/runtime/webhooks`, and its `mcpProperties.endpoints` is an object keyed
+  by name, `{ mcp = { uriTemplate = "/mcp" } }`. The live service refused the array of
+  `{ name, uriTemplate }` that Microsoft's docs show, and with a service URL the gateway answered
+  as its own MCP server, with no tools. The gateway appends the caller's path after the API's path,
+  not the endpoint's template, to the backend's URL, so the backend's URL ends at
+  `/runtime/webhooks` and a call to `/releaselens-search/mcp` reaches `/runtime/webhooks/mcp`.
+- **2026-10-11, §3.4: the harness's MCP client reads the status first.** It raises a refusal from
+  its status line and reads only a success's body, and checks the `initialized` notification's
+  status without reading its body. On the owner's Windows machine, a TLS-inspecting antivirus held
+  back the bodies of short replies (401s, the empty 202), so reading them never ended.
