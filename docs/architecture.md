@@ -399,8 +399,9 @@ identity: one turns an artefact dropped into Storage into searchable chunks, and
 read-only search tool behind the AI gateway. The stack is
 [`infra/functions`](../infra/functions/README.md); the long-lived parts are in bootstrap; the
 design is the [functions spec](superpowers/specs/2026-10-10-functions-ingestion-and-search-tool-design.md),
-and the live session is the [functions runbook](runbook-functions.md). **Nothing on this path has
-been applied or measured yet.**
+and the live session is the [functions runbook](runbook-functions.md). **Applied and measured
+once, on 2026-10-11:** 8 of 8 checks passed ([report](functions-report.md)), and every per-session
+stack was destroyed afterwards.
 
 ```
 Ingestion (keyless end to end)
@@ -426,6 +427,7 @@ The search tool (only through the gateway)
                    4 authentication-managed-identity: the gateway identity's token for
                      releaselens-search-tool, replacing the caller's
                    no policy reads a body, so Streamable HTTP passes through
+                   to the API's backend, <tool host>/runtime/webhooks, plus the caller's path, /mcp
              ──► func-releaselens-tool-<suffix>/runtime/webhooks/mcp
                    App Service authentication: only the gateway identity's token ──► 401 if not
                    search_corpus(query, top = 5, at most 10): embed the query, then hybrid
@@ -442,11 +444,12 @@ What sits where:
   seven days.
 - **The search stack (per session):** the index's two roles for the identities, Contributor for
   ingest and Reader for the tool.
-- **The functions stack (per session):** `rg-releaselens-functions`, the Flex plan and the two
-  apps (created with azapi, because azurerm's Flex resource injects a storage connection string),
-  App Service authentication on every route of both, basic publishing credentials off, and the
-  tool's MCP API, policy, named values and diagnostic on the gateway's service. It creates no
-  role assignment and no key.
+- **The functions stack (per session):** `rg-releaselens-functions`, a Flex plan for each app
+  (Flex allows one site per plan) and the two apps (created with azapi, because azurerm's Flex
+  resource injects a storage connection string), App Service authentication on every route of
+  both, basic publishing credentials off, and the tool's MCP API, its backend (the tool app; the
+  API has no service URL), policy, named values and diagnostic on the gateway's service. It
+  creates no role assignment and no key.
 - **The code:** `src/ReleaseLens.Functions.Ingest`, `src/ReleaseLens.Functions.Tool` and
   `src/ReleaseLens.Functions.Common` (the embeddings and search clients, and the key rule); the
   Worker's `export-artefacts` writes real artefacts as the ingest app's input.

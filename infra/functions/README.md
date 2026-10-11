@@ -9,7 +9,8 @@ CI never applies it. The design and its reasons are in the
 [functions spec](../../docs/superpowers/specs/2026-10-10-functions-ingestion-and-search-tool-design.md),
 §3.3, §5.2, §8 and §9.
 
-**Not yet applied.** This page describes what the code configures.
+**Applied in one live session, on 2026-10-11, and destroyed at its end.** This page describes what
+the code configures; what the session settled is under [Live checks](#live-checks).
 
 **Nothing here bills while idle:** Flex Consumption bills executions and the memory they use,
 and no always-ready instance is configured. The gateway the tool is published on does bill by
@@ -26,7 +27,8 @@ the hour, so the session still ends with every stack destroyed.
 | Basic publishing credentials (azapi) | `scm` and `ftp` on each app | `allow = false`: no username and password for the SCM (Kudu) or FTP endpoints |
 | Authentication (azapi) | `authsettingsV2` on each app | every route requires an Entra token, no excluded path: 401 without one; the tenant's v2 issuer; audiences the search tool's identifier URI and client ID; allowed application the gateway identity |
 | Named values (azapi) | `tool-tenant-id`, `tool-gateway-app-client-id`, `tool-app-audience`, `tool-gateway-identity-client-id` | on the gateway's service; what the policy refers to as `{{name}}`; none secret |
-| MCP API (azapi) | `releaselens-search` | on the gateway's service, `2025-09-01-preview`, type `mcp` (and the create-time `apiType` `mcp`), path `releaselens-search`, HTTPS only, `subscriptionRequired = false`; Streamable HTTP passed through to the tool app's `/runtime/webhooks/mcp` |
+| MCP backend (azapi) | `releaselens-search-tool` | on the gateway's service: the tool app, URL `https://<tool host>/runtime/webhooks`, protocol `http`, no credentials (the policy swaps the caller's token for the gateway identity's) |
+| MCP API (azapi) | `releaselens-search` | on the gateway's service, `2025-09-01-preview`, type `mcp` (and the create-time `apiType` `mcp`), path `releaselens-search`, HTTPS only, `subscriptionRequired = false`; no service URL, but `backendId` the backend above, and one endpoint, `{ mcp = { uriTemplate = "/mcp" } }`; Streamable HTTP passed through to the tool app's `/runtime/webhooks/mcp` |
 | Policy (azapi) | [`policies/mcp-api.xml`](policies/mcp-api.xml) | loaded with `file()`, format `xml` |
 | Diagnostic (azapi) | `applicationinsights` on the MCP API | through the gateway's `appi-releaselens` logger; every request sampled, no payload in front or behind, no client IP; metrics on, so `emit-metric` publishes |
 
@@ -124,32 +126,33 @@ with the service, and this destroy finds them gone.
 
 ## Live checks
 
-The mocked tests cannot show these:
-- **The MCP path split.** The service URL ends at `/runtime/webhooks` and the API's one endpoint
-  is `/mcp`, the shape the research found for a pass-through, so a call to
-  `https://<gateway host>/releaselens-search/mcp` should reach the tool app's
-  `/runtime/webhooks/mcp`. Microsoft shows no split for a Functions host. Its "expose an existing
-  MCP server" walkthrough takes the server's whole endpoint as the base URL, so the gateway may
-  forward to `/runtime/webhooks` alone and get a 404. If `initialize` through the gateway gets a
-  404, the runbook's [step 5a](../../docs/runbook-functions.md#5a-the-tool-through-the-gateway)
-  has the edits, in order: shape A (service URL `/runtime/webhooks/mcp`, endpoint `/mcp`), then
-  shape B (service URL the app's root, endpoint `/runtime/webhooks/mcp`), each with its tftest
-  lines, the tests, the commit, a plan that only updates the MCP API in place, and the apply.
-  Neither changes the `tool_mcp_url` output, the gateway-side URL callers use. Shape A keeps the
-  gateway answering there; shape B may move the gateway side to
-  `/releaselens-search/runtime/webhooks/mcp`, and the runbook probes that path before anything
-  else changes. The default stays until the live session shows which split is right.
-- **App Service authentication on Flex accepts the gateway identity's token**, with the v2
-  issuer and the client ID as audience, and refuses a call with no token or with a token from
-  anyone else (T3).
-- **The MCP API takes this diagnostic**: `metrics` on and `largeLanguageModel.logs` off on an
-  API of type `mcp`, and `Tool Calls` then appears in `customMetrics`.
-- **The site body.** The app starts with identity-based host storage on an account with shared
-  keys off.
-- **Basic authentication off does not block the deploy**: the owner's Entra sign-in deploys both
-  packages with SCM and FTP basic credentials disallowed.
-- **The policy round-trips.** API Management may return the policy's XML normalised, so azapi
-  shows an in-place update of it on later plans, writing the same file again. Harmless.
+The mocked tests cannot show these. The live session of 2026-10-11 settled all but the last
+([functions runbook](../../docs/runbook-functions.md#findings), the findings table):
+- **The MCP path: settled, not as first written.** With a service URL on the API, the gateway
+  answered as its own MCP server ("Azure API Management", no tools) instead of passing through.
+  What works is the shape in `mcp_api.tf`: a gateway backend whose URL is
+  `https://<tool host>/runtime/webhooks`, the API with `backendId` and no service URL, and
+  `mcpProperties.endpoints` as an object keyed by name, `{ mcp = { uriTemplate = "/mcp" } }`: the
+  service refused the array of `{ name, uriTemplate }` that Microsoft's docs show, and azapi's
+  schema validation is off for that reason. The gateway appends the caller's path after the API's
+  path, not the endpoint's template, to the backend's URL, so a call to
+  `https://<gateway host>/releaselens-search/mcp` reaches the tool app's `/runtime/webhooks/mcp`.
+- **One Flex plan per app: settled.** The service refused a second app on a shared Flex plan
+  ("one site per Flex Consumption serverfarm"), hence the two plans.
+- **App Service authentication on Flex accepts the gateway identity's token: settled.** It
+  accepted the v2 token with the client ID as audience, and refused a call with no token and one
+  with the owner's gateway token (T3).
+- **The MCP API takes this diagnostic: settled.** The `largeLanguageModel` block was accepted on
+  an API of type `mcp`, and `Tool Calls` appears in `customMetrics` with its `Caller` dimension.
+- **The site body: settled.** Both apps started with identity-based host storage on accounts with
+  shared keys off, and each indexed its one function.
+- **Basic authentication off does not block the deploy: settled.** The owner's Entra sign-in
+  deployed both packages with `az functionapp deployment source config-zip`.
+- **A perpetual in-place update of both apps: seen, harmless.** The service hands `serverFarmId`
+  back with `serverfarms` in lower case, so every later plan shows both apps updated in place.
+- **The policy round-trips: still open.** API Management may return the policy's XML normalised,
+  so azapi would show an in-place update of it on later plans, writing the same file again. The
+  session did not record whether it does.
 
 ## Tests
 
