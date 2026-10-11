@@ -20,7 +20,7 @@ the hour, so the session still ends with every stack destroyed.
 | Resource | Name | Notes |
 |---|---|---|
 | Resource group | `rg-releaselens-functions` | its own group: in `rg-releaselens`, the nightly destroy's empty-group check would find the apps and fail |
-| Plan | `asp-releaselens-functions` | Flex Consumption (`FC1`), Linux, `australiaeast` |
+| Plans | `asp-releaselens-ingest`, `asp-releaselens-tool` | Flex Consumption (`FC1`), Linux, `australiaeast`; one per app, because Flex allows one site per plan |
 | Ingest app (azapi) | `func-releaselens-ingest-<suffix>` | `Microsoft.Web/sites`, `functionapp,linux`; .NET 10 isolated; 2,048 MB instances, at most 10, none always ready; the ingest identity, user-assigned; deploys from `deploy-ingest` in its own host account |
 | Tool app (azapi) | `func-releaselens-tool-<suffix>` | the same, with the tool identity and `deploy-tool` in its own host account |
 | Basic publishing credentials (azapi) | `scm` and `ftp` on each app | `allow = false`: no username and password for the SCM (Kudu) or FTP endpoints |
