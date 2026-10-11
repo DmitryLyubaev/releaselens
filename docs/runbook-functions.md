@@ -746,12 +746,12 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
         `infra/functions/mcp_api.tf`, in `azapi_resource.mcp_api`, change
         `serviceUrl           = "https://${local.tool_host}/runtime/webhooks"` to
         `serviceUrl           = "https://${local.tool_host}/runtime/webhooks/mcp"`. Leave the
-        endpoint (`name = "message"`, `uriTemplate = "/mcp"`) as it is: it is the path callers use
+        endpoint (`message = { uriTemplate = "/mcp" }`) as it is: it is the path callers use
         after the API's path, as in the walkthrough's client URL `<path>/mcp`.
-     2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_api"`'s third assert, line
-        383, change the end of
-        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks"`
-        to `.../runtime/webhooks/mcp"`. Line 387 (`uriTemplate == "/mcp"`) stays.
+     2. In `infra/functions/tests/functions.tftest.hcl`, in `run "mcp_api"`'s third assert, change
+        the end of the `serviceUrl` line,
+        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks"`,
+        to `.../runtime/webhooks/mcp"`. The `uriTemplate == "/mcp"` line stays.
      3. Run the stack's tests in WSL, from `infra/functions`, with their own data directory, as in
         step 4a's fallback:
 
@@ -784,9 +784,9 @@ $bad.Status; $bad.Reply.result.isError; $bad.Reply.result.content.text; $bad.Rep
      7. **Shape B, if Shape A also gets a 404: the service URL is the app's root and the endpoint
         carries the whole path.** In `mcp_api.tf`, set
         `serviceUrl           = "https://${local.tool_host}"` and
-        `uriTemplate = "/runtime/webhooks/mcp"`. In the tftest, line 383 becomes
-        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com" &&` and line 387
-        becomes `uriTemplate == "/runtime/webhooks/mcp"`. Then steps 3 to 6 again, committing with
+        `uriTemplate = "/runtime/webhooks/mcp"`. In the tftest, the `serviceUrl` line becomes
+        `serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com" &&` and the
+        `uriTemplate` line becomes `...endpoints.message.uriTemplate == "/runtime/webhooks/mcp"`. Then steps 3 to 6 again, committing with
         `git commit -m "fix(infra): the MCP API's service URL is the tool app's root, and its
         endpoint the whole MCP path"`. If the gateway also takes the endpoint's template as the
         callers' path, this shape moves the gateway side to `/releaselens-search/runtime/webhooks/mcp`

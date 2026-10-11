@@ -385,8 +385,7 @@ run "mcp_api" {
       azapi_resource.mcp_api.body.properties.serviceUrl == "https://func-releaselens-tool-a1b2c3.sites.example.com/runtime/webhooks" &&
       azapi_resource.mcp_api.body.properties.mcpProperties.transportType == "streamable" &&
       length(azapi_resource.mcp_api.body.properties.mcpProperties.endpoints) == 1 &&
-      azapi_resource.mcp_api.body.properties.mcpProperties.endpoints[0].name == "message" &&
-      azapi_resource.mcp_api.body.properties.mcpProperties.endpoints[0].uriTemplate == "/mcp"
+      azapi_resource.mcp_api.body.properties.mcpProperties.endpoints.message.uriTemplate == "/mcp"
     )
     error_message = "The MCP API must pass Streamable HTTP through to the tool app's /runtime/webhooks/mcp."
   }
