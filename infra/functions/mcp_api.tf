@@ -36,10 +36,28 @@ resource "azapi_resource" "named_value" {
   }
 }
 
-# The path split is the research notes' shape (§4), unverified live: the service URL ends at
-# /runtime/webhooks and the one endpoint's template is /mcp, so a call reaches the tool app's
-# /runtime/webhooks/mcp. If initialize through the gateway gets a 404, the runbook's step 5a has
-# the two other shapes to try, with their test edits. No subscription key: the Entra token the
+# The tool app as a gateway backend: the MCP API forwards to it. No credentials here: the policy
+# swaps the caller's token for the gateway identity's.
+resource "azapi_resource" "mcp_backend" {
+  type      = "Microsoft.ApiManagement/service/backends@2025-09-01-preview"
+  name      = "releaselens-search-tool"
+  parent_id = local.gateway.api_management_id
+
+  body = {
+    properties = {
+      description = "The ReleaseLens search tool Function app."
+      url         = "https://${local.tool_host}"
+      protocol    = "http"
+    }
+  }
+}
+
+# A pass-through MCP API: it takes its URL from the backend above (backendId, no serviceUrl), and
+# its one endpoint, keyed mcp, is the server's path on that backend, so a call to
+# <gateway>/releaselens-search/mcp reaches the tool app's /runtime/webhooks/mcp. Microsoft's docs
+# show serviceUrl and an array of { name, uriTemplate }: the live service refused the array, and
+# with serviceUrl it answered as its own MCP server with no tools (live session 2026-10-11). This
+# is the shape a Microsoft Q&A answer found working. No subscription key: the Entra token the
 # policy validates is the only credential, and no product or subscription exists.
 resource "azapi_resource" "mcp_api" {
   type      = "Microsoft.ApiManagement/service/apis@2025-09-01-preview"
@@ -62,15 +80,12 @@ resource "azapi_resource" "mcp_api" {
       path                 = local.mcp_api_path
       protocols            = ["https"]
       subscriptionRequired = false
-      serviceUrl           = "https://${local.tool_host}/runtime/webhooks"
-      # endpoints is an object keyed by the endpoint's name. Microsoft's docs show an array of
-      # { name, uriTemplate }, but the live service refused that (it deserialises a dictionary,
-      # live session 2026-10-11).
+      backendId            = azapi_resource.mcp_backend.name
       mcpProperties = {
         transportType = "streamable"
         endpoints = {
-          message = {
-            uriTemplate = "/mcp"
+          mcp = {
+            uriTemplate = "/runtime/webhooks/mcp"
           }
         }
       }

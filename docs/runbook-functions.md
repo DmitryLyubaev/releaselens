@@ -544,9 +544,9 @@ terraform show -no-color tfplan | grep -E 'AzureWebJobsStorage|requireAuthentica
 terraform show -no-color tfplan | grep -A1 'APPLICATIONINSIGHTS_CONNECTION_STRING'
 ```
 
-Read the whole plan. It must be `Plan: 19 to add, 0 to change, 0 to destroy.`: the resource
+Read the whole plan. It must be `Plan: 20 to add, 0 to change, 0 to destroy.`: the resource
 group, the suffix, the two Flex plans (one per app: Flex allows one site per plan), the two apps, two authentication updates, four basic-publishing
-updates, four named values, the MCP API, its policy and its diagnostic. Terraform prints azapi
+updates, four named values, the MCP backend, the MCP API, its policy and its diagnostic. Terraform prints azapi
 body keys unquoted (`+ allow = false`), and the greps must show:
 - the three `AzureWebJobsStorage__` settings (`accountName`, `clientId`, `credential`) on each
   app, and no setting named `AzureWebJobsStorage` alone, which would be a connection string;
@@ -591,7 +591,7 @@ terraform apply tfplan
      diagnostic without the largeLanguageModel block the service refused"`.
   5. Back in the live window (`TF_DATA_DIR=$HOME/tfdata/functions-live`), plan again with
      `terraform plan -out=tfplan`. The failed apply created everything before the diagnostic, so
-     this plan will **not** show `Plan: 19 to add`: it adds only what the failed apply left undone.
+     this plan will **not** show `Plan: 20 to add`: it adds only what the failed apply left undone.
      Read the whole plan and check that it adds only the diagnostic (or the resource the error
      named, and anything that depends on it), with nothing changed or destroyed. This prints the
      `Plan:` line and one `# ... will be created` (or `updated`, `destroyed`) line per resource:
