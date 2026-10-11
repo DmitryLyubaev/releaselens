@@ -1175,13 +1175,14 @@ Then clean up this machine:
 ```powershell
 Set-Location (git rev-parse --show-toplevel)     # the local scope is keyed by this project's path
 claude mcp remove --scope local releaselens-search
-Remove-Item -Recurse -Force "$HOME\.releaselens"
 Remove-Item Env:GW_TENANT, Env:GW_DIRECT_URL, Env:GW_BASE, Env:GW_SCOPE, Env:APPI_ID, Env:GATEWAY_CALLER_LABELS, Env:FN_SEARCH, Env:FN_MCP_URL, Env:FN_APP_URL, Env:FN_BLOB, Env:FN_QUEUE
 $ingest = $tool = $null
 ```
 
 The server must be removed: with the gateway gone, every Claude Code session in this repository
-would otherwise fail to connect to it at start.
+would otherwise fail to connect to it at start. The helper folder `~\.releaselens` holds only the
+header script and the gateway's scope, which is not a secret: the owner deletes it (to the Recycle
+Bin) when no further session is planned.
 
 ### 8c. Write it up
 
