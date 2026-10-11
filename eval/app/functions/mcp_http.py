@@ -122,6 +122,14 @@ class McpSession:
             raise McpHttpError(response.status_code, response.headers.get("retry-after"))
         return response
 
+    def _notify(self, message: dict) -> None:
+        """Send a notification and check only its status: its 202 has no body, and the body is never
+        read. A TLS-inspecting proxy on the owner's machine turned the empty 202 into a chunked reply
+        that never ends (live session 2026-10-11), so reading it would wait forever."""
+        with self._http.stream("POST", self._url, headers=self._headers(), content=json.dumps(message)) as response:
+            if not response.is_success:
+                raise McpHttpError(response.status_code, response.headers.get("retry-after"))
+
     def _request(self, method: str, params: dict | None = None) -> tuple[dict, httpx.Response]:
         request_id = next(self._ids)
         message: dict = {"jsonrpc": "2.0", "id": request_id, "method": method}
@@ -164,7 +172,7 @@ class McpSession:
             self._session_id = response.headers.get("mcp-session-id") or self._session_id
             version = result.get("protocolVersion")
             self._protocol_version = version if isinstance(version, str) else PROTOCOL_VERSION
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._notify({"jsonrpc": "2.0", "method": "notifications/initialized"})
         return result
 
     def list_tools(self) -> list[str]:

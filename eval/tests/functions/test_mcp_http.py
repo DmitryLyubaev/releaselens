@@ -67,6 +67,31 @@ def test_initialize_sends_the_bearer_header_and_both_accept_types_then_the_initi
     assert str(first.url) == URL
 
 
+class _NeverEndingBody(httpx.SyncByteStream):
+    """A body that must not be read: a TLS-inspecting proxy turned an empty 202 into a chunked
+    reply that never ends (live session 2026-10-11)."""
+
+    def __iter__(self):
+        raise AssertionError("the notification's body was read")
+
+
+def test_initialize_does_not_read_the_body_of_the_notifications_202():
+    server = Server()
+    server.overrides["notifications/initialized"] = httpx.Response(
+        202, headers={"transfer-encoding": "chunked"}, stream=_NeverEndingBody())
+    info = _session(server).initialize()
+    assert info["serverInfo"] == {"name": "tool"}
+    assert len(server.requests) == 2
+
+
+def test_a_refused_notification_still_raises_with_its_status():
+    server = Server()
+    server.overrides["notifications/initialized"] = httpx.Response(401, stream=_NeverEndingBody())
+    with pytest.raises(McpHttpError) as raised:
+        _session(server).initialize()
+    assert raised.value.status == 401
+
+
 def test_without_a_token_no_authorization_header_is_sent():
     server = Server()
     _session(server, token=None).initialize()
