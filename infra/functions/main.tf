@@ -17,10 +17,13 @@ resource "random_string" "suffix" {
   special = false
 }
 
-# One Flex Consumption plan for both apps. azurerm's plan resource is safe here: only its
-# function app resource injects the storage connection string.
+# One Flex Consumption plan per app: Flex allows only one site per plan (the service refused a
+# second, live session 2026-10-11). A plan costs nothing; Flex bills executions. azurerm's plan
+# resource is safe here: only its function app resource injects the storage connection string.
 resource "azurerm_service_plan" "flex" {
-  name                = "asp-releaselens-functions"
+  for_each = local.apps
+
+  name                = "asp-releaselens-${each.key}"
   resource_group_name = azurerm_resource_group.functions.name
   location            = azurerm_resource_group.functions.location
   os_type             = "Linux"
@@ -112,7 +115,7 @@ resource "azapi_resource" "app" {
   body = {
     kind = "functionapp,linux"
     properties = {
-      serverFarmId = azurerm_service_plan.flex.id
+      serverFarmId = azurerm_service_plan.flex[each.key].id
       httpsOnly    = true
       siteConfig = {
         minTlsVersion = "1.2"
@@ -150,6 +153,11 @@ resource "azapi_resource" "app" {
 
   # The tool app's host, for the MCP API's backend and the outputs, as the service reports it.
   response_export_values = ["properties.defaultHostName"]
+
+  # A site cannot move to another Flex plan in place: a new plan means a new site.
+  lifecycle {
+    replace_triggered_by = [azurerm_service_plan.flex[each.key].id]
+  }
 }
 
 # App Service authentication on every route of both apps (spec §3.3): a call without a token

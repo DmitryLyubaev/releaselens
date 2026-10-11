@@ -129,8 +129,10 @@ run "group_and_plan" {
   }
 
   assert {
-    condition     = azurerm_service_plan.flex.sku_name == "FC1" && azurerm_service_plan.flex.os_type == "Linux" && azurerm_service_plan.flex.resource_group_name == "rg-releaselens-functions" && azurerm_service_plan.flex.location == "australiaeast"
-    error_message = "The plan must be Flex Consumption (FC1), Linux, in rg-releaselens-functions, in australiaeast."
+    condition = length(azurerm_service_plan.flex) == 2 && azurerm_service_plan.flex["ingest"].name == "asp-releaselens-ingest" && azurerm_service_plan.flex["tool"].name == "asp-releaselens-tool" && alltrue([for plan in azurerm_service_plan.flex :
+      plan.sku_name == "FC1" && plan.os_type == "Linux" && plan.resource_group_name == "rg-releaselens-functions" && plan.location == "australiaeast"
+    ])
+    error_message = "There must be one plan per app (Flex allows one site per plan), each Flex Consumption (FC1), Linux, in rg-releaselens-functions, in australiaeast."
   }
 }
 
@@ -143,15 +145,15 @@ run "apps" {
   }
 
   assert {
-    condition = alltrue([for app in azapi_resource.app :
+    condition = alltrue([for key, app in azapi_resource.app :
       app.type == "Microsoft.Web/sites@2024-11-01" &&
       app.parent_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-functions" &&
       app.location == "australiaeast" &&
       app.body.kind == "functionapp,linux" &&
-      app.body.properties.serverFarmId == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-functions/providers/Microsoft.Web/serverFarms/asp-releaselens-functions" &&
+      app.body.properties.serverFarmId == azurerm_service_plan.flex[key].id &&
       app.body.properties.httpsOnly == true
     ])
-    error_message = "Each app must be a Linux function app (Microsoft.Web/sites), on the Flex plan, in the group, HTTPS only."
+    error_message = "Each app must be a Linux function app (Microsoft.Web/sites), on its own Flex plan, in the group, HTTPS only."
   }
 
   assert {
