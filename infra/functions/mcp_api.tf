@@ -46,6 +46,10 @@ resource "azapi_resource" "mcp_api" {
   name      = "releaselens-search"
   parent_id = local.gateway.api_management_id
 
+  # azapi checks the body against the published schema, which says endpoints is an array; the
+  # live service wants the object below. The tests still pin every property.
+  schema_validation_enabled = false
+
   body = {
     properties = {
       # type is the API's kind; apiType is the write-only selector the service reads on create.
@@ -59,14 +63,16 @@ resource "azapi_resource" "mcp_api" {
       protocols            = ["https"]
       subscriptionRequired = false
       serviceUrl           = "https://${local.tool_host}/runtime/webhooks"
+      # endpoints is an object keyed by the endpoint's name. Microsoft's docs show an array of
+      # { name, uriTemplate }, but the live service refused that (it deserialises a dictionary,
+      # live session 2026-10-11).
       mcpProperties = {
         transportType = "streamable"
-        endpoints = [
-          {
-            name        = "message"
+        endpoints = {
+          message = {
             uriTemplate = "/mcp"
-          },
-        ]
+          }
+        }
       }
     }
   }
