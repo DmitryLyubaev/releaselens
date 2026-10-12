@@ -21,9 +21,9 @@ def token(**overrides):
     return f"e30.{value}.signature"
 
 
-def adapter(http, bearer=None):
+def adapter(http, bearer=None, **kwargs):
     return AzureReleaseTransport(http, lambda scope: bearer or token(), TENANT, SUB, CLIENT, OID, RESOURCE,
-                                 "https://mock-webapp.azurewebsites.net", "https://mock-webapp-staging.azurewebsites.net")
+                                 "https://mock-webapp.azurewebsites.net", "https://mock-webapp-staging.azurewebsites.net", **kwargs)
 
 
 def test_workflow_arm_adapter_keeps_credentials_in_memory_and_uses_regular_swap():
@@ -193,3 +193,65 @@ def test_configuration_accepts_platform_empty_custom_provider_forms(actual_map):
         if actual_map == "absent": del providers["customOpenIdConnectProviders"]
         else: providers["customOpenIdConnectProviders"] = actual_map
     assert read_configuration(intended, responses) == intended
+
+
+@pytest.fixture
+def deployment_timer():
+    class Timer:
+        elapsed = 0
+        def clock(self): return self.elapsed
+        def sleep(self, seconds): self.elapsed += seconds
+    return Timer()
+
+
+def test_scm_pending_deployment_202_then_success_keeps_original_location(deployment_timer):
+    from .test_http_client import Unreadable
+    body = Unreadable()
+    requests = []
+    location = "https://mock-webapp.scm.azurewebsites.net/api/deployments/latest?deployer=ZipDeploy&time=mock"
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1: return httpx.Response(202, headers={"Location": location})
+        assert str(request.url) == location
+        if len(requests) == 2:
+            return httpx.Response(202, headers={"Location": "https://other.example.test/private"}, stream=body)
+        return httpx.Response(200, json={"status": 4})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        adapter(http, clock=deployment_timer.clock, sleep=deployment_timer.sleep).deploy("main", b"mock zip")
+    assert [request.method for request in requests] == ["POST", "GET", "GET"]
+    assert deployment_timer.elapsed == 10
+    assert body.reads == 0
+
+
+def test_scm_pending_deployment_202_stops_at_existing_poll_bound(deployment_timer):
+    from .test_http_client import Unreadable
+    body = Unreadable()
+    requests = []
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(202, headers={"Location": "/api/deployments/latest"})
+        return httpx.Response(202, stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):
+            adapter(http, clock=deployment_timer.clock, sleep=deployment_timer.sleep).deploy("main", b"mock zip")
+    assert len(requests) == 31
+    assert deployment_timer.elapsed == 300
+    assert body.reads == 0
+
+
+def test_scm_pending_deployment_then_403_stops_without_reading_body(deployment_timer):
+    from .test_http_client import Unreadable
+    body = Unreadable()
+    requests = []
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(202, headers={"Location": "/api/deployments/latest"})
+        return httpx.Response(202 if len(requests) == 2 else 403, stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):
+            adapter(http, clock=deployment_timer.clock, sleep=deployment_timer.sleep).deploy("main", b"mock zip")
+    assert [request.method for request in requests] == ["POST", "GET", "GET"]
+    assert deployment_timer.elapsed == 10
+    assert body.reads == 0

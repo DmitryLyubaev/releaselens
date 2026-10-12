@@ -113,9 +113,10 @@ class AzureReleaseTransport:
         started = self._clock()
         for _ in range(30):
             if self._clock() - started >= 300: break
-            state, _ = self._read("GET", location)
-            if state.get("status") == 4: return
-            if state.get("status") not in {0, 1, 2}: raise TransportRefused("release_refused")
+            # Kudu can report pending deployment with HTTP 202 and an unread body.
+            state, _ = self._read("GET", location, allow_async=True)
+            if state is not None and state.get("status") == 4: return
+            if state is not None and state.get("status") not in {0, 1, 2}: raise TransportRefused("release_refused")
             self._sleep(10)
         raise TransportRefused("release_refused")
 
