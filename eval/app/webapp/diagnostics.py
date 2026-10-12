@@ -3,6 +3,7 @@ import re
 from urllib.parse import urlsplit
 import httpx
 from .private_az import TransportRefused
+from .release_transport import owned_deployment_status_url
 
 PHASES = {'source_ci', 'bundle_validation', 'credential_setup', 'arm_token', 'frontend_token', 'configuration_before', 'main_baseline', 'scm_deploy', 'readiness', 'package_digest', 'configuration_after', 'access_probes', 'receipt', 'promotion', 'diagnostic_health', 'diagnostic_scm', 'complete'}
 
@@ -15,6 +16,7 @@ class ReleaseDiagnostics:
         self.hosts = {}
         self.deployments = 0
         self.swaps = 0
+        self.scm_polling = None
 
     def observe_request(self, request):
         parsed = urlsplit(str(request.url))
@@ -37,6 +39,9 @@ class ReleaseDiagnostics:
             status = response.status_code
             if type(status) is not int or not 100 <= status <= 599:
                 return
+            if operation == 'zipdeploy' and status == 202:
+                _, reason = owned_deployment_status_url(parsed.scheme + '://' + parsed.netloc, response.headers.get('location', ''))
+                self.scm_polling = dict(source='owned_latest' if reason else 'location', fallback_reason=reason)
             self.responses.append(dict(operation=operation, slot=slot or 'arm', status=status))
             self.responses = self.responses[-40:]
         except Exception:
@@ -64,4 +69,4 @@ class ReleaseDiagnostics:
                 current = getattr(current, '__context__', None)
                 if current is None: break
         if self.phase not in PHASES or outcome not in {'collected', 'refused'}: raise ValueError()
-        return self.binding | dict(outcome=outcome, phase=self.phase, error_category=category, refusal_code=refusal, aad_error_code=aad, responses=self.responses, deployment_calls=self.deployments, swap_calls=self.swaps, model_calls=0)
+        return self.binding | dict(outcome=outcome, phase=self.phase, error_category=category, refusal_code=refusal, aad_error_code=aad, responses=self.responses, deployment_calls=self.deployments, swap_calls=self.swaps, model_calls=0, scm_polling=self.scm_polling)
