@@ -5,10 +5,10 @@ import json
 from contextlib import contextmanager
 from html.parser import HTMLParser
 from http.cookies import SimpleCookie
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 import httpx
 
-from .contracts import AskObservation, Health, SessionSnapshot, VERSION
+from .contracts import AskObservation, Health, SessionSnapshot, VERSION, Probe
 from .private_az import TransportRefused
 
 BODY_LIMIT = 1024 * 1024
@@ -134,3 +134,11 @@ class WebAppClient:
 
     def refresh(self) -> int:
         with self._request("GET", "/.auth/refresh") as response: return response.status_code
+
+    def probe(self, path: str, bearer: str | None, *, forged=None) -> Probe:
+        if path not in {'/', '/health', '/ask', '/session'}: raise TransportRefused('invalid_response')
+        with self._request('POST' if path=='/ask' else 'GET',path,bearer,headers=forged) as response:
+            location=urlsplit(urljoin(self._origin+'/',response.headers.get('Location','')))
+            own=urlsplit(self._origin)
+            valid=response.status_code==302 and location.scheme==own.scheme and location.netloc==own.netloc and location.path=='/.auth/login/aad' and not location.username and not location.password and not location.fragment
+            return Probe(response.status_code,valid)

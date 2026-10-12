@@ -67,6 +67,12 @@ class AskObservation:
 
 
 @dataclass(frozen=True)
+class Probe:
+    status: int
+    signin_redirect: bool
+
+
+@dataclass(frozen=True)
 class Observation:
     check: str
     statuses: Mapping[str, int | None] = field(default_factory=dict)

@@ -20,7 +20,7 @@ import pytest
 GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 # A name ending in one of the four domains, with the characters a template or a shell variable can
 # add in front (`<account>`, `${...}`), and a bare leading dot for a suffix written on its own.
-HOSTNAME = re.compile(r"[A-Za-z0-9<>{}$._-]*\.(?:azure\.com|azure-api\.net|windows\.net|azure\.net)(?![A-Za-z0-9-])",
+HOSTNAME = re.compile(r"[A-Za-z0-9<>{}$._-]*\.(?:azure\.com|azure-api\.net|windows\.net|azure\.net|azurewebsites\.net)(?![A-Za-z0-9-])",
                       re.IGNORECASE)
 
 # Public endpoints that are the same for everyone: token audiences and the Resource Manager. They
@@ -70,6 +70,8 @@ def identifiers_in(text: str) -> list[str]:
     """The kinds of identifier in `text` that are not placeholders, each with the text found."""
     found = [f"GUID {guid}" for guid in GUID.findall(text) if not _is_placeholder_guid(guid)]
     found += [f"hostname {host}" for host in HOSTNAME.findall(text) if not _is_allowed_host(host)]
+    examples={'author@example.invalid','owner@example.com'}
+    if any(email.casefold() not in examples for email in re.findall(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+',text)): found.append('email')
     return found
 
 
@@ -109,6 +111,9 @@ def test_no_public_document_holds_an_identifier(repo_root: Path) -> None:
     "<code>apim-releaselens-x7k2p9.azure-api.net</code>",
     "<apim-releaselens-x7k2p9.azure-api.net>",
     "{{apim-releaselens-x7k2p9.azure-api.net}}",
+    "private-app.azurewebsites.net",
+    "private-app.scm.azurewebsites.net",
+    "owner-private@example.test",
 ])
 def test_the_scan_catches_a_real_looking_identifier(text: str) -> None:
     assert identifiers_in(text), text

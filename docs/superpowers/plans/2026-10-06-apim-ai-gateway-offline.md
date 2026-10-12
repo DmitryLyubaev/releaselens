@@ -66,7 +66,7 @@ measurement harness, the CI check workflow, the tests, and the runbook for the l
   checks. Never `plan` or `apply` against Azure in a task.
 - **Commits:**
   - repo-local identity, never `--author`, never `git config --global`
-  - every message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+  - every message ends with `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`
   - branch `feat/apim-ai-gateway` (the spec's two commits are already on it)
   - nothing is pushed without the owner's yes
 

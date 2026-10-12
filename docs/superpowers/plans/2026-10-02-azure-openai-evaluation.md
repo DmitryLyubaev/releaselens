@@ -93,9 +93,9 @@ key. To get there, the harness must change as spec §7 requires, and F7 and F8 m
   git-ignored `.env`. The issued ReleaseLens API key is passed to the harness by environment
   variable, never written down. Nothing prints any of them.
 - **Commits:**
-  - the repo-local identity `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`
+  - the repo-local identity `Dmitry Lyubaev <owner@example.com>`
   - never `git config --global`, and never `--author`
-  - every message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+  - every message ends with `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`
   - work happens on branch `feat/azure-openai-evaluation`. `main` requires the
     `build-and-test` and `terraform-plan` checks, so everything lands through a pull request.
 

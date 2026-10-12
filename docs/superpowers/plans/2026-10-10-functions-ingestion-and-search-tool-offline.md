@@ -61,7 +61,7 @@ runbook for the live session (plan 2), and the tests.
 - **Terraform runs only in WSL**, on a clean copy without `terraform.tfvars`, with
   `TF_DATA_DIR=$HOME/tfdata/check-<stack>`. Never `plan` or `apply` against Azure in a task.
 - **Commits:** repo-local identity, never `--author`, never `git config --global`; every message
-  ends `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; branch
+  ends `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`; branch
   `feat/functions-ingestion-tool`; nothing is pushed without the owner's yes.
 
 ## Rulings made while planning

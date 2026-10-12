@@ -34,7 +34,7 @@ BACKEND_HEADER = "x-releaselens-backend"
 
 # A hostname, for the smoke check and the report's scan: any host under the three domains the
 # gateway, the accounts and storage can reveal themselves in.
-HOSTNAME = re.compile(r"\.(?:azure\.com|azure-api\.net|windows\.net)(?![A-Za-z0-9-])", re.IGNORECASE)
+HOSTNAME = re.compile(r"\.(?:azure\.com|azure-api\.net|windows\.net|azurewebsites\.net)(?![A-Za-z0-9-])", re.IGNORECASE)
 
 REV2_SEGMENT = ";rev=2"
 

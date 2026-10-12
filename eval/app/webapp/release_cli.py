@@ -191,6 +191,10 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 observed = smoke(clients[slot], frontend(), version, slot, now, time.sleep)
                 persist(observed)
                 if not all(observed.matches.values()) or cloud.selected_package_sha256(slot) != manifest["package_sha256"] or config() != intended: raise ValueError()
+                from .observations import deployment_access
+                access = deployment_access(clients['main'],frontend())
+                persist(access)
+                if not access.matches['deployment_health_only']: raise ValueError()
                 receipt = dict(schema=1, repository=repository, workflow_path=WORKFLOW, source_sha=sha, run_id=run, run_attempt=attempt, version=version, package_sha256=manifest["package_sha256"], kind="candidate" if mode == "stage" else "seed", created_at=now().isoformat().replace("+00:00", "Z"), baseline_version=baseline if mode == "stage" else version, checks_passed=True)
                 _save(records / "receipt.json", receipt)
                 (records / "package.zip").write_bytes(package)

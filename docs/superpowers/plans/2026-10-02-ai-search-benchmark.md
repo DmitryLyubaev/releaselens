@@ -97,7 +97,7 @@ runbook that measures and publishes it.
 - **No network in tests.** Fakes stand in for every Azure, Anthropic and search call.
 - **Commits:**
   - repo-local identity, never `--author`, never `git config --global`
-  - every message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+  - every message ends with `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`
   - branch `feat/ai-search-benchmark`
   - `main` requires the `build-and-test` and `terraform-plan` checks
 - **Terraform runs only in WSL.** Never run `plan` or `apply` against Azure in a task.
