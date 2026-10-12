@@ -30,7 +30,7 @@ Use Terraform only in WSL, with a dedicated
 using the privately captured state account. Never publish raw outputs, plans,
 errors, account metadata or hostnames. No actual tfvars or state is needed for
 offline tests. The full account guard and session procedure are in
-[the runbook](../../docs/runbooks/webapp-session.md).
+[the runbook](../../docs/runbook-webapp.md).
 
 Each live plan/apply, workflow deployment, swap, destroy and gateway soft-delete
 purge requires its own owner approval. The existing nightly app destroy does

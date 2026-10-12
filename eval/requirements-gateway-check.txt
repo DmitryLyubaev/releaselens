@@ -1,5 +1,5 @@
-# The packages `python -m app.gateway.ci_check` needs, and nothing else, for the gateway-check
-# workflow. That job holds an OIDC token for the deploy identity, so it installs only these, by
+# The closure for app.gateway.ci_check and app.webapp.release, shared by the gateway-check
+# and webapp-release workflows. Those jobs hold an OIDC token, so install only these, by
 # hash, as binary wheels, with no dependency resolution:
 #   pip install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
 # Versions equal eval/requirements.txt's (tests/infra checks). The hashes are those of the

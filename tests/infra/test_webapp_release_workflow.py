@@ -46,3 +46,17 @@ def test_repository_release_uses_same_run_verified_bundle_and_locked_install(rep
     assert download["with"]["name"] == "webapp-verified-${{ github.run_id }}-${{ github.run_attempt }}"
     assert "github-token" not in download["with"] and "run-id" not in download["with"]
     assert not any("terraform apply" in step.get("run", "") or "terraform destroy" in step.get("run", "") for step in release["steps"])
+
+def test_ci_verifies_webapp_source_edges_fixture_stack_and_locked_release_closure(repo_root):
+    value=yaml.safe_load((repo_root/'.github/workflows/ci.yml').read_text())
+    jobs=value['jobs']; build=jobs['build-and-test']['steps']
+    edges=next((step for step in build if step.get('name')=='Webapp offline token and route edges'),None)
+    assert edges and 'dotnet test tests/ReleaseLens.Web.Tests' in edges['run'] and '--no-build' in edges['run']
+    assert any('ReleaseLens.Web.Unhealthy.csproj' in step.get('run','') for step in build)
+    closure=next(step['run'] for step in build if 'gateway-check-venv' in step.get('run',''))
+    assert 'import app.gateway.ci_check, app.webapp.release, app.webapp.release_cli, azure.identity' in closure
+    assert '--require-hashes --only-binary=:all: --no-deps' in closure
+    stack=next((step for step in jobs['terraform-plan']['steps'] if step.get('working-directory')=='infra/webapp'),None)
+    assert stack and all(command in stack['run'] for command in ['terraform init -backend=false -input=false','terraform validate','terraform test'])
+    cache=next(step for step in jobs['terraform-plan']['steps'] if step.get('uses','').startswith('actions/cache@'))
+    assert 'infra/webapp/.terraform.lock.hcl' in cache['with']['key']

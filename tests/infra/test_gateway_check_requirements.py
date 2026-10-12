@@ -76,7 +76,7 @@ def test_ci_installs_the_same_list_the_same_way_in_a_clean_venv_and_imports_the_
     for flag in ("--require-hashes", "--only-binary=:all:", "--no-deps"):
         assert flag in install
     assert install[install.index("-r") + 1] == "eval/requirements-gateway-check.txt"
-    assert "-c \"import app.gateway.ci_check, azure.identity\"" in run
+    assert "-c \"import app.gateway.ci_check, app.webapp.release, app.webapp.release_cli, azure.identity\"" in run
     # The import runs from eval/, where the harness is the top-level package `app`, and with the
     # venv's own interpreter, not the one that has every eval requirement.
     assert steps[0].get("working-directory") is None
