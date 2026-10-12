@@ -22,6 +22,11 @@ resource "azuread_application" "webapp" {
     requested_access_token_version = 2
   }
   web {
+    # Easy Auth's server-directed sign-in requests code+id_token.
+    implicit_grant {
+      id_token_issuance_enabled     = true
+      access_token_issuance_enabled = false
+    }
     redirect_uris = [
       "https://${local.webapp_name}.azurewebsites.net/.auth/login/aad/callback",
       "https://${local.webapp_name}-staging.azurewebsites.net/.auth/login/aad/callback",

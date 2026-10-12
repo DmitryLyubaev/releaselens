@@ -9,6 +9,15 @@ OUTPUTS = (
 )
 
 
+def test_frontend_enables_id_token_for_easy_auth_hybrid_sign_in(repo_root: Path):
+    text = (repo_root / "infra/bootstrap/webapp.tf").read_text()
+    # Easy Auth requests code+id_token. Both callback slots share this web client.
+    grant = re.search(r'implicit_grant\s*\{([^}]+)\}', text)
+    assert grant is not None, "Easy Auth hybrid sign-in requires ID-token issuance"
+    assert re.search(r'\bid_token_issuance_enabled\s*=\s*true\b', grant.group(1))
+    assert re.search(r'\baccess_token_issuance_enabled\s*=\s*false\b', grant.group(1))
+
+
 def test_frontend_has_no_password_certificate_or_github_trust(repo_root: Path):
     text = (repo_root / "infra/bootstrap/webapp.tf").read_text()
     resources = re.findall(r'resource\s+"([^"]+)"', text)
