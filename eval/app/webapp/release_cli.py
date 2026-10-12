@@ -18,7 +18,7 @@ from app.gateway.ci_check import _assertion
 from .contracts import VERSION
 from .http_client import WebAppClient
 from .private_az import PrivateAz, TransportRefused
-from .release import ReleaseContext, WORKFLOW, ci_passed, validate_source, validate_package, smoke, promote
+from .release import ReleaseContext, WORKFLOW, ci_passed, validate_source, validate_package, smoke, promote, fixture_smoke
 from .release_transport import AzureReleaseTransport
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -117,6 +117,16 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
             manifest = {"mode": mode, "fixture": fixture, "current_sha": sha, "repository": repository, "execution_ci": api.ci(sha)}
             if mode == "promote":
                 source = api.source(int(values["SOURCE_RUN_ID"]))
+                # Only this positively identified failed fixture earns an eligibility rejection.
+                # Network/input/CI failures never produce this record.
+                if (source.get('id')==int(values['SOURCE_RUN_ID']) and source.get('run_attempt')==int(values['SOURCE_RUN_ATTEMPT'])
+                    and source.get('path')==WORKFLOW and source.get('head_branch')=='main' and source.get('event')=='workflow_dispatch'
+                    and source.get('repository',{}).get('full_name')==repository and source.get('head_repository',{}).get('full_name')==repository
+                    and source.get('status')=='completed' and source.get('conclusion')=='failure'
+                    and source.get('display_title')==f"webapp-stage-fixture-{source.get('head_sha')}-{source.get('run_attempt')}"
+                    and any(job.get('name')=='release' and job.get('status')=='completed' and job.get('conclusion')=='failure' for job in source.get('jobs',[]))):
+                    _save(records/'rejection.json',dict(schema=1,repository=repository,source_sha=sha,run_id=run,run_attempt=attempt,mode='promote',measured_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),source_run_id=source['id'],source_run_attempt=source['run_attempt'],source_sha_selected=source['head_sha'],reason='fixture_ineligible'))
+                    raise ValueError()
                 if source["run_attempt"] != int(values["SOURCE_RUN_ATTEMPT"]) or source["path"] != WORKFLOW or source["head_branch"] != "main" or source["event"] != "workflow_dispatch" or source["conclusion"] != "success" or source["status"] != "completed" or source["display_title"] != f"webapp-stage-candidate-{source['head_sha']}-{source['run_attempt']}": raise ValueError()
                 manifest.update(source=source, ci=api.ci(source["head_sha"]))
             else:
@@ -165,7 +175,8 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
             config = lambda: _canonical(cloud.configuration(intended))
             if config() != intended: raise ValueError()
             clients = {slot: WebAppClient(http, values["WEBAPP_MAIN_URL"] if slot == "main" else values["WEBAPP_STAGING_URL"]) for slot in ("main", "staging")}
-            persist = lambda observation: _save(records / f"observation-{observation.check}.json", observation.to_dict())
+            from .evidence import emit
+            persist = lambda observation: _save(records / f"observation-{observation.check}.json", emit(observation,repository=repository,sha=sha,run_id=run,attempt=attempt,mode=mode,fixture=fixture,measured_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),source_run_id=receipt['run_id'] if mode=='promote' else None,source_run_attempt=receipt['run_attempt'] if mode=='promote' else None))
             now = lambda: datetime.now(timezone.utc)
             if mode == "promote":
                 receipt = _load(bundle / "receipt.json")
@@ -184,10 +195,10 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 slot = "main" if mode == "seed" else "staging"
                 cloud.deploy(slot, package)
                 if fixture:
-                    fixture_health = clients["staging"].health(frontend())
+                    fixture_health = fixture_smoke(clients['staging'],frontend(),version,manifest['package_sha256'],lambda:cloud.selected_package_sha256('staging'),now,time.sleep)
                     after = clients["main"].health(frontend())
                     from .contracts import Observation
-                    persist(Observation("W5", {"fixture_health": fixture_health.http_status, "main_after": after.http_status}, {"fixture_health_503": fixture_health.http_status == 503, "stage_failed": True, "no_swap": True, "main_unchanged": after.http_status == 200 and after.version == baseline and after.slot == "main" and after.caller == "deployment"}, {"swap_calls": 0, "gateway_calls": 0}))
+                    persist(Observation("W5", {**fixture_health.statuses, "main_after": after.http_status}, {**fixture_health.matches, "stage_failed": True, "no_swap": True, "main_unchanged": after.http_status == 200 and after.status=='ok' and after.configuration_valid and after.version == baseline and after.slot == "main" and after.caller == "deployment"}, fixture_health.counts,fixture_health.times))
                     raise ValueError()
                 observed = smoke(clients[slot], frontend(), version, slot, now, time.sleep)
                 persist(observed)

@@ -168,7 +168,7 @@ capture terraform -chdir=infra/webapp init -input=false \
 capture terraform -chdir=infra/webapp plan -input=false || exit 1
 # After the separate apply approval:
 acctok || exit 1
-capture terraform -chdir=infra/webapp apply -input=false || exit 1
+capture terraform -chdir=infra/webapp apply -input=false -auto-approve || exit 1
 capture terraform -chdir=infra/webapp output -raw webapp_resource_id || exit 1
 export WEBAPP_RESOURCE_ID="$CAPTURED"
 capture terraform -chdir=infra/webapp output -raw webapp_main_url || exit 1
@@ -187,6 +187,11 @@ Configure the existing protected GitHub `azure` environment with these private v
 secrets and deployment-client variable. Obtain approval for changing that environment.
 Use private environment settings, with no public issue/comment/screenshot containing values.
 Keep required reviewers and the existing shared release concurrency group.
+The explicit `-auto-approve` above is used only after the recorded owner approval; it grants
+no permission by itself. With saved private plan files prohibited, hold the session against
+concurrent changes and re-review/re-approve if infrastructure or inputs drift. Terraform
+`-input=false` alone refuses apply, as its [CLI reference](https://developer.hashicorp.com/terraform/cli/commands/apply)
+documents.
 
 ## Seed and early deployment probes
 
@@ -222,8 +227,11 @@ Absent telemetry by the deadline fails W1.
 ## Access check W2
 
 **Ask first.** Approve the read-only access probes. Download only the sanitized observation
-artifact from the successful seed/stage run to ignored `reports/webapp/`; rename its
-`observation-W2.json` to `observation-w2.json`. Set `GITHUB_REPOSITORY` and the public numeric
+artifact from the successful seed/stage run to ignored `reports/webapp/`. Keep the original
+ZIP, named `webapp-observations-<run-id>-<attempt>.zip`; do not extract/repack it.
+The harness retrieves that run's artifact metadata from GitHub and verifies the ZIP's exact
+SHA-256 digest before reading its closed provenance envelope. Missing digest or mismatched
+run/attempt/source/time refuses evidence. Set `GITHUB_REPOSITORY` and the public numeric
 `WEBAPP_DEPLOYMENT_RUN_ID` in process environment. The harness independently fetches source
 CI and requires its named `Webapp offline token and route edges` step for the measured SHA.
 
@@ -260,14 +268,19 @@ version. After environment approval the job verifies main, staging, package hash
 configuration. Only a successful candidate run creates an eligible receipt.
 
 **Ask first.** Separately approve promotion. Dispatch `mode=promote`, `fixture=false`,
-`source_run_id` and `source_run_attempt` for that successful candidate. Preflight has no Azure
+`source_run` and `source_attempt` for that successful candidate. Preflight has no Azure
 authority; it validates run/repository/main/source-CI binding and artifact bytes. The protected
 job re-fetches metadata and rechecks actual staging/main/configuration after approval under
 shared concurrency. It performs one regular swap, then checks both versions and slot labels.
 There is no preview, automatic swap, retrying swap or automatic rollback.
 
-Download the candidate `receipt.json` and the promotion's sanitized `observation-W4.json` and
-`observation-W6a.json` to ignored `reports/webapp/`, renaming observations to lowercase.
+Download the original candidate artifact ZIP as `webapp-stage-<run-id>-<attempt>.zip` and
+the original promotion observations ZIP as `webapp-observations-<run-id>-<attempt>.zip`
+to ignored `reports/webapp/`. The harness verifies both against GitHub's exact run-bound
+artifact digests before consuming the receipt, W4 and W6a envelopes. It never extracts or
+executes package code. Public artifact metadata may be read anonymously; if GitHub requires
+authentication or rate limits the lookup, provide a least-privilege read-only `GH_TOKEN` in
+process environment, never an argument/file. Unsupported or unverified retrieval fails closed.
 Set public numeric `WEBAPP_STAGE_RUN_ID` and `WEBAPP_PROMOTION_RUN_ID` in process environment.
 Run `python -m app.webapp release` through the WSL virtual environment. It re-fetches actual
 run/job metadata; no owner-entered pass flag is accepted.
@@ -276,7 +289,8 @@ run/job metadata; no owner-entered pass flag is accepted.
 
 **Ask first.** Approve configuration reads and fresh owner sign-in on each slot after W4.
 Sign out and sign back into main and staging separately; do not reuse main's cookie on staging.
-Run `python -m app.webapp settings`. Confirm the completed fresh sign-in procedure separately
+Run `python -m app.webapp settings`. It first verifies the same paired stage/promotion
+archives and a successful W4 for those exact runs. Confirm the fresh sign-in procedure separately
 for each slot, then supply each cookie through its hidden prompt. Old cookies cannot serve
 as a fresh-sign-in attestation. No question is sent.
 
@@ -289,12 +303,19 @@ and identity; this does not demonstrate isolation between different registration
 
 **Ask first.** Approve deploying the reviewed unhealthy fixture to staging. Dispatch
 `mode=stage`, `fixture=true`, with the healthy main baseline version. It must get staging
-health 503, fail the release, record zero swaps/model calls, and confirm main unchanged.
+health 503 with its immutable fixture version marker, verify the selected stored package
+digest, fail the release, record zero swaps/model calls, and confirm main unchanged. A
+platform/startup 503 without the reviewed fixture's marker cannot pass W5. Refusal bodies
+stay unread; bounded readiness polling waits for the actual fixture.
 
 **Ask first.** Separately approve the rejected-promotion demonstration referencing that
 failed run/attempt. Promotion preflight must fail and the protected release job must remain
-skipped. Download the fixture's `observation-W5.json`, rename it to `observation-w5.json`,
-set the two public run-ID variables to the failed stage and rejected promotion, and run
+skipped. Preflight writes a fixed `fixture_ineligible` rejection record only when it positively
+identifies that failed fixture run/attempt, after current source CI passes. Input, CI and
+network failures cannot satisfy this condition. Download the original fixture observations
+ZIP and the rejection artifact ZIP as `webapp-observations-<run-id>-<attempt>.zip` and
+`webapp-rejection-<run-id>-<attempt>.zip`. Set the public run-ID variables to the failed stage
+and rejected promotion, and run
 `python -m app.webapp release`. W5 passes the gate check only with these actual failed-run
 outcomes and main comparison; a failed fixture alone is insufficient.
 
@@ -326,7 +347,8 @@ its identities, registrations, model deployments, monitoring, state or ingestion
 **Ask first.** Separately approve webapp destruction, including site, staging slot, S1 plan,
 session group and scoped deployment role. Run `acctok`, select `TF_DATA_DIR=$HOME/tfdata/webapp`,
 privately review `terraform -chdir=infra/webapp plan -destroy`, then capture
-`terraform -chdir=infra/webapp destroy -input=false` after that approval. Do not destroy bootstrap.
+`terraform -chdir=infra/webapp destroy -input=false -auto-approve` only after that separately
+recorded destroy approval. Re-review any drift before executing. Do not destroy bootstrap.
 
 **Ask first.** Separately approve gateway destruction. Run `acctok`, select
 `TF_DATA_DIR=$HOME/tfdata/gateway-live`, review/capture its destroy through the gateway runbook.

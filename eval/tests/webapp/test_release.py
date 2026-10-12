@@ -65,6 +65,13 @@ def test_failed_foreign_fixture_stale_or_untrusted_source_is_ineligible(target, 
 def test_missing_receipt_is_ineligible():
     assert not r.validate_source(source(), {}, REPO, ci())
 
+def test_unhealthy_fixture_cannot_pass_with_changed_selected_package():
+    from app.webapp.contracts import FixtureHealth
+    from types import SimpleNamespace
+    ctx=SimpleNamespace(fixture_health=lambda token,version:FixtureHealth(503,True))
+    observed=r.fixture_smoke(ctx,'private',SHA+'.123.1.fixture','b'*64,lambda:'c'*64,lambda:NOW,lambda _:None)
+    assert observed.matches['fixture_health_503'] is False
+
 
 def publish(directory):
     directory.mkdir()

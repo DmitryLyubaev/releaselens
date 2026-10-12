@@ -33,6 +33,13 @@ def test_health_refusal_body_is_never_read_or_followed(status):
     assert len(requests) == 1
     assert body.reads == 0
 
+@pytest.mark.parametrize('headers,expected',[({},False),({'X-ReleaseLens-Unhealthy':'1','X-ReleaseLens-Fixture-Version':STAMP},True),({'X-ReleaseLens-Unhealthy':'1','X-ReleaseLens-Fixture-Version':'b'*40+'.12.1.fixture'},False)])
+def test_fixture_503_requires_exact_safe_marker_without_reading_body(headers,expected):
+    body=Unreadable()
+    with httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(503,headers=headers,stream=body))) as http:
+        result=WebAppClient(http,ORIGIN).fixture_health('private-test-token',STAMP)
+    assert result.status==503 and result.version_matches is expected and body.reads==0
+
 
 def test_health_requires_200_and_exact_safe_schema():
     payload = dict(status="ok", version=STAMP, slot="main", configurationValid=True, caller="deployment")

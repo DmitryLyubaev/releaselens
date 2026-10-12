@@ -12,6 +12,7 @@ from .http_client import WebAppClient,_unique
 from .private_az import PrivateAz,TransportRefused
 from .release_cli import GitHubMetadata,_canonical
 from .release_transport import AzureReleaseTransport,ARM_SCOPE
+from . import evidence
 
 OUT=freeze.REPO_ROOT/'eval/reports/webapp'
 NAMES={'owner':'W1','access':'W2','refresh':'W3','settings':'W6a','teardown':'W6b'}
@@ -39,6 +40,37 @@ def validate_refs(refs,subscription):
     if any(not refs[key].startswith(refs['webapp_group']+'/') for key in ('plan','site','slot')) or refs['slot']!=refs['site']+'/slots/staging' or refs['gateway_group']==refs['webapp_group'] or any(value in {refs['webapp_group'],refs['gateway_group']} for value in refs['bootstrap']): raise TransportRefused('invalid_response')
     return refs
 
+def _artifact(api,run,kind,out):
+    name=f"webapp-{kind}-{run['id']}-{run['run_attempt']}"
+    return evidence.artifact(api,run,name,out/(name+'.zip'))
+
+def load_release(api,values,commit,out):
+    try:
+        stage=api.source(int(values['WEBAPP_STAGE_RUN_ID'])); promotion=api.source(int(values['WEBAPP_PROMOTION_RUN_ID']))
+        if promotion['head_sha']!=commit: raise ValueError()
+        repo=api.repository
+        data=dict(repository=repo,commit=commit,stage=stage,promotion=promotion)
+        if stage['conclusion']=='failure':
+            recorded=_artifact(api,stage,'observations',out)['observation-W5.json']
+            evidence.observation(recorded,stage,repo,mode='stage',fixture=True)
+            rejected=_artifact(api,promotion,'rejection',out)['rejection.json']
+            evidence.rejection(rejected,promotion,stage,repo)
+            data.update(observation=recorded,rejection=rejected,ci={})
+            return {},data,None
+        from .release import validate_source
+        receipt=_artifact(api,stage,'stage',out)['receipt.json']; ci=api.ci(stage['head_sha'])
+        if not validate_source(stage,receipt,repo,ci): raise ValueError()
+        records=_artifact(api,promotion,'observations',out)
+        w4=records['observation-W4.json']; settings=records['observation-W6a.json']
+        evidence.observation(w4,promotion,repo,mode='promote',fixture=False,source_run=stage)
+        selected=evidence.observation(settings,promotion,repo,mode='promote',fixture=False,source_run=stage)
+        data.update(observation=w4,ci=ci)
+        # Settings evidence requires the corresponding successful, bound promotion facts.
+        measured=observations.release(receipt,data)
+        passed=all(measured.matches.get(key) is True for key in ('baseline_healthy','staging_healthy','approval_recorded','swap_succeeded','main_candidate','staging_baseline','slot_labels_retained'))
+        return receipt,data,selected if passed else None
+    except Exception: raise TransportRefused('invalid_response') from None
+
 class _OwnerConfiguration(AzureReleaseTransport):
     def _arm(self,method,url,body=None):
         from urllib.parse import urlsplit
@@ -53,11 +85,8 @@ def _context(mode,values,commit,out):
     try:
         if mode=='release':
             from types import SimpleNamespace
-            api=GitHubMetadata(http,values['GITHUB_REPOSITORY'])
-            stage=api.source(int(values['WEBAPP_STAGE_RUN_ID'])); promotion=api.source(int(values['WEBAPP_PROMOTION_RUN_ID']))
-            observation=_load(out/('observation-w5.json' if stage['conclusion']=='failure' else 'observation-w4.json'))
-            receipt={} if observation['check']=='W5' else _load(out/'receipt.json')
-            data={'repository':values['GITHUB_REPOSITORY'],'commit':commit,'stage':stage,'promotion':promotion,'ci':api.ci(stage['head_sha']) if observation['check']=='W4' else {},'observation':observation}
+            api=GitHubMetadata(http,values['GITHUB_REPOSITORY'],values.get('GH_TOKEN'))
+            receipt,data,_=load_release(api,values,commit,out)
             return SimpleNamespace(receipt=receipt,source_metadata=data,http=http)
         az=PrivateAz(values['AZURE_TENANT_ID'],values['AZURE_SUBSCRIPTION_ID'],values['WEBAPP_OWNER_PRINCIPAL'])
         az.call(['account','show'])  # Guard before cookies, credential construction or token acquisition.
@@ -67,6 +96,9 @@ def _context(mode,values,commit,out):
         main=staging=None
         if mode in {'owner','refresh','settings'}:
             if mode=='settings':
+                api=GitHubMetadata(http,values['GITHUB_REPOSITORY'],values.get('GH_TOKEN'))
+                _,_,promotion_settings=load_release(api,values,commit,out)
+                if promotion_settings is None: raise TransportRefused('invalid_response')
                 if input('Fresh owner sign-in completed on main? Type fresh-main: ').strip()!='fresh-main': raise TransportRefused('account_refused')
             main=WebAppClient(http,values['WEBAPP_MAIN_URL'],getpass.getpass('Main Easy Auth Cookie header (hidden): '))
             if mode=='settings':
@@ -75,18 +107,21 @@ def _context(mode,values,commit,out):
         ctx=observations.LiveContext(main,staging,az,values['WEBAPP_OWNER_OBJECT_ID'],values.get('WEBAPP_APPINSIGHTS_APP_ID',''),metric.token,http,now,time.sleep,lambda:print('status=waiting',flush=True))
         if mode=='access':
             ctx.anonymous_main=WebAppClient(http,values['WEBAPP_MAIN_URL']); ctx.anonymous_staging=WebAppClient(http,values['WEBAPP_STAGING_URL'])
-            api=GitHubMetadata(http,values['GITHUB_REPOSITORY']); metadata=api.ci(commit)
+            api=GitHubMetadata(http,values['GITHUB_REPOSITORY'],values.get('GH_TOKEN')); metadata=api.ci(commit)
             metadata['jobs']=api._get(f"actions/runs/{metadata['id']}/attempts/{metadata['run_attempt']}/jobs?per_page=100")['jobs']
             ctx.offline_edges_passed=offline_edges(metadata,commit,values['GITHUB_REPOSITORY'])
             run=api.source(int(values['WEBAPP_DEPLOYMENT_RUN_ID']))
             title=run.get('display_title','')
             if run['head_sha']!=commit or run['head_branch']!='main' or run['path']!='.github/workflows/webapp-release.yml' or run['repository']['full_name']!=values['GITHUB_REPOSITORY'] or run['conclusion']!='success' or run['status']!='completed' or not (title==f"webapp-seed-candidate-{commit}-{run['run_attempt']}" or title==f"webapp-stage-candidate-{commit}-{run['run_attempt']}"): raise TransportRefused('invalid_response')
-            ctx.deployment_observation=observation_from_dict(_load(out/'observation-w2.json'))
+            if not any(job.get('name')=='release' and job.get('status')=='completed' and job.get('conclusion')=='success' for job in run['jobs']): raise TransportRefused('invalid_response')
+            record=_artifact(api,run,'observations',out)['observation-W2.json']
+            ctx.deployment_observation=evidence.observation(record,run,values['GITHUB_REPOSITORY'],mode='seed' if title.startswith('webapp-seed-') else 'stage',fixture=False)
         if mode=='settings':
             intended=_canonical(json.loads(values['WEBAPP_INTENDED_CONFIG']))
             reader=_OwnerConfiguration(http,None,values['AZURE_TENANT_ID'],values['AZURE_SUBSCRIPTION_ID'],'','',values['WEBAPP_RESOURCE_ID'],values['WEBAPP_MAIN_URL'],values['WEBAPP_STAGING_URL']); reader.az=az
             ctx.configuration=lambda:_canonical(reader.configuration(intended)); ctx.intended_configuration=intended
             ctx.fresh_main=ctx.fresh_staging=True
+            ctx.promotion_settings=promotion_settings
         if mode=='teardown':
             refs=validate_refs(json.loads(values['WEBAPP_TEARDOWN_REFS']),values['AZURE_SUBSCRIPTION_ID'])
             ctx.resources=refs
@@ -131,12 +166,12 @@ def main(argv=None,*,env=None,clean_guard=None,output_guard=None,out=OUT,commit_
         forbidden=[value for key,value in values.items() if key in {'AZURE_TENANT_ID','AZURE_SUBSCRIPTION_ID','AZURE_CLIENT_ID','WEBAPP_OWNER_PRINCIPAL','WEBAPP_OWNER_OBJECT_ID','WEBAPP_MAIN_URL','WEBAPP_STAGING_URL','WEBAPP_RESOURCE_ID','WEBAPP_APPINSIGHTS_APP_ID'} and value]
         ctx=(context_factory or _context)(mode,values,commit,out)
         check=NAMES.get(mode,'W4')
-        if mode=='release': check='W5' if ctx.source_metadata['observation']['check']=='W5' else 'W4'
+        if mode=='release': check='W5' if ctx.source_metadata['observation']['observation']['check']=='W5' else 'W4'
         def pending(observation): report.write(out/f'observation-{observation.check.lower()}-pending.json',json.dumps(observation.to_dict(),sort_keys=True)+'\n',forbidden)
         if isinstance(ctx,observations.LiveContext): ctx.persist=pending
         started=True
         defaults={'owner':observations.owner,'access':observations.access,'refresh':observations.refresh,'teardown':observations.teardown,
-                  'settings':lambda context:observations.settings(context,observation_from_dict(_load(out/'observation-w6a.json'))),
+                  'settings':lambda context:observations.settings(context,context.promotion_settings),
                   'release':lambda context:observations.release(context.receipt,context.source_metadata)}
         measured=(operations or defaults)[mode](ctx)
         kind='mixed' if check in {'W2','W6a'} else 'workflow' if check in {'W4','W5'} else 'live'

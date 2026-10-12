@@ -8,7 +8,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import urlsplit, urljoin
 import httpx
 
-from .contracts import AskObservation, Health, SessionSnapshot, VERSION, Probe
+from .contracts import AskObservation, Health, SessionSnapshot, VERSION, Probe, FixtureHealth
 from .private_az import TransportRefused
 
 BODY_LIMIT = 1024 * 1024
@@ -134,6 +134,11 @@ class WebAppClient:
 
     def refresh(self) -> int:
         with self._request("GET", "/.auth/refresh") as response: return response.status_code
+
+    def fixture_health(self, bearer: str, version: str) -> FixtureHealth:
+        with self._request('GET','/health',bearer) as response:
+            matches=response.status_code==503 and response.headers.get_list('X-ReleaseLens-Unhealthy')==['1'] and response.headers.get_list('X-ReleaseLens-Fixture-Version')==[version]
+            return FixtureHealth(response.status_code,matches)
 
     def probe(self, path: str, bearer: str | None, *, forged=None) -> Probe:
         if path not in {'/', '/health', '/ask', '/session'}: raise TransportRefused('invalid_response')

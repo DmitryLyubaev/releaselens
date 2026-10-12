@@ -67,6 +67,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m app.webapp.release preflight
+      - name: Save only the selected fixture eligibility rejection
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-rejection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-release/rejection.json
+          if-no-files-found: ignore
       - name: Download the source candidate receipt and package
         if: inputs.mode == 'promote'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333

@@ -115,9 +115,11 @@ def test_anonymous_redirect_to_another_origin_fails_access():
 def test_negative_release_requires_actual_rejected_promotion_not_just_fixture_failure():
     from .test_release import source,REPO,SHA
     stage=source(); stage.update(conclusion='failure',display_title=f'webapp-stage-fixture-{SHA}-1',jobs=[{'name':'release','conclusion':'failure'}])
-    promotion=source(); promotion.update(conclusion='failure',display_title=f'webapp-promote-candidate-{SHA}-1',jobs=[{'name':'preflight','conclusion':'failure'},{'name':'release','conclusion':'skipped'}])
+    promotion=source(); promotion.update(id=124,conclusion='failure',display_title=f'webapp-promote-candidate-{SHA}-1',jobs=[{'name':'preflight','conclusion':'failure'},{'name':'release','conclusion':'skipped'}])
     measured=Observation('W5',matches={'fixture_health_503':True,'stage_failed':True,'no_swap':True,'main_unchanged':True},counts={'swap_calls':0})
-    metadata=dict(repository=REPO,commit=SHA,stage=stage,promotion=promotion,observation=measured.to_dict())
+    wrapped=dict(schema=1,repository=REPO,source_sha=SHA,run_id=123,run_attempt=1,mode='stage',fixture=True,measured_at='2026-10-12T00:01:00Z',source_run_id=None,source_run_attempt=None,observation=measured.to_dict())
+    rejection=dict(schema=1,repository=REPO,source_sha=SHA,run_id=124,run_attempt=1,mode='promote',measured_at='2026-10-12T00:01:00Z',source_run_id=123,source_run_attempt=1,source_sha_selected=SHA,reason='fixture_ineligible')
+    metadata=dict(repository=REPO,commit=SHA,stage=stage,promotion=promotion,observation=wrapped,rejection=rejection)
     assert all(obs.release({},metadata).matches.values())
     promotion['jobs']=[{'name':'release','conclusion':'success'}]
     assert not obs.release({},metadata).matches['promotion_rejected']

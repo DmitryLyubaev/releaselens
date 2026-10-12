@@ -37,7 +37,8 @@ app.Use(async (context, next) =>
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
     }
-    if (context.Request.Method == "POST" && context.Request.Path == "/ask")
+    // Bound every POST before Razor routing, including Index aliases and case variants.
+    if (context.Request.Method == "POST")
     {
         if (context.Request.ContentLength > 16384)
         { context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge; return; }

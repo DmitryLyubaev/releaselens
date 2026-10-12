@@ -111,6 +111,25 @@ public sealed class PageTests
         Assert.Empty(factory.Stub.Requests);
     }
 
+    [Theory]
+    [InlineData("/", true)]
+    [InlineData("/", false)]
+    [InlineData("/Index", true)]
+    [InlineData("/Index", false)]
+    [InlineData("/ASK", false)]
+    public async Task AlternatePostRoutesCannotBypassTheFormCap(string path, bool knownLength)
+    {
+        await using var factory = new WebAppFactory();
+        using var client = Owner(factory);
+        var csrf = await Csrf(client);
+        var payload = $"Question=x&__RequestVerificationToken={Uri.EscapeDataString(csrf)}&padding={new string('x', 16385)}";
+        HttpContent content = knownLength ? new StringContent(payload) : new StreamContent(new UnknownLengthStream(payload));
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-www-form-urlencoded");
+        using var reply = await client.PostAsync(path, content, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, reply.StatusCode);
+        Assert.Empty(factory.Stub.Requests);
+    }
+
     [Fact]
     public async Task OwnerPageHasNoPersonalIdentityAndSignedOutHasOnlyFixedSignIn()
     {

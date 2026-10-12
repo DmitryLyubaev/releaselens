@@ -73,6 +73,12 @@ class Probe:
 
 
 @dataclass(frozen=True)
+class FixtureHealth:
+    status: int
+    version_matches: bool
+
+
+@dataclass(frozen=True)
 class Observation:
     check: str
     statuses: Mapping[str, int | None] = field(default_factory=dict)

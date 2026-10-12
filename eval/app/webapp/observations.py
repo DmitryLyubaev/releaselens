@@ -132,7 +132,10 @@ def _run(run,repository,sha,kind,conclusion):
 def release(receipt:dict,source_metadata:dict)->Observation:
     """Combine captured workflow facts with independently fetched run/job outcomes."""
     repo=source_metadata['repository']; sha=source_metadata['commit']
-    observed=observation_from_dict(source_metadata['observation'])
+    from . import evidence
+    stage=source_metadata['stage']; promotion=source_metadata['promotion']
+    negative=stage.get('conclusion')=='failure'
+    observed=evidence.observation(source_metadata['observation'],stage if negative else promotion,repo,mode='stage' if negative else 'promote',fixture=negative,source_run=None if negative else stage)
     if observed.check=='W4':
         valid=validate_source(source_metadata['stage'],receipt,repo,source_metadata['ci']) and _run(source_metadata['promotion'],repo,sha,'promote','success')
         jobs=[job for job in source_metadata['promotion']['jobs'] if job.get('name')=='release']
@@ -142,6 +145,7 @@ def release(receipt:dict,source_metadata:dict)->Observation:
     fixture=source_metadata['stage']; rejected=source_metadata['promotion']
     failed=_run(fixture,repo,sha,'stage','failure') and any(job.get('name')=='release' and job.get('conclusion')=='failure' for job in fixture['jobs'])
     refused=_run(rejected,repo,sha,'promote','failure') and any(job.get('name')=='preflight' and job.get('conclusion')=='failure' for job in rejected['jobs']) and any(job.get('name')=='release' and job.get('conclusion')=='skipped' for job in rejected['jobs'])
+    refused=refused and evidence.rejection(source_metadata.get('rejection'),rejected,fixture,repo)
     matches=dict(observed.matches); matches['stage_failed']=failed; matches['promotion_rejected']=refused
     matches['no_swap']=refused and observed.counts.get('swap_calls')==0
     return Observation('W5',observed.statuses,matches,observed.counts,observed.times)

@@ -91,6 +91,24 @@ def smoke(client, bearer: str, expected_version: str, expected_slot: str, clock:
     return Observation("W4", {"health_main" if expected_slot == "main" else "health_staging": status}, {key: healthy}, {"attempts": attempts}, {"started_at": _time(start), "ended_at": _time(clock())})
 
 
+def fixture_smoke(client,bearer,version,digest,selected_digest,clock,sleep)->Observation:
+    start=clock(); matched=False; status=None; attempts=0
+    try:
+        if selected_digest()!=digest: raise TransportRefused('release_refused')
+        for _ in range(30):
+            if (clock()-start).total_seconds()>=300: break
+            attempts+=1
+            try:
+                health=client.fixture_health(bearer,version); status=health.status
+                if health.version_matches: matched=True; break
+                if status not in {502,503,504}: break
+            except TransportRefused as error:
+                if str(error)!='network': break
+            if attempts<30: sleep(min(10,max(0,300-(clock()-start).total_seconds())))
+    except TransportRefused: pass
+    return Observation('W5',{'fixture_health':status},{'fixture_health_503':matched}, {'attempts':attempts,'gateway_calls':0,'swap_calls':0},{'started_at':_time(start),'ended_at':_time(clock())})
+
+
 @dataclass(repr=False)
 class ReleaseContext:
     az: object

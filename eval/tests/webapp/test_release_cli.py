@@ -42,6 +42,19 @@ def test_invalid_mode_fixture_combination_refuses_without_azure(mode, fixture, c
     assert cli.main(["preflight"], env=env, clean_guard=lambda: None, output_guard=lambda _: None, root=tmp_path) == 1
     assert capsys.readouterr().out == "status=refused\n"
 
+def test_fixture_ineligibility_has_exact_selected_run_rejection_record(tmp_path,capsys):
+    fixture=source(); fixture.update(conclusion='failure',display_title=f'webapp-stage-fixture-{SHA}-1',jobs=[{'name':'release','conclusion':'failure','status':'completed'}])
+    class API:
+        def __init__(self,*args): pass
+        def ci(self,sha): return ci()
+        def source(self,run): return fixture
+    env=dict(GITHUB_ACTIONS='true',GITHUB_REF='refs/heads/main',GITHUB_EVENT_NAME='workflow_dispatch',WEBAPP_MODE='promote',WEBAPP_FIXTURE='false',GITHUB_REPOSITORY=REPO,GITHUB_SHA=SHA,GITHUB_RUN_ID='900',GITHUB_RUN_ATTEMPT='1',SOURCE_RUN_ID='123',SOURCE_RUN_ATTEMPT='1')
+    from unittest.mock import patch
+    with patch.object(cli,'GitHubMetadata',API):
+        assert cli.main(['preflight'],env=env,clean_guard=lambda:None,output_guard=lambda _:None,root=tmp_path)==1
+    record=json.loads((tmp_path/'artifacts/webapp-release/rejection.json').read_text())
+    assert record['reason']=='fixture_ineligible' and record['source_run_id']==123 and record['source_run_attempt']==1 and record['source_sha_selected']==SHA
+
 
 def test_invalid_promotion_receipt_is_rejected_before_azure_credential_acquisition(tmp_path, capsys):
     import hashlib, io, zipfile
@@ -88,5 +101,6 @@ def test_seed_receipt_is_not_eligible_and_records_deployment_owner_route_boundar
     with patch.object(cli,'AzureReleaseTransport',Cloud),httpx.Client(transport=httpx.MockTransport(handle)) as http:
         assert cli.main(['seed'],env=env,http=http,clean_guard=lambda:None,output_guard=lambda _:None,root=tmp_path,credential_factory=Credential)==0
     result=json.loads((tmp_path/'artifacts/webapp-release/observation-W2.json').read_text())
-    assert result['matches']['deployment_health_only'] is True
+    assert result['run_id']==900 and result['run_attempt']==1 and result['source_sha']==SHA and result['repository']==REPO
+    assert result['observation']['matches']['deployment_health_only'] is True
     assert json.loads((tmp_path/'artifacts/webapp-release/receipt.json').read_text())['kind']=='seed'
