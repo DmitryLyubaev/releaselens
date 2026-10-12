@@ -255,3 +255,79 @@ def test_scm_pending_deployment_then_403_stops_without_reading_body(deployment_t
     assert [request.method for request in requests] == ["POST", "GET", "GET"]
     assert deployment_timer.elapsed == 10
     assert body.reads == 0
+
+
+@pytest.mark.parametrize('path,method', [('/config/slotConfigNames','GET'),('/config/appsettings/list','POST'),('/slots/staging/config/appsettings/list','POST')])
+def test_owned_configuration_read_recovers_once_from_timeout(path, method, deployment_timer):
+    requests = []
+    def handle(request):
+        requests.append(request)
+        if len(requests)==1: raise httpx.ReadTimeout('private-read-timeout')
+        return httpx.Response(200,json={'properties':{}})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        assert adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep)._arm(method,'https://management.azure.com'+RESOURCE+path+'?api-version=2024-11-01')=={'properties':{}}
+    assert len(requests)==2 and all(request.extensions['timeout']['read']==30 for request in requests)
+    assert deployment_timer.elapsed==1
+
+
+def test_persistent_read_timeout_stops_after_one_retry(deployment_timer):
+    requests=[]
+    def handle(request):
+        requests.append(request); raise httpx.ReadTimeout('private-read-timeout')
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused): adapter(http,sleep=deployment_timer.sleep)._arm('GET','https://management.azure.com'+RESOURCE+'/config/slotConfigNames?api-version=2024-11-01')
+    assert len(requests)==2 and deployment_timer.elapsed==1
+
+
+@pytest.mark.parametrize('operation',['upload','swap'])
+def test_ambiguous_write_timeout_is_never_replayed(operation,deployment_timer):
+    requests=[]
+    def handle(request):
+        requests.append(request); raise httpx.ReadTimeout('private-write-timeout')
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        cloud=adapter(http,sleep=deployment_timer.sleep)
+        with pytest.raises(TransportRefused):
+            if operation=='upload': cloud.deploy('main',b'mock zip')
+            else: cloud._arm('POST','https://management.azure.com'+RESOURCE+'/slots/staging/slotsswap?api-version=2024-11-01',{'targetSlot':'production'})
+    assert len(requests)==1 and deployment_timer.elapsed==0
+
+
+def test_read_http_refusal_remains_unread_without_retry(deployment_timer):
+    from .test_http_client import Unreadable
+    body=Unreadable(); requests=[]
+    def handle(request):
+        requests.append(request); return httpx.Response(403,stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused): adapter(http,sleep=deployment_timer.sleep)._arm('GET','https://management.azure.com'+RESOURCE+'/config/slotConfigNames?api-version=2024-11-01')
+    assert len(requests)==1 and body.reads==0 and deployment_timer.elapsed==0
+
+
+def test_token_acquisition_timeout_is_not_a_read_retry(deployment_timer):
+    calls=[]; requests=[]
+    with httpx.Client(transport=httpx.MockTransport(lambda request: requests.append(request))) as http:
+        cloud=adapter(http,sleep=deployment_timer.sleep)
+        def bearer(_):
+            calls.append(True); raise httpx.ReadTimeout('private-token-acquisition')
+        cloud._token=bearer
+        with pytest.raises(TransportRefused): cloud._arm('GET','https://management.azure.com'+RESOURCE+'/config/slotConfigNames?api-version=2024-11-01')
+    assert len(calls)==1 and requests==[] and deployment_timer.elapsed==0
+
+
+@pytest.mark.parametrize('method,location,body',[('GET','scm',None),('POST','other',None),('POST','settings',{})])
+def test_retry_scope_does_not_expand_to_other_operations(method,location,body,deployment_timer):
+    requests=[]
+    def handle(request):
+        requests.append(request); raise httpx.ReadTimeout('private-timeout')
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        cloud=adapter(http,sleep=deployment_timer.sleep)
+        url=cloud._scm('main')+'/api/deployments/latest' if location=='scm' else 'https://management.azure.com'+RESOURCE+('/config/appsettings/list' if location=='settings' else '/config/authsettingsV2')
+        with pytest.raises(TransportRefused): cloud._read(method,url,body=body)
+    assert len(requests)==1 and deployment_timer.elapsed==0 and requests[0].extensions['timeout']['read']==10
+
+
+def test_retry_url_classification_preserves_closed_invalid_url_refusal():
+    requests=[]
+    with httpx.Client(transport=httpx.MockTransport(lambda request: requests.append(request))) as http:
+        with pytest.raises(TransportRefused,match='release_refused'):
+            adapter(http)._read('GET','https://[private-invalid')
+    assert requests==[]
