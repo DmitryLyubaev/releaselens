@@ -2,6 +2,19 @@ variables {
   subscription_id         = "00000000-0000-0000-0000-000000000000"
   tfstate_storage_account = "mockstate"
 }
+
+run "entra_only_without_platform_default_providers" {
+  command = plan
+  assert {
+    condition = alltrue([for auth in values(azapi_update_resource.auth) :
+      try(auth.body.properties.identityProviders.azureActiveDirectory.enabled &&
+        alltrue([for provider in ["apple", "azureStaticWebApps", "facebook", "gitHub", "google", "legacyMicrosoftAccount", "twitter"] :
+        auth.body.properties.identityProviders[provider].enabled == false]) &&
+      length(auth.body.properties.identityProviders.customOpenIdConnectProviders) == 0, false)
+    ])
+    error_message = "Both slots must explicitly disable non-Entra providers so platform defaults cannot refuse the release gate."
+  }
+}
 mock_provider "azurerm" {
   override_during = plan
   mock_resource "azurerm_resource_group" {
