@@ -2,9 +2,9 @@
 
 Date: 2026-10-12 (Australia/Brisbane).
 
-Status: draft for owner approval. The scope and evidence categories were agreed in the
-brainstorming conversation. The detailed rules and implementation choices below are proposed
-for review. No live result is claimed here.
+Status: approved by the owner in chat on 2026-10-12, after the builder check. The approval
+covers this design, including its implementation choices and fixed checks. Live operations
+retain their separate approval requirements. No live result is claimed here.
 
 ## 1. Purpose
 
