@@ -100,14 +100,14 @@ def test_state_account_cannot_be_destroyed(repo_root):
     assert prevent_destroy and prevent_destroy.group(1) == "true"
 
 
-def test_bootstrap_has_the_thirty_three_role_assignments_all_in_roles_tf(repo_root):
-    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 33
+def test_bootstrap_has_only_the_approved_role_assignments(repo_root):
+    assert _declarations(_stack(repo_root, "bootstrap"), "resource", "azurerm_role_assignment") == ["roles.tf"] * 34
 
 
-def test_bootstrap_has_the_four_app_role_assignments_all_in_roles_tf(repo_root):
+def test_bootstrap_has_only_the_approved_app_role_assignments(repo_root):
     files = _stack(repo_root, "bootstrap")
 
-    assert _declarations(files, "resource", "azuread_app_role_assignment") == ["roles.tf"] * 4
+    assert _declarations(files, "resource", "azuread_app_role_assignment") == ["roles.tf"] * 4 + ["webapp.tf"] * 2
     # The gateway's one role, on the gateway's own service principal, for the three principals.
     for name in ["gateway_invoke_owner", "gateway_invoke_app", "gateway_invoke_deploy"]:
         assignment = _block(files["roles.tf"], f'resource "azuread_app_role_assignment" "{name}"')
@@ -130,7 +130,10 @@ def test_search_tool_app_has_no_pre_authorised_client(repo_root):
     # app only.
     files = _stack(repo_root, "bootstrap")
 
-    assert _declarations(files, "resource", "azuread_application_pre_authorized") == ["gateway_app.tf"]
+    assert _declarations(files, "resource", "azuread_application_pre_authorized") == ["gateway_app.tf", "webapp.tf"]
+    preauthorized = _block(files["webapp.tf"], 'resource "azuread_application_pre_authorized" "webapp"')
+    target = _setting(preauthorized, "application_id")
+    assert target and target.group(1) == "azuread_application.gateway.id"
     assert not [line for line in _code_lines(files["search_tool_app.tf"]) if "oauth2_permission_scope" in line]
 
 
@@ -141,14 +144,15 @@ def test_bootstrap_has_no_app_secret(repo_root):
     for type_ in [
         "azuread_application_password",
         "azuread_application_certificate",
-        "azuread_application_federated_identity_credential",
         "azuread_service_principal_password",
         "azuread_service_principal_certificate",
     ]:
         assert _declarations(files, "resource", type_) == [], type_
+    assert _declarations(files, "resource", "azuread_application_federated_identity_credential") == ["webapp.tf"]
     for file, header in [
         ("gateway_app.tf", 'resource "azuread_application" "gateway"'),
         ("search_tool_app.tf", 'resource "azuread_application" "search_tool"'),
+        ("webapp.tf", 'resource "azuread_application" "webapp"'),
     ]:
         application = _block(files[file], header)
         assert not re.search(r"^\s*password\s*\{", application, re.MULTILINE), header

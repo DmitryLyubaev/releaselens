@@ -207,3 +207,37 @@ output "search_tool_app_identifier_uri" {
   description = "The search tool app's identifier URI, api://<client ID>. The gateway asks for a token for it when it calls the tool."
   value       = azuread_application_identifier_uri.search_tool.identifier_uri
 }
+
+# Project 6 values remain private in Terraform and captured process memory.
+output "webapp_name" {
+  value     = local.webapp_name
+  sensitive = true
+}
+output "webapp_identity_id" {
+  value     = azurerm_user_assigned_identity.webapp.id
+  sensitive = true
+}
+output "webapp_identity_client_id" {
+  value     = azurerm_user_assigned_identity.webapp.client_id
+  sensitive = true
+}
+output "webapp_identity_principal_id" {
+  value     = azurerm_user_assigned_identity.webapp.principal_id
+  sensitive = true
+}
+output "webapp_app_client_id" {
+  value     = azuread_application.webapp.client_id
+  sensitive = true
+}
+output "webapp_app_identifier_uri" {
+  value     = azuread_application_identifier_uri.webapp.identifier_uri
+  sensitive = true
+}
+output "webapp_owner_object_id" {
+  value     = data.azurerm_client_config.current.object_id
+  sensitive = true
+}
+output "deploy_identity_principal_id" {
+  value     = azurerm_user_assigned_identity.deploy.principal_id
+  sensitive = true
+}

@@ -71,6 +71,13 @@ resource "azurerm_storage_container" "functions" {
   container_access_type = "private"
 }
 
+# Project 6 is owner-applied and has its own state, retained after a session.
+resource "azurerm_storage_container" "webapp" {
+  name                  = "tfstate-webapp"
+  storage_account_id    = azurerm_storage_account.state.id
+  container_access_type = "private"
+}
+
 # Every version is a full copy of a state file, and state can hold secrets, so old versions
 # are not kept indefinitely. Version actions never touch the current blob.
 resource "azurerm_storage_management_policy" "state" {
