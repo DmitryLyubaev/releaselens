@@ -331,3 +331,28 @@ def test_retry_url_classification_preserves_closed_invalid_url_refusal():
         with pytest.raises(TransportRefused,match='release_refused'):
             adapter(http)._read('GET','https://[private-invalid')
     assert requests==[]
+
+
+@pytest.mark.parametrize('location',[None,'https://other.example.test/private','http://mock-webapp.scm.azurewebsites.net/api/deployments/latest','https://mock-webapp.scm.azurewebsites.net/not-status','https://private-user:private-token@mock-webapp.scm.azurewebsites.net/api/deployments/latest','https://[private-invalid'])
+def test_accepted_upload_with_unusable_location_polls_only_owned_latest(location,deployment_timer):
+    from .test_http_client import Unreadable
+    body=Unreadable(); requests=[]
+    def handle(request):
+        requests.append(request)
+        if len(requests)==1: return httpx.Response(202,headers={} if location is None else {'Location':location},stream=body)
+        assert str(request.url)=='https://mock-webapp.scm.azurewebsites.net/api/deployments/latest'
+        return httpx.Response(200,json={'status':4})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep).deploy('main',b'mock zip')
+    assert [r.method for r in requests]==['POST','GET'] and body.reads==0
+
+
+def test_fallback_status_failure_never_reuploads_or_reads_refusal_body(deployment_timer):
+    from .test_http_client import Unreadable
+    body=Unreadable(); requests=[]
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(202) if len(requests)==1 else httpx.Response(403,stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused): adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep).deploy('main',b'mock zip')
+    assert [r.method for r in requests]==['POST','GET'] and body.reads==0

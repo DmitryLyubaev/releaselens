@@ -17,6 +17,22 @@ API = "2024-11-01"
 _ARM_ID_CASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
+def owned_deployment_status_url(origin, hint):
+    """Untrusted hints never select a different origin or a non-status endpoint."""
+    fallback = origin + '/api/deployments/latest'
+    if not hint: return fallback, 'missing'
+    try:
+        candidate = urljoin(origin, hint)
+        parsed = urlsplit(candidate)
+        if (parsed.scheme == 'https' and parsed.netloc == urlsplit(origin).netloc
+                and not parsed.username and not parsed.password and not parsed.fragment
+                and re.fullmatch(r'/api/deployments/[A-Za-z0-9_-]+', parsed.path)):
+            return candidate, None
+    except Exception:
+        return fallback, 'malformed'
+    return fallback, 'untrusted'
+
+
 class AzureReleaseTransport:
     def __init__(self, http, token, tenant, subscription, client_id, principal_id, resource_id, main_origin, staging_origin, *, clock=time.monotonic, sleep=time.sleep):
         self._http, self._token = http, token
@@ -125,8 +141,7 @@ class AzureReleaseTransport:
         origin = self._scm(slot)
         result, headers = self._read("POST", origin + "/api/zipdeploy?isAsync=true", body=package, allow_async=True)
         if result is not None: return
-        location = urljoin(origin, headers.get("location", ""))
-        if urlsplit(location).netloc != urlsplit(origin).netloc or not urlsplit(location).path.startswith("/api/deployments/"): raise TransportRefused("release_refused")
+        location, _ = owned_deployment_status_url(origin, headers.get('location', ''))
         started = self._clock()
         for _ in range(30):
             if self._clock() - started >= 300: break

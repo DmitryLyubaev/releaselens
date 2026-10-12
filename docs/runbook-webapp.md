@@ -214,6 +214,13 @@ HTTP refusals and token-acquisition failures stop immediately. Uploads, swaps an
 other writes are never replayed after an ambiguous timeout; their existing timeout
 bounds and SCM polling remain unchanged.
 
+After an accepted upload, a usable HTTPS status location on the exact owned SCM
+origin is retained. A missing, malformed or untrusted hint selects only that
+origin's documented `/api/deployments/latest` GET endpoint. It never follows an
+external URL or replays the upload. Readiness still requires the expected package
+version and selected package digest before any eligible receipt is written.
+Closed diagnostics record the polling source and fixed fallback reason only.
+
 **Ask first.** Dispatch `webapp-release.yml` manually on current main with `mode=seed`,
 `fixture=false`. Approve its protected release job. It builds an immutable
 `<source-sha>.<run-id>.<attempt>.seed` package, verifies source CI, publishes main and checks

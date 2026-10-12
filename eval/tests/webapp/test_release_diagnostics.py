@@ -163,3 +163,13 @@ def test_swap_attempt_survives_response_timeout_and_trace_truncation():
         trace.observe(httpx.Response(200, request=httpx.Request('GET', 'https://management.azure.com/operations/poll')))
     assert len(trace.responses) == 40 and trace.result('refused')['swap_calls'] == 1
     assert 'private-' not in json.dumps(trace.result('refused'))
+
+
+def test_async_poll_projection_retains_only_owned_destination_and_fixed_reason():
+    from app.webapp.diagnostics import ReleaseDiagnostics
+    trace=ReleaseDiagnostics(SHA,900,1,'seed')
+    trace.hosts['mock-webapp.scm.azurewebsites.net']='main'
+    trace.observe(httpx.Response(202,headers={'Location':'https://private-host.example.test/private-token'},request=httpx.Request('POST','https://mock-webapp.scm.azurewebsites.net/api/zipdeploy?isAsync=true')))
+    data=trace.result('refused')
+    assert data['scm_polling']=={'source':'owned_latest','fallback_reason':'untrusted'}
+    assert 'private-' not in json.dumps(data) and 'https://' not in json.dumps(data)
