@@ -6,6 +6,21 @@ namespace ReleaseLens.Web.Tests;
 
 public sealed class HostTests
 {
+    [Fact]
+    public async Task LoggingCannotExposeRequestOrTransportValues()
+    {
+        await using var factory = new WebAppFactory();
+        using var client = factory.As(CallerKind.Owner);
+        var token = Fixtures.GatewayToken(factory.Clock.GetUtcNow().AddMinutes(10));
+        client.DefaultRequestHeaders.Add("X-MS-TOKEN-AAD-ACCESS-TOKEN", token);
+        using var response = await client.GetAsync("/health?question=private-question-marker", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var logs = string.Join('\n', factory.Logs.Entries);
+        Assert.DoesNotContain("private-question-marker", logs);
+        Assert.DoesNotContain("gateway.example.test", logs);
+        Assert.False(logs.Contains(token, StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(CallerKind.Owner, "owner")]
     [InlineData(CallerKind.Deployment, "deployment")]
@@ -59,12 +74,33 @@ public sealed class HostTests
     }
 
     [Fact]
-    public async Task SessionIsNoStoreAndUnavailableUntilInspectionExists()
+    public async Task SessionIsNoStoreAndHasOnlySafeDiagnostics()
     {
         await using var factory = new WebAppFactory();
         using var response = await factory.As(CallerKind.Owner).GetAsync("/session", TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.True(response.Headers.CacheControl?.NoStore);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.False(json.RootElement.GetProperty("usable").GetBoolean());
+        Assert.False(json.RootElement.GetProperty("tokenPresent").GetBoolean());
+        Assert.Equal(9, json.RootElement.EnumerateObject().Count());
+        Assert.Empty(factory.Stub.Requests);
+    }
+
+    [Fact]
+    public async Task SessionReturnsExpiryButNeverTheAccessToken()
+    {
+        await using var factory = new WebAppFactory();
+        using var client = factory.As(CallerKind.Owner);
+        var token = Fixtures.GatewayToken(factory.Clock.GetUtcNow().AddMinutes(10));
+        client.DefaultRequestHeaders.Add("X-MS-TOKEN-AAD-ACCESS-TOKEN", token);
+        using var response = await client.GetAsync("/session", TestContext.Current.CancellationToken);
+        var text = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.False(text.Contains(token, StringComparison.Ordinal));
+        Assert.DoesNotContain(Fixtures.Owner, text);
+        using var json = JsonDocument.Parse(text);
+        Assert.True(json.RootElement.GetProperty("usable").GetBoolean());
+        Assert.Equal(factory.Clock.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds(), json.RootElement.GetProperty("expiresAtUnixSeconds").GetInt64());
         Assert.Empty(factory.Stub.Requests);
     }
 

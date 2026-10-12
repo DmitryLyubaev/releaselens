@@ -3,8 +3,12 @@ using ReleaseLens.Web;
 var builder = WebApplication.CreateBuilder(args);
 // Request URLs, platform claims and option values must not enter logs.
 builder.Logging.ClearProviders();
+builder.Logging.AddFilter((_, _) => false);
 builder.Services.AddSingleton(sp => WebOptions.From(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton(_ => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { Timeout = Timeout.InfiniteTimeSpan });
+builder.Services.AddSingleton<GatewayClient>();
+builder.Services.AddSingleton<QuestionService>();
 var app = builder.Build();
 app.Use(async (context, next) =>
 {
@@ -48,7 +52,11 @@ app.MapGet("/health", (HttpContext context, WebOptions options) => Results.Json(
     status = "ok", version = BuildInfo.Version, slot = options.Slot, configurationValid = true,
     caller = context.Items[typeof(CallerKind)] is CallerKind.Owner ? "owner" : "deployment"
 }));
-app.MapGet("/session", () => Results.StatusCode(503));
+app.MapGet("/session", (HttpContext context, WebOptions options, TimeProvider clock) =>
+{
+    var headers = context.Request.Headers["X-MS-TOKEN-AAD-ACCESS-TOKEN"];
+    return Results.Json(GatewayTokenInspector.Inspect(headers.Count == 1 ? headers[0] : null, options, clock.GetUtcNow()));
+});
 app.MapGet("/", () => Results.StatusCode(503));
 app.MapPost("/ask", () => Results.StatusCode(503));
 app.MapGet("/signed-out", () => Results.Content("<p>Signed out.</p><a href=\"/.auth/login/aad?post_login_redirect_uri=/\">Sign in</a>", "text/html"));
