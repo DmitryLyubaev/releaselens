@@ -14,6 +14,15 @@ locals {
       preserveUrlFragmentsForLogins = false
     }
     identityProviders = {
+      # Azure otherwise returns enabled defaults for omitted providers.
+      apple                        = { enabled = false }
+      azureStaticWebApps           = { enabled = false }
+      facebook                     = { enabled = false }
+      gitHub                       = { enabled = false }
+      google                       = { enabled = false }
+      legacyMicrosoftAccount       = { enabled = false }
+      twitter                      = { enabled = false }
+      customOpenIdConnectProviders = {}
       azureActiveDirectory = {
         enabled = true
         registration = {

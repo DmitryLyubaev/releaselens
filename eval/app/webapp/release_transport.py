@@ -14,6 +14,7 @@ from .private_az import TransportRefused
 
 ARM_SCOPE = "https://management.azure.com/.default"
 API = "2024-11-01"
+_ARM_ID_CASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 class AzureReleaseTransport:
@@ -136,10 +137,18 @@ class AzureReleaseTransport:
             auth = get("/config/authsettingsV2").get("properties", {})
             providers = auth.get("identityProviders", {})
             if any(isinstance(value, dict) and value.get("enabled") is True for key, value in providers.items() if key != "azureActiveDirectory"): raise TransportRefused("release_refused")
+            custom = providers.get("customOpenIdConnectProviders")
+            if custom not in (None, {}): raise TransportRefused("release_refused")
+            # A missing/null map also means no custom providers on the platform.
+            if custom is None: providers["customOpenIdConnectProviders"] = {}
             registration = providers.get("azureActiveDirectory", {}).get("registration", {})
             if any(registration.get(key) for key in ("clientSecretCertificateThumbprint", "clientSecretCertificateIssuer", "clientSecretCertificateSubjectAlternativeName")): raise TransportRefused("release_refused")
             policies = {kind: get("/basicPublishingCredentialsPolicies/" + kind).get("properties", {}).get("allow") for kind in ("scm", "ftp")}
-            result[slot] = {"identity": {"type": identity.get("type"), "identity_ids": sorted(identity.get("userAssignedIdentities", {}))},
+            # ARM can change ASCII casing in these project-generated resource IDs.
+            # Keep all other characters exact, including Unicode substitutions.
+            declared_ids = {value.translate(_ARM_ID_CASE): value for value in intended[slot]["identity"]["identity_ids"]}
+            actual_ids = [declared_ids.get(value.translate(_ARM_ID_CASE), value) for value in identity.get("userAssignedIdentities", {})]
+            result[slot] = {"identity": {"type": identity.get("type"), "identity_ids": sorted(actual_ids)},
                             "siteconfig": pick(config, intended[slot]["siteconfig"]), "appsettings": settings,
                             "auth": pick(auth, intended[slot]["auth"]), "publishing": policies}
         sticky, _ = self._read("GET", "https://management.azure.com" + self._resource + "/config/slotConfigNames?api-version=" + API)
