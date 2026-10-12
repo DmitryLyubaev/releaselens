@@ -19,7 +19,8 @@ from .contracts import VERSION
 from .http_client import WebAppClient
 from .private_az import PrivateAz, TransportRefused
 from .release import ReleaseContext, WORKFLOW, ci_passed, validate_source, validate_package, smoke, promote, fixture_smoke
-from .release_transport import AzureReleaseTransport
+from .release_transport import AzureReleaseTransport, ReadOnlyAzureReleaseTransport, ARM_SCOPE
+from .diagnostics import ReleaseDiagnostics
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -95,23 +96,31 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
     bundle = root / "artifacts/webapp-verified"
     records = root / "artifacts/webapp-release"
     made_http = http is None
+    diagnostics = None
+    hook = None
+    request_hook = None
     try:
         # No environment/credential acquisition or output write before these guards.
         (clean_guard or freeze.require_clean_tree)()
         guard = output_guard or freeze.require_output_ignored
         guard(bundle); guard(records)
         values = os.environ if env is None else env
-        if len(argv) != 1 or argv[0] not in {"preflight", "verify-bundle", "seed", "stage", "promote"}: raise ValueError()
+        if len(argv) != 1 or argv[0] not in {"preflight", "verify-bundle", "seed", "stage", "promote", "diagnose"}: raise ValueError()
         command = argv[0]
         mode = values.get("WEBAPP_MODE", command)
         fixture = values.get("WEBAPP_FIXTURE", "false") == "true"
-        if mode not in {"seed", "stage", "promote"} or fixture and mode != "stage": raise ValueError()
-        if command in {"seed", "stage", "promote"} and command != mode: raise ValueError()
+        if mode not in {"seed", "stage", "promote", "diagnose"} or fixture and mode != "stage": raise ValueError()
+        if command in {"seed", "stage", "promote", "diagnose"} and command != mode: raise ValueError()
         if values.get("GITHUB_ACTIONS") != "true" or values.get("GITHUB_REF") != "refs/heads/main" or values.get("GITHUB_EVENT_NAME") != "workflow_dispatch": raise ValueError()
         repository = values["GITHUB_REPOSITORY"]; sha = values["GITHUB_SHA"]
         run = int(values["GITHUB_RUN_ID"]); attempt = int(values["GITHUB_RUN_ATTEMPT"])
         if min(run, attempt) <= 0 or not re.fullmatch(r"[a-f0-9]{40}", sha): raise ValueError()
         http = http or httpx.Client(timeout=10, follow_redirects=False)
+        diagnostics = ReleaseDiagnostics(sha, run, attempt, mode)
+        hook = diagnostics.observe
+        http.event_hooks['response'].append(hook)
+        request_hook = diagnostics.observe_request
+        http.event_hooks['request'].append(request_hook)
         if command == "preflight":
             api = GitHubMetadata(http, repository, values.get("GH_TOKEN"))
             manifest = {"mode": mode, "fixture": fixture, "current_sha": sha, "repository": repository, "execution_ci": api.ci(sha)}
@@ -133,6 +142,7 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 manifest.update(version=f"{sha}.{run}.{attempt}.{'fixture' if fixture else mode}", source_sha=sha, run_id=run, run_attempt=attempt, ci=manifest["execution_ci"])
             _save(bundle / "verified.json", manifest)
         elif command == "verify-bundle":
+            diagnostics.phase = 'bundle_validation'
             manifest = _load(bundle / "verified.json")
             if manifest["current_sha"] != sha or manifest["repository"] != repository or manifest["mode"] != mode or manifest["fixture"] is not fixture or not ci_passed(manifest["execution_ci"], repository, sha): raise ValueError()
             if mode == "promote":
@@ -150,6 +160,7 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 validate_package(package, manifest["package_sha256"])
             _save(bundle / "verified.json", manifest)
         else:
+            diagnostics.phase = 'bundle_validation'
             manifest = _load(bundle / "verified.json")
             if manifest["current_sha"] != sha or manifest["repository"] != repository or manifest["mode"] != mode or manifest["fixture"] is not fixture or not ci_passed(manifest["execution_ci"], repository, sha): raise ValueError()
             package = (bundle / "package.zip").read_bytes()
@@ -166,19 +177,45 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
             if credential_factory is None:
                 from azure.identity import ClientAssertionCredential
                 credential_factory = ClientAssertionCredential
+            diagnostics.phase = 'credential_setup'
             credential = credential_factory(values["AZURE_TENANT_ID"], values["AZURE_CLIENT_ID"], lambda: _assertion(values, http))
-            token = lambda scope: credential.get_token(scope).token
+            def token(scope):
+                previous = diagnostics.phase
+                diagnostics.phase = 'arm_token' if scope == ARM_SCOPE else 'frontend_token'
+                value = credential.get_token(scope).token
+                diagnostics.phase = previous
+                return value
             audience = values["WEBAPP_FRONTEND_AUDIENCE"]
             frontend = lambda: token(audience.rstrip("/") + "/.default")
-            cloud = AzureReleaseTransport(http, token, values["AZURE_TENANT_ID"], values["AZURE_SUBSCRIPTION_ID"], values["AZURE_CLIENT_ID"], values["WEBAPP_DEPLOY_OBJECT_ID"], values["WEBAPP_RESOURCE_ID"], values["WEBAPP_MAIN_URL"], values["WEBAPP_STAGING_URL"])
+            transport = ReadOnlyAzureReleaseTransport if mode == 'diagnose' else AzureReleaseTransport
+            cloud = transport(http, token, values["AZURE_TENANT_ID"], values["AZURE_SUBSCRIPTION_ID"], values["AZURE_CLIENT_ID"], values["WEBAPP_DEPLOY_OBJECT_ID"], values["WEBAPP_RESOURCE_ID"], values["WEBAPP_MAIN_URL"], values["WEBAPP_STAGING_URL"])
+            from urllib.parse import urlsplit
+            for slot, key in (('main', 'WEBAPP_MAIN_URL'), ('staging', 'WEBAPP_STAGING_URL')):
+                hostname = urlsplit(values[key]).hostname
+                diagnostics.hosts[hostname] = slot
+                if hostname and hostname.endswith('.azurewebsites.net'):
+                    diagnostics.hosts[hostname.removesuffix('.azurewebsites.net') + '.scm.azurewebsites.net'] = slot
             intended = _canonical(json.loads(values["WEBAPP_INTENDED_CONFIG"]))
             config = lambda: _canonical(cloud.configuration(intended))
+            diagnostics.phase = 'configuration_before'
             if config() != intended: raise ValueError()
             clients = {slot: WebAppClient(http, values["WEBAPP_MAIN_URL"] if slot == "main" else values["WEBAPP_STAGING_URL"]) for slot in ("main", "staging")}
             from .evidence import emit
             persist = lambda observation: _save(records / f"observation-{observation.check}.json", emit(observation,repository=repository,sha=sha,run_id=run,attempt=attempt,mode=mode,fixture=fixture,measured_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),source_run_id=receipt['run_id'] if mode=='promote' else None,source_run_attempt=receipt['run_attempt'] if mode=='promote' else None))
             now = lambda: datetime.now(timezone.utc)
-            if mode == "promote":
+            if mode == 'diagnose':
+                bearer = frontend()
+                diagnostics.phase = 'diagnostic_health'
+                statuses = {}
+                for slot, client in clients.items():
+                    try: statuses[slot] = client.health(bearer).http_status
+                    except TransportRefused: statuses[slot] = None
+                diagnostics.phase = 'diagnostic_scm'
+                scm = {slot: cloud.probe_scm(slot) for slot in clients}
+                diagnostics.phase = 'complete'
+                _save(records / 'diagnostics.json', diagnostics.result('collected') | dict(read_only=True, configuration_matches=True, health_statuses=statuses, scm_readable=scm))
+            elif mode == "promote":
+                diagnostics.phase = 'promotion'
                 receipt = _load(bundle / "receipt.json")
                 api = GitHubMetadata(http, repository)  # Public metadata, no actions permission in the protected job.
                 ctx = ReleaseContext(PrivateAz(values["AZURE_TENANT_ID"], values["AZURE_SUBSCRIPTION_ID"], values["AZURE_CLIENT_ID"], run=cloud.run), clients["main"], clients["staging"], frontend, values["WEBAPP_RESOURCE_ID"], repository, manifest["ci"], intended, config, cloud.selected_package_sha256, lambda: (api.source(receipt["run_id"]), api.ci(receipt["source_sha"])), persist, now, time.sleep)
@@ -189,10 +226,13 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 baseline = values.get("WEBAPP_BASELINE_VERSION", "")
                 if mode == "stage":
                     if not VERSION.fullmatch(baseline) or baseline.endswith(".fixture"): raise ValueError()
+                    diagnostics.phase = 'main_baseline'
                     before = smoke(clients["main"], frontend(), baseline, "main", now, time.sleep)
                     persist(before)
                     if not before.matches["baseline_healthy"]: raise ValueError()
                 slot = "main" if mode == "seed" else "staging"
+                diagnostics.phase = 'scm_deploy'
+                diagnostics.deployments = 1
                 cloud.deploy(slot, package)
                 if fixture:
                     fixture_health = fixture_smoke(clients['staging'],frontend(),version,manifest['package_sha256'],lambda:cloud.selected_package_sha256('staging'),now,time.sleep)
@@ -200,21 +240,35 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                     from .contracts import Observation
                     persist(Observation("W5", {**fixture_health.statuses, "main_after": after.http_status}, {**fixture_health.matches, "stage_failed": True, "no_swap": True, "main_unchanged": after.http_status == 200 and after.status=='ok' and after.configuration_valid and after.version == baseline and after.slot == "main" and after.caller == "deployment"}, fixture_health.counts,fixture_health.times))
                     raise ValueError()
+                diagnostics.phase = 'readiness'
                 observed = smoke(clients[slot], frontend(), version, slot, now, time.sleep)
                 persist(observed)
-                if not all(observed.matches.values()) or cloud.selected_package_sha256(slot) != manifest["package_sha256"] or config() != intended: raise ValueError()
+                if not all(observed.matches.values()): raise ValueError()
+                diagnostics.phase = 'package_digest'
+                if cloud.selected_package_sha256(slot) != manifest["package_sha256"]: raise ValueError()
+                diagnostics.phase = 'configuration_after'
+                if config() != intended: raise ValueError()
                 from .observations import deployment_access
+                diagnostics.phase = 'access_probes'
                 access = deployment_access(clients['main'],frontend())
                 persist(access)
                 if not access.matches['deployment_health_only']: raise ValueError()
                 receipt = dict(schema=1, repository=repository, workflow_path=WORKFLOW, source_sha=sha, run_id=run, run_attempt=attempt, version=version, package_sha256=manifest["package_sha256"], kind="candidate" if mode == "stage" else "seed", created_at=now().isoformat().replace("+00:00", "Z"), baseline_version=baseline if mode == "stage" else version, checks_passed=True)
+                diagnostics.phase = 'receipt'
                 _save(records / "receipt.json", receipt)
                 (records / "package.zip").write_bytes(package)
         print("status=ok")
         return 0
-    except Exception:
+    except Exception as error:
+        if diagnostics is not None:
+            try: _save(records / 'diagnostics.json', diagnostics.result('refused', error) | dict(read_only=mode == 'diagnose'))
+            except Exception: pass
         print("status=refused")
         return 1
     finally:
+        if hook is not None and http is not None and hook in http.event_hooks['response']:
+            http.event_hooks['response'].remove(hook)
+        if request_hook is not None and http is not None and request_hook in http.event_hooks['request']:
+            http.event_hooks['request'].remove(request_hook)
         if made_http and http is not None: http.close()
         logging.lastResort=logging_before[1]; logging.disable(logging_before[0])
