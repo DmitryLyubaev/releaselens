@@ -98,6 +98,10 @@ run "authentication_and_sticky_environment" {
     error_message = "SCM and FTP basic credentials must be disabled on main and staging."
   }
   assert {
+    condition     = alltrue([for auth in values(azapi_update_resource.auth) : length(auth.body.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedPrincipals.groups) == 0])
+    error_message = "No group allowlist may widen the two-principal policy."
+  }
+  assert {
     condition     = toset(azapi_update_resource.sticky.body.properties.appSettingNames) == toset(["Web__GatewayBaseUrl", "Web__Model", "Web__TenantId", "Web__GatewayAudience", "Web__OwnerObjectId", "Web__DeployObjectId", "Web__Slot", "OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID", "ASPNETCORE_ENVIRONMENT"])
     error_message = "Environment and assertion identity stay with each slot; package selection moves with code."
   }

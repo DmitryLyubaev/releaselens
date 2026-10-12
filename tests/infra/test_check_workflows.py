@@ -86,7 +86,7 @@ def test_good_fixtures_pass():
     assert cw.check(FIXTURES / "good") == []
 
 
-@pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml", "gateway-check.yml"])
+@pytest.mark.parametrize("name", ["deploy.yml", "destroy.yml", "gateway-check.yml", "webapp-release.yml"])
 def test_good_fixture_is_a_byte_copy_of_the_repository_workflow(repo_root, name):
     # Otherwise the good set could keep passing while the real workflow drifts from it. So every
     # change to any of these workflows, a Dependabot pin bump included, must be copied into

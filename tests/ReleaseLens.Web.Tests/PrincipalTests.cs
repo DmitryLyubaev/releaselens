@@ -54,4 +54,13 @@ public sealed class PrincipalTests
 
     [Fact]
     public void ArbitraryAliasesAreDenied() => Assert.Equal(CallerKind.None, EasyAuthPrincipalReader.Read(Fixtures.Headers(Fixtures.Claims(("objectId", Fixtures.Owner), ("role", "WebApp.Use"))), Fixtures.Options()));
+
+    [Fact]
+    public void DuplicatePrincipalEnvelopePropertiesAreDenied()
+    {
+        var original = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(Fixtures.Principal(CallerKind.Owner)));
+        var duplicate = original.Insert(1, "\"auth_typ\":\"other\",");
+        var headers = Fixtures.Headers(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(duplicate)));
+        Assert.Equal(CallerKind.None, EasyAuthPrincipalReader.Read(headers, Fixtures.Options()));
+    }
 }

@@ -33,3 +33,10 @@ def test_terraform_does_not_own_selected_package_or_build_version(repo_root: Pat
     assert not re.search(r'(?i)(packageUri|packageUrl|zipDeploy|packagename\.txt|APP_VERSION|BUILD_VERSION)\s*=', text)
     assert 'WEBSITE_RUN_FROM_PACKAGE' in text
     assert not re.search(r'WEBSITE_RUN_FROM_PACKAGE\s*=\s*"https?:', text)
+
+
+def test_intended_configuration_is_available_only_as_sensitive_output(repo_root: Path):
+    text = (repo_root / "infra/webapp/outputs.tf").read_text()
+    output = re.search(r'output\s+"webapp_intended_configuration"\s*\{(.*?)\n\}', text, re.S)
+    assert output is not None
+    assert re.search(r'\bsensitive\s*=\s*true', output.group(1))

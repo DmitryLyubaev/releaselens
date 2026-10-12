@@ -12,6 +12,10 @@ public static class EasyAuthPrincipalReader
         {
             using var document = JsonDocument.Parse(Convert.FromBase64String(encoded));
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return CallerKind.None;
+            var properties = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in root.EnumerateObject())
+                if (!properties.Add(property.Name)) return CallerKind.None;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("auth_typ", out var auth) || auth.GetString() != "aad"
                 || !root.TryGetProperty("claims", out var claims) || claims.ValueKind != JsonValueKind.Array)
                 return CallerKind.None;
