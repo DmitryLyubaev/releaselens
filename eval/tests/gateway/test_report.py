@@ -43,6 +43,9 @@ def _render(before=None, after=None, checks=CHECKS, b3="passed") -> str:
     "host aoai-releaselens-sea-a1b2c3.openai.azure.com",
     "host apim-releaselens-x.azure-api.net",
     "scope https://ai.azure.com/.default",
+    "host private-app.azurewebsites.net",
+    "host private-app.scm.azurewebsites.net",
+    "owner-private@example.test",
 ])
 def test_report_refuses_text_with_a_guid_or_hostname(tmp_path, text):
     target = tmp_path / "report.md"

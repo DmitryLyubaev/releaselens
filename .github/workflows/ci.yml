@@ -48,6 +48,13 @@ jobs:
       - name: Test
         run: dotnet test --configuration Release --no-build --logger "trx;LogFileName=results.trx" --results-directory TestResults
 
+      # This named step is source-bound W2 offline evidence, separate from live Easy Auth probes.
+      - name: Webapp offline token and route edges
+        run: dotnet test tests/ReleaseLens.Web.Tests --configuration Release --no-build
+
+      - name: Build the reviewed unhealthy Webapp fixture
+        run: dotnet build tests/fixtures/ReleaseLens.Web.Unhealthy/ReleaseLens.Web.Unhealthy.csproj --configuration Release
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -78,7 +85,7 @@ jobs:
           python -m venv "$VENV"
           "$VENV/bin/pip" install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
           cd eval
-          "$VENV/bin/python" -c "import app.gateway.ci_check, azure.identity"
+          "$VENV/bin/python" -c "import app.gateway.ci_check, app.webapp.release, app.webapp.release_cli, azure.identity"
 
       - name: Install eval requirements
         run: pip install -r eval/requirements.txt
@@ -108,7 +115,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl', 'infra/gateway/.terraform.lock.hcl', 'infra/functions/.terraform.lock.hcl') }}
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl', 'infra/gateway/.terraform.lock.hcl', 'infra/functions/.terraform.lock.hcl', 'infra/webapp/.terraform.lock.hcl') }}
 
       - name: Format check
         run: terraform fmt -check -recursive infra
@@ -144,6 +151,13 @@ jobs:
 
       - name: Check infra/functions
         working-directory: infra/functions
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+
+      - name: Check infra/webapp
+        working-directory: infra/webapp
         run: |
           terraform init -backend=false -input=false
           terraform validate

@@ -98,8 +98,8 @@ and two secrets, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`. They are identif
 Implementers only run tests, `validate`, `fmt` and mocked plans.
 
 **Commits:**
-- Plain `git commit` in the ReleaseLens repository. Its local identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`. Never pass `--author` and never run `git config`.
-- Every message ends with exactly `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Plain `git commit` in the ReleaseLens repository. Its local identity is already `Dmitry Lyubaev <owner@example.com>`. Never pass `--author` and never run `git config`.
+- Every message ends with exactly `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`.
 - No step pushes.
 
 **Honesty:**

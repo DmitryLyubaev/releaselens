@@ -24,7 +24,7 @@
 - 429 wait budget: 3 seconds per query (`Agent:RateLimitWaitBudgetMs = 3000`), one retry, `retry-after-ms` wins over `retry-after`.
 - Azure pricing identity: provider `azure-openai`, model `gpt-4.1-mini`, version `2025-04-14`, deployment type `Standard`; USD per 1M tokens input 0.44, cached input 0.11, output 1.76 (Azure Retail Prices API, `australiaeast`, read 2026-09-24).
 - Departure from spec §4.6 / T-C4, recorded 2026-09-25 (the owner is told at handoff and can overrule it): an OpenAI-direct model whose cached-input rate has not been read and dated (today `gpt-4o` and `gpt-4o-mini`) has its cached tokens billed once, at the input rate, an upper bound; spec §4.6 says the model's own cached rate. A model added from OpenAI's pricing page gets its own cached-input rate from that same page. `gpt-4.1-mini` for evaluation arm O is one of these, so arm O is billed at its own cached rate and the §8 comparison of arm Z against arm O is not skewed.
-- Every commit step uses plain `git commit` in the ReleaseLens repository. Its repo-local identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`: never pass `--author`, never run `git config`. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No step pushes.
+- Every commit step uses plain `git commit` in the ReleaseLens repository. Its repo-local identity is already `Dmitry Lyubaev <author@example.invalid>`: never pass `--author`, never run `git config`. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <author@example.invalid>`. No step pushes.
 - Postgres-backed tests (classes in [Collection(nameof(PostgresCollection))], including QueryAgentTests, QueryEndpointTests and StartupConfigurationTests) need Docker; where Docker is absent they run in CI on the pull request, and a task is not complete until they have run green somewhere.
 - Comments and docs make no claim that is not true of the code as written.
 
@@ -854,7 +854,7 @@ Expected: `Failed: 0`, with `Complete_AnthropicUnavailable_OpenAiIsSentItsOwnCon
 
 - [ ] **Step 6: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/ChatContracts.cs src/ReleaseLens.Llm/Agent/AgentModels.cs src/ReleaseLens.Llm/Agent/QueryAgent.cs src/ReleaseLens.Llm/Providers/AnthropicChatProvider.cs src/ReleaseLens.Llm/Providers/OpenAiChatProvider.cs src/ReleaseLens.Api/appsettings.json tests/ReleaseLens.Llm.Tests/FallbackChatProviderTests.cs tests/ReleaseLens.Llm.Tests/AnthropicChatProviderTests.cs tests/ReleaseLens.Llm.Tests/OpenAiChatProviderTests.cs tests/ReleaseLens.Llm.Tests/QueryAgentTests.cs
@@ -867,7 +867,7 @@ AgentOptions.Model are removed; Anthropic and OpenAI send options.Model.
 With no provider answering, metadata.model is now "none", matching
 metadata.provider, instead of the agent's configured default.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -1425,7 +1425,7 @@ Expected: the build reports `0 Warning(s)` and `0 Error(s)` (`TreatWarningsAsErr
 
 - [ ] **Step 10: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/OpenAiWireFormat.cs src/ReleaseLens.Llm/Providers/OpenAiChatProvider.cs tests/ReleaseLens.Llm.Tests/OpenAiWireFormatTests.cs
@@ -1437,7 +1437,7 @@ was dropped); a 200 with missing or empty choices throws an
 InvalidOperationException naming the provider instead of an
 IndexOutOfRangeException; and a 200 with no usage object throws the same
 way, instead of counting as zero tokens and costing nothing. How usage
-is counted is unchanged." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+is counted is unchanged." -m "Co-Authored-By: Claude Opus 5.5 <author@example.invalid>"
 ```
 
 ---
@@ -1769,7 +1769,7 @@ Both test projects **need Docker**. Their Postgres Testcontainers collection (`P
 
 - [ ] **Step 10: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/ChatContracts.cs src/ReleaseLens.Llm/Providers/OpenAiWireFormat.cs src/ReleaseLens.Llm/Providers/FallbackChatProvider.cs tests/ReleaseLens.Llm.Tests/OpenAiContentFilterTests.cs tests/ReleaseLens.Llm.Tests/FallbackChatProviderTests.cs
@@ -1784,7 +1784,7 @@ and none of the text. FallbackChatProvider catches only
 ProviderUnavailableException, so the outcome never reaches another provider;
 a test now pins that.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -2960,7 +2960,7 @@ Expected: every run reports `Failed: 0`.
 
 - [ ] **Step 14: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```bash
 git add src/ReleaseLens.Llm/Providers/PricingIdentity.cs \
@@ -3000,7 +3000,7 @@ QueryAgent sums cost per iteration, including the tool-ceiling final call and
 the iterations before a degraded answer, instead of pricing the whole query
 at the last provider's rate (the pricing half of F5).
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -4294,7 +4294,7 @@ Expected: `Failed: 0`, with this task's new non-Postgres classes among the passe
 
 - [ ] **Step 22: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/QueryContext.cs src/ReleaseLens.Llm/Providers/ChatProviderSelection.cs src/ReleaseLens.Llm/Providers/ChatContracts.cs src/ReleaseLens.Llm/Providers/FallbackChatProvider.cs src/ReleaseLens.Llm/Agent/AgentModels.cs src/ReleaseLens.Llm/Agent/QueryAgent.cs src/ReleaseLens.Api/Contracts.cs src/ReleaseLens.Api/Program.cs tests/ReleaseLens.Llm.Tests/QueryContextTests.cs tests/ReleaseLens.Llm.Tests/FallbackChatProviderStickinessTests.cs tests/ReleaseLens.Llm.Tests/ChatProviderSelectionTests.cs tests/ReleaseLens.Llm.Tests/QueryAgentTests.cs tests/ReleaseLens.Api.Tests/QueryEndpointTests.cs
@@ -4316,7 +4316,7 @@ ordered Chat:Providers list, failing on an empty list, an unknown or
 differently cased name, or a duplicate. Startup wiring comes later.
 Agent:RateLimitWaitBudgetMs (3000) sets each query's 429 wait budget.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -4987,7 +4987,7 @@ Expected: every project `Failed: 0`.
 
 - [ ] **Step 12: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```bash
 git add src/ReleaseLens.Llm/Agent/AgentModels.cs \
@@ -5014,7 +5014,7 @@ omitted when absent, so every unfiltered response keeps its shape.
 A contract test now pins every key of the /evidence/* responses, which
 releaselens-mcp reads, including null bounds and coverage.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -5787,7 +5787,7 @@ The 19 tests this task adds need no Docker.
 
 - [ ] **Step 14: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```bash
 git add Directory.Packages.props \
@@ -5815,7 +5815,7 @@ AzureOpenAi:TenantId and is pinned to it. DefaultAzureCredential is not used.
 Microsoft.Extensions.Logging.Abstractions moves from 10.0.0 to 10.0.3, because Azure.Core
 1.53.0 needs it and transitive pinning otherwise fails restore with NU1109.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 
@@ -6640,7 +6640,7 @@ Expected:
 
 - [ ] **Step 10: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/Azure/AzureOpenAiChatProvider.cs tests/ReleaseLens.Llm.Tests/AzureOpenAiChatProviderTests.cs tests/ReleaseLens.Llm.Tests/WireEquivalenceTests.cs
@@ -6653,7 +6653,7 @@ prompt and never falls through; any other 400 is still our own bug. A
 200 whose content_filter_results carries an error is returned and logged,
 not treated as filtered. A test shows the Azure body equals the OpenAI
 body except for model, and the headers differ only in Authorization.
-The 429 wait is not in this commit." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+The 429 wait is not in this commit." -m "Co-Authored-By: Claude Opus 5.5 <author@example.invalid>"
 ```
 
 ---
@@ -7323,7 +7323,7 @@ Expected:
 
 - [ ] **Step 6: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Llm/Providers/Azure/AzureOpenAiChatProvider.cs tests/ReleaseLens.Llm.Tests/AzureOpenAiRateLimitTests.cs
@@ -7335,7 +7335,7 @@ no usable header, or no QueryContext falls through at once as before.
 Only a plain non-negative integer is a usable header value: a decimal, a
 sign, whitespace, a unit or a number past int.MaxValue is treated as
 absent, never rounded or clamped. The budget lives on the query, so
-concurrent queries on the one provider instance do not share it." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+concurrent queries on the one provider instance do not share it." -m "Co-Authored-By: Claude Opus 5.5 <author@example.invalid>"
 ```
 
 ---
@@ -7898,7 +7898,7 @@ The existing API tests already prove that the app starts with the default config
 
 - [ ] **Step 6: Commit**
 
-Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <Dmitry.Lyubaev@gmail.com>`, so pass no `--author` and run no `git config`. Do not push.
+Plain `git commit`: the repository's own identity is already `Dmitry Lyubaev <owner@example.com>`, so pass no `--author` and run no `git config`. Do not push.
 
 ```
 git add src/ReleaseLens.Api/Program.cs src/ReleaseLens.Api/appsettings.json tests/ReleaseLens.Api.Tests/StartupConfigurationTests.cs tests/ReleaseLens.Api.Tests/QueryEndpointTests.cs
@@ -7932,7 +7932,7 @@ overlay index by index and a two-entry file list would make a one-entry
 list impossible to set from the environment; with no entry, ChatOptions'
 default gives the same local chain.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <author@example.invalid>
 EOF
 ```
 

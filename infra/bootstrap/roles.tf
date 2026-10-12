@@ -57,6 +57,12 @@ resource "azurerm_role_assignment" "owner_state_functions" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+resource "azurerm_role_assignment" "owner_state_webapp" {
+  scope                = azurerm_storage_container.webapp.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 # The AI gateway's identity calls the models on both accounts and publishes its metrics to
 # Application Insights, and does nothing else here (spec §3.1).
 resource "azurerm_role_assignment" "gateway_openai_user_primary" {

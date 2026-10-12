@@ -5,6 +5,24 @@ answered with citations back to the specific artefacts.
 
 Indexed repository: [`microsoft/semantic-kernel`](https://github.com/microsoft/semantic-kernel).
 
+Project 6 adds an owner-only .NET 10 Razor Pages front end with main/staging slots and a
+direct API Management gateway route. Its code, release gate and offline checks are implemented;
+the live Azure checks are **not run**. See the [pending report](docs/webapp-report.md) and
+[session runbook](docs/runbook-webapp.md). This small front end sends one question directly
+to the gateway and has no retrieval or citation path.
+
+| Project 6 responsibility | Placement |
+|---|---|
+| Owner sign-in, token store and refresh | App Service Easy Auth, shared front-end registration |
+| Page, antiforgery, token sanity checks and one bounded request | `ReleaseLens.Web`, Linux S1 main/staging |
+| Caller authentication, budget policy and model backend | Existing API Management gateway |
+| Front-end registration, identity, consent and state container | Long-lived bootstrap stack |
+| Plan, sites, sticky/auth configuration and deployment role | Session-owned webapp stack |
+| Immutable packages and separately approved swap | Manual protected webapp-release workflow |
+
+The nightly app-stack destroy does not remove the webapp stack. The session needs its own
+approved teardown and measured absence checks.
+
 ```
 Question ──► hybrid retrieval (Postgres full-text + pgvector)
          ──► agent loop with tools ──► synthesis with citations

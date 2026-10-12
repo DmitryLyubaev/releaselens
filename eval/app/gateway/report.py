@@ -19,6 +19,7 @@ from .client import Record, signals_disagree
 from .verdict import Verdict
 
 _GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+EMAIL = re.compile(r'[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+')
 
 CHECK_ORDER = ("B1", "B2", "B3", "B4", "B5")
 
@@ -30,12 +31,14 @@ class IdentifierError(Exception):
 def write(path: Path, text: str, forbidden: Sequence[str] = ()) -> None:
     """Write `text` to `path`, unless it holds a GUID, an Azure hostname or a `forbidden` string."""
     if _GUID.search(text):
-        raise IdentifierError(f"{path.name} was not written: the text holds a GUID")
+        raise IdentifierError("artifact was not written: the text holds a GUID")
     if HOSTNAME.search(text):
-        raise IdentifierError(f"{path.name} was not written: the text holds an Azure hostname")
+        raise IdentifierError("artifact was not written: the text holds an Azure hostname")
+    if EMAIL.search(text):
+        raise IdentifierError('artifact was not written: the text holds an email')
     lowered = text.lower()
     if any(item and item.lower() in lowered for item in forbidden):
-        raise IdentifierError(f"{path.name} was not written: the text holds a string on the forbidden list")
+        raise IdentifierError("artifact was not written: the text holds a string on the forbidden list")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 

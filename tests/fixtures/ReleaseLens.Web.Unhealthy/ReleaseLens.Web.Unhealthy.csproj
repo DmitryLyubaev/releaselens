@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <AssemblyName>ReleaseLens.Web</AssemblyName>
+    <RootNamespace>ReleaseLens.Web.Unhealthy</RootNamespace>
+  </PropertyGroup>
+</Project>

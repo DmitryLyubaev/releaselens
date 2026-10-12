@@ -610,6 +610,24 @@ in [`../terraform`](../terraform/README.md#deployed-and-destroyed-by-the-workflo
 
 ## Tests
 
+Project 6 adds one persistent front-end identity and app registration, shared
+by the main site and staging slot. The owner receives `WebApp.Use`; the existing
+deployment identity receives `WebApp.Smoke`. Assignment is required. Only the
+owner's delegated gateway token grants model access. The new identity receives
+no gateway or model role.
+
+Easy Auth authenticates the registration with a managed identity federated
+assertion. There is no password or certificate. Both callbacks derive from
+the existing bootstrap suffix, so destroying the session stack does not replace
+the registration or its identity. New identifier outputs are sensitive and
+must be captured privately, never pasted into public evidence or logs.
+
+These declarations have only offline mocked validation. A bootstrap apply,
+consent changes, resource replacement and lock changes each require the owner's
+separate approval and the account guard in the Project 6 runbook. Existing
+GitHub federation remains unchanged. Keyless token store and refresh behaviour
+remain live checks.
+
 ```bash
 terraform init -backend=false -input=false
 terraform test

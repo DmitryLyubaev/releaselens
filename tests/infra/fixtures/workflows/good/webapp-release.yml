@@ -1,0 +1,159 @@
+name: Webapp release
+run-name: webapp-${{ inputs.mode }}-${{ inputs.fixture && 'fixture' || 'candidate' }}-${{ github.sha }}-${{ github.run_attempt }}
+
+# Every dispatch is a separate owner decision. Environment azure requires approval
+# and its branch rule binds the existing OIDC trust to main. This workflow never
+# applies Terraform or destroys resources. Release credentials stay in memory.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Approved release action
+        required: true
+        type: choice
+        options: [seed, stage, promote]
+      fixture:
+        description: Deploy the negative fixture to staging (never eligible for promotion)
+        type: boolean
+        default: false
+      baseline_version:
+        description: Expected healthy main package version (stage only)
+        type: string
+      source_run:
+        description: Successful candidate stage run ID (promote only)
+        type: string
+      source_attempt:
+        description: Candidate stage run attempt (promote only)
+        type: string
+        default: '1'
+
+permissions: {}
+concurrency:
+  group: releaselens-azure
+  cancel-in-progress: false
+  queue: max
+defaults:
+  run:
+    shell: bash
+env:
+  WEBAPP_MODE: ${{ inputs.mode }}
+  WEBAPP_FIXTURE: ${{ inputs.fixture }}
+  SOURCE_RUN_ID: ${{ inputs.source_run }}
+  SOURCE_RUN_ATTEMPT: ${{ inputs.source_attempt }}
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Install the locked transport closure
+        run: |
+          pip install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
+      - name: Verify current source CI and candidate run before downloading
+        working-directory: eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m app.webapp.release preflight
+      - name: Save only the selected fixture eligibility rejection
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-rejection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-release/rejection.json
+          if-no-files-found: ignore
+      - name: Download the source candidate receipt and package
+        if: inputs.mode == 'promote'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: webapp-stage-${{ inputs.source_run }}-${{ inputs.source_attempt }}
+          path: artifacts/webapp-source
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Build immutable compiled output from this main SHA
+        if: inputs.mode != 'promote'
+        run: |
+          project=src/ReleaseLens.Web/ReleaseLens.Web.csproj
+          kind="$WEBAPP_MODE"
+          if [ "$WEBAPP_FIXTURE" = true ]; then
+            project=tests/fixtures/ReleaseLens.Web.Unhealthy/ReleaseLens.Web.Unhealthy.csproj
+            kind=fixture
+          fi
+          version="$GITHUB_SHA.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.$kind"
+          dotnet publish "$project" -c Release -o artifacts/webapp-publish -p:InformationalVersion="$version" -p:IncludeSourceRevisionInInformationalVersion=false -p:DebugType=None -p:DebugSymbols=false
+          python scripts/package_webapp.py artifacts/webapp-publish artifacts/webapp-verified/package.zip
+      - name: Bind and verify the package bytes and receipt
+        working-directory: eval
+        run: python -m app.webapp.release verify-bundle
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-verified
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: azure
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - name: Install the locked release closure
+        run: |
+          pip install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
+      # Same-run download uses artifact runtime authorization, with no actions:read.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: webapp-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-verified
+      - name: Execute the approved action and recheck staging under concurrency
+        working-directory: eval
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          WEBAPP_RESOURCE_ID: ${{ secrets.WEBAPP_RESOURCE_ID }}
+          WEBAPP_MAIN_URL: ${{ secrets.WEBAPP_MAIN_URL }}
+          WEBAPP_STAGING_URL: ${{ secrets.WEBAPP_STAGING_URL }}
+          WEBAPP_FRONTEND_AUDIENCE: ${{ secrets.WEBAPP_FRONTEND_AUDIENCE }}
+          WEBAPP_DEPLOY_OBJECT_ID: ${{ secrets.WEBAPP_DEPLOY_OBJECT_ID }}
+          WEBAPP_INTENDED_CONFIG: ${{ secrets.WEBAPP_INTENDED_CONFIG }}
+          WEBAPP_BASELINE_VERSION: ${{ inputs.baseline_version }}
+        run: python -m app.webapp.release "$WEBAPP_MODE"
+      - name: Save sanitized observations even when the action fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-observations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-release/observation-*.json
+          if-no-files-found: ignore
+      - name: Save the successful candidate only
+        if: success() && inputs.mode == 'stage' && !inputs.fixture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-stage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/webapp-release/receipt.json
+            artifacts/webapp-release/package.zip
+          if-no-files-found: error

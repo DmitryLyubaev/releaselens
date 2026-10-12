@@ -22,12 +22,13 @@ from pathlib import Path
 
 import yaml
 
-ALLOWED_AZURE = {"deploy.yml", "destroy.yml", "gateway-check.yml"}
+ALLOWED_AZURE = {"deploy.yml", "destroy.yml", "gateway-check.yml", "webapp-release.yml"}
 
 TRIGGERS = {
     "deploy.yml": {"workflow_dispatch"},
     "destroy.yml": {"workflow_dispatch", "schedule"},
     "gateway-check.yml": {"workflow_dispatch"},
+    "webapp-release.yml": {"workflow_dispatch"},
 }
 DESTROY_CRON = "0 14 * * *"
 # gateway-check.yml runs one model call as the deploy identity. Its `main` guard backs up the
@@ -105,14 +106,14 @@ def _check_allowed(name, workflow, jobs):
     if permissions != {}:
         found.append(f"{name}: top-level permissions must be {{}} (found: {_show(permissions)})")
 
-    if name == "gateway-check.yml":
+    if name in {"gateway-check.yml", "webapp-release.yml"}:
         for job_id, job in jobs.items():
             guard = job.get("if", _ABSENT)
             if guard != MAIN_GUARD:
                 found.append(f"{name}: job '{job_id}': if must be {_show(MAIN_GUARD)} "
                              f"(found: {_show(guard)})")
 
-    if name in {"deploy.yml", "destroy.yml", "gateway-check.yml"}:
+    if name in ALLOWED_AZURE:
         found += _job_permissions(name, jobs)
         concurrency = workflow.get("concurrency", _ABSENT)
         if concurrency != CONCURRENCY:
@@ -120,6 +121,19 @@ def _check_allowed(name, workflow, jobs):
                          f"(found: {_show(concurrency)})")
 
     found += _unpinned(name, jobs)
+    if name == "webapp-release.yml":
+        if set(jobs) != {"preflight", "release"}:
+            found.append(f"{name}: jobs must be exactly preflight and release")
+        for job_id, job in jobs.items():
+            expected = {"contents": "read", "actions": "read"} if job_id == "preflight" else AZURE_JOB_PERMISSIONS
+            if job.get("permissions") != expected:
+                found.append(f"{name}: job '{job_id}': permissions must be {_show(expected)}")
+            if job_id == "preflight" and _environment(job) is not None:
+                found.append(f"{name}: preflight must have no environment")
+            if job_id == "release" and (not _is_azure(_environment(job)) or job.get("needs") != "preflight"):
+                found.append(f"{name}: release must require preflight and environment azure")
+            if "uses" in job:
+                found.append(f"{name}: reusable jobs are not allowed")
     return found
 
 

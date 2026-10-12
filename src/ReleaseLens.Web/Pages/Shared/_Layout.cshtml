@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ReleaseLens - Ask a question</title>
+  <link rel="stylesheet" href="/site.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <a class="brand" href="/"><span class="monogram" aria-hidden="true">R</span>ReleaseLens</a>
+      @if (ViewData["SignedOut"] is not true)
+      {
+        <div class="session"><span>Signed in</span><a href="/.auth/logout?post_logout_redirect_uri=/signed-out">Sign out</a></div>
+      }
+    </header>
+    <main>@RenderBody()</main>
+    <footer><span>ReleaseLens · Project 6</span><span>AI answers can contain mistakes.</span></footer>
+  </div>
+  <script src="/site.js" defer></script>
+</body>
+</html>

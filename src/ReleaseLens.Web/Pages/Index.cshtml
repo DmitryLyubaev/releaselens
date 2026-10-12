@@ -1,0 +1,28 @@
+@page
+@model IndexModel
+<div class="intro">
+  <span class="eyebrow">AI gateway front end</span>
+  <h1>Ask a question</h1>
+  <p>General AI answers. ReleaseLens repository search is not connected.</p>
+</div>
+<form id="question-form" method="post" action="/ask" asp-antiforgery="true">
+  <label asp-for="Question">Your question</label>
+  <textarea asp-for="Question" rows="4" maxlength="2000" required aria-describedby="question-help"></textarea>
+  <div class="form-footer"><span id="question-help">One question at a time.</span><button class="primary" type="submit">Ask</button></div>
+</form>
+@if (Model.Message is not null)
+{
+  <div class="feedback" role="alert">
+    <p>@Model.Message</p>
+    @if (Model.Outcome?.RetryAfterSeconds is { } seconds) { <p>Try again in @seconds seconds.</p> }
+    @if (Model.Outcome?.Kind == QuestionKind.SignInRequired) { <a href="/.auth/login/aad?post_login_redirect_uri=/">Sign in with Microsoft</a> }
+  </div>
+}
+@if (Model.Outcome?.Answer is { } answer)
+{
+  <section class="answer" aria-live="polite"><h2>Answer</h2><div id="answer-text">@answer</div></section>
+}
+else
+{
+  <p class="idle">Your answer will appear here.</p>
+}
