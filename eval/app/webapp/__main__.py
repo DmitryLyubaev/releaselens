@@ -114,6 +114,7 @@ def _context(mode,values,commit,out):
         http.close(); raise
 
 def main(argv=None,*,env=None,clean_guard=None,output_guard=None,out=OUT,commit_reader=None,context_factory=None,operations=None)->int:
+    logging_before=(logging.root.manager.disable,logging.lastResort)
     logging.disable(logging.CRITICAL); logging.lastResort=None
     argv=sys.argv[1:] if argv is None else argv
     ctx=None; started=False; check=None; forbidden=[]; commit=None
@@ -158,5 +159,6 @@ def main(argv=None,*,env=None,clean_guard=None,output_guard=None,out=OUT,commit_
             http=getattr(ctx,'http',None)
             if http is not None: http.close()
         ctx=None
+        logging.lastResort=logging_before[1]; logging.disable(logging_before[0])
 
 if __name__=='__main__': raise SystemExit(main())

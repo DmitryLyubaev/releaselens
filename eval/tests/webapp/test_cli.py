@@ -28,3 +28,12 @@ def test_cross_commit_file_refuses_report(tmp_path,capsys):
     (tmp_path/'check-w1.json').write_text(json.dumps(dict(check='W1',verdict='fail',evidence='live',observations=[],commit='b'*40,measured_at='2026-10-12T01:00:00Z')))
     assert cli.main(['report'],env={},clean_guard=lambda:None,output_guard=lambda _:None,out=tmp_path,commit_reader=lambda:SHA)==1
     assert not (tmp_path/'report.md').exists()
+
+def test_callable_cli_restores_the_callers_logging_policy_after_private_operation(tmp_path):
+    import logging
+    from app.webapp import release_cli
+    before=(logging.root.manager.disable,logging.lastResort)
+    assert cli.main(['unknown'],clean_guard=lambda:None,output_guard=lambda _:None,out=tmp_path)==1
+    assert (logging.root.manager.disable,logging.lastResort)==before
+    assert release_cli.main(['unknown'],env={},clean_guard=lambda:None,output_guard=lambda _:None,root=tmp_path)==1
+    assert (logging.root.manager.disable,logging.lastResort)==before

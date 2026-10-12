@@ -89,6 +89,7 @@ def _canonical(value):
 
 
 def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None, root=ROOT, credential_factory=None):
+    logging_before = (logging.root.manager.disable,logging.lastResort)
     logging.disable(logging.CRITICAL); logging.lastResort = None
     argv = sys.argv[1:] if argv is None else argv
     bundle = root / "artifacts/webapp-verified"
@@ -205,3 +206,4 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
         return 1
     finally:
         if made_http and http is not None: http.close()
+        logging.lastResort=logging_before[1]; logging.disable(logging_before[0])
