@@ -45,6 +45,23 @@ class AzureReleaseTransport:
         return "https://" + parts.hostname.removesuffix(".azurewebsites.net") + ".scm.azurewebsites.net"
 
     def _read(self, method, url, *, body=None, binary=False, limit=1024 * 1024, allow_async=False):
+        # Only owned, non-mutating ARM configuration reads may be replayed.
+        try: parsed = urlsplit(url)
+        except Exception: raise TransportRefused('release_refused') from None
+        lists = {self._resource + '/config/appsettings/list', self._resource + '/slots/staging/config/appsettings/list'}
+        read = (body is None and parsed.scheme == 'https' and parsed.netloc == 'management.azure.com'
+                and (method == 'GET' and (parsed.path == self._resource or parsed.path.startswith(self._resource + '/'))
+                     or method == 'POST' and parsed.path in lists))
+        for attempt in range(2 if read else 1):
+            try:
+                return self._read_once(method, url, body=body, binary=binary, limit=limit, allow_async=allow_async,
+                                       timeout=30 if read else 120 if isinstance(body, bytes) else 10)
+            except TransportRefused as error:
+                if not read or attempt or str(error) != 'release_refused' or not isinstance(error.__context__, httpx.TimeoutException):
+                    raise
+                self._sleep(1)
+
+    def _read_once(self, method, url, *, body, binary, limit, allow_async, timeout):
         try:
             parsed = urlsplit(url)
             if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment: raise ValueError()
@@ -52,7 +69,7 @@ class AzureReleaseTransport:
             if parsed.hostname != "management.azure.com" and parsed.hostname not in own_scm: raise ValueError()
             if parsed.hostname == "management.azure.com" and not parsed.path.startswith(f"/subscriptions/{self._subscription}/"): raise ValueError()
             kwargs = {"content": body} if isinstance(body, bytes) else {"json": body} if body is not None else {}
-            with self._http.stream(method, url, headers={"Authorization": "Bearer " + self._bearer()}, timeout=120 if isinstance(body, bytes) else 10, follow_redirects=False, **kwargs) as response:
+            with self._http.stream(method, url, headers={"Authorization": "Bearer " + self._bearer()}, timeout=timeout, follow_redirects=False, **kwargs) as response:
                 headers = dict(response.headers)
                 if response.status_code == 202 and allow_async: return None, headers
                 if response.status_code not in {200, 201, 204}: raise TransportRefused("release_refused")

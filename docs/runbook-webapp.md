@@ -208,6 +208,12 @@ labels, HTTP status and an optional numeric AADSTS code. No exception text, URLs
 private identifiers, credentials or response bodies are included. Inspect this evidence
 before changing a failed release path or recreating session resources.
 
+Owned ARM configuration reads use a 30-second transport timeout and retry a timeout
+once after one second. This includes the two exact appsettings-list POST reads.
+HTTP refusals and token-acquisition failures stop immediately. Uploads, swaps and
+other writes are never replayed after an ambiguous timeout; their existing timeout
+bounds and SCM polling remain unchanged.
+
 **Ask first.** Dispatch `webapp-release.yml` manually on current main with `mode=seed`,
 `fixture=false`. Approve its protected release job. It builds an immutable
 `<source-sha>.<run-id>.<attempt>.seed` package, verifies source CI, publishes main and checks
