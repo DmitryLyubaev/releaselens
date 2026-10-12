@@ -155,3 +155,20 @@ class AzureReleaseTransport:
         sticky, _ = self._read("GET", "https://management.azure.com" + self._resource + "/config/slotConfigNames?api-version=" + API)
         result["sticky"] = pick(sticky.get("properties", {}), intended["sticky"])
         return result
+
+
+class ReadOnlyAzureReleaseTransport(AzureReleaseTransport):
+    """The diagnostic action cannot reach ARM writes, SCM uploads or swaps."""
+    def _read(self, method, url, **kwargs):
+        parsed = urlsplit(url)
+        lists = {self._resource + '/config/appsettings/list', self._resource + '/slots/staging/config/appsettings/list'}
+        if method != 'GET' and not (method == 'POST' and parsed.hostname == 'management.azure.com' and parsed.path in lists and kwargs.get('body') is None):
+            raise TransportRefused('release_refused')
+        return super()._read(method, url, **kwargs)
+
+    def probe_scm(self, slot):
+        try:
+            self._read('GET', self._scm(slot) + '/api/deployments/latest')
+            return True
+        except TransportRefused:
+            return False

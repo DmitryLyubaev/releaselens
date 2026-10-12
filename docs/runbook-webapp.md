@@ -195,6 +195,19 @@ documents.
 
 ## Seed and early deployment probes
 
+The protected workflow also accepts `mode=diagnose`, with `fixture=false`, for a
+read-only investigation using the actual deployment identity and existing resources.
+It checks intended configuration, obtains the frontend token, and probes main/staging
+health and SCM. The diagnostic transport refuses uploads, ARM writes and swaps before
+token acquisition. It calls no model and creates no eligible receipt. A completed
+diagnostic run means facts were collected; it does not establish healthy deployment.
+
+The workflow saves `webapp-diagnostics-<run-id>-<attempt>` even when a release fails.
+Its closed JSON contains public run/source binding, a fixed phase label, operation/slot
+labels, HTTP status and an optional numeric AADSTS code. No exception text, URLs,
+private identifiers, credentials or response bodies are included. Inspect this evidence
+before changing a failed release path or recreating session resources.
+
 **Ask first.** Dispatch `webapp-release.yml` manually on current main with `mode=seed`,
 `fixture=false`. Approve its protected release job. It builds an immutable
 `<source-sha>.<run-id>.<attempt>.seed` package, verifies source CI, publishes main and checks

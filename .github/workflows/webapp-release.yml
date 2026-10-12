@@ -11,7 +11,7 @@ on:
         description: Approved release action
         required: true
         type: choice
-        options: [seed, stage, promote]
+        options: [seed, stage, promote, diagnose]
       fixture:
         description: Deploy the negative fixture to staging (never eligible for promotion)
         type: boolean
@@ -147,6 +147,13 @@ jobs:
         with:
           name: webapp-observations-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/webapp-release/observation-*.json
+          if-no-files-found: ignore
+      - name: Save closed release diagnostics even when the action fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webapp-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/webapp-release/diagnostics.json
           if-no-files-found: ignore
       - name: Save the successful candidate only
         if: success() && inputs.mode == 'stage' && !inputs.fixture
