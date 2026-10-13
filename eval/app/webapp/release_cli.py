@@ -239,14 +239,17 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 previous_version = None
                 if not fixture:
                     diagnostics.phase = 'readiness'
-                    previous = clients[slot].health(frontend())
-                    if previous.http_status == 200:
-                        if (previous.status != 'ok' or previous.configuration_valid is not True
-                                or previous.caller != 'deployment' or previous.slot != slot
-                                or not isinstance(previous.version, str) or not VERSION.fullmatch(previous.version)
-                                or previous.version.endswith('.fixture')): raise ValueError()
-                        previous_version = previous.version
-                    elif previous.http_status not in {404, 502, 503, 504}: raise ValueError()
+                    package_present = cloud.selected_package_present(slot)
+                    if type(package_present) is not bool: raise ValueError()
+                    if package_present:
+                        previous = clients[slot].health(frontend())
+                        if previous.http_status == 200:
+                            if (previous.status != 'ok' or previous.configuration_valid is not True
+                                    or previous.caller != 'deployment' or previous.slot != slot
+                                    or not isinstance(previous.version, str) or not VERSION.fullmatch(previous.version)
+                                    or previous.version.endswith('.fixture')): raise ValueError()
+                            previous_version = previous.version
+                        elif previous.http_status not in {404, 502, 503, 504}: raise ValueError()
                 diagnostics.phase = 'scm_deploy'
                 diagnostics.deployments = 1
                 cloud.deploy(slot, package)

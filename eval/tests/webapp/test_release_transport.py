@@ -26,6 +26,52 @@ def adapter(http, bearer=None, **kwargs):
                                  "https://mock-webapp.azurewebsites.net", "https://mock-webapp-staging.azurewebsites.net", **kwargs)
 
 
+@pytest.mark.parametrize('status,present',[(200,True),(404,False)])
+@pytest.mark.parametrize('slot',['main','staging'])
+def test_selected_package_presence_is_an_owned_status_only_read(status,present,slot):
+    from .test_http_client import Unreadable
+    body=Unreadable();calls=[]
+    def handle(request):
+        calls.append(request)
+        hostname='mock-webapp'+('-staging' if slot=='staging' else '')+'.scm.azurewebsites.net'
+        assert request.method=='GET' and request.url.host==hostname
+        assert request.url.path=='/api/vfs/data/SitePackages/packagename.txt'
+        assert request.headers['authorization'].startswith('Bearer ')
+        assert request.extensions['timeout']['read']==30
+        return httpx.Response(status,stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        assert adapter(http).selected_package_present(slot) is present
+    assert len(calls)==1 and body.reads==0
+
+
+@pytest.mark.parametrize('status',[301,401,403,500,503])
+def test_selected_package_presence_refuses_unconfirmed_absence(status):
+    calls=[]
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(status,headers={'Location':'https://other.example.test/'})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http).selected_package_present('main')
+    assert len(calls)==1
+
+
+def test_selected_package_presence_timeout_is_not_absence():
+    calls=[]
+    def handle(request):
+        calls.append(request)
+        raise httpx.ReadTimeout('No SCM response',request=request)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http).selected_package_present('main')
+    assert len(calls)==1
+
+
+def test_selected_package_presence_requires_bound_workload_identity():
+    calls=[]
+    with httpx.Client(transport=httpx.MockTransport(lambda request:calls.append(request))) as http:
+        with pytest.raises(TransportRefused):adapter(http,token(oid='wrong')).selected_package_present('main')
+    assert not calls
+
+
 def test_workflow_arm_adapter_keeps_credentials_in_memory_and_uses_regular_swap():
     requests = []
     def handle(request):
