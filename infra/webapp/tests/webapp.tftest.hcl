@@ -111,8 +111,8 @@ run "authentication_and_sticky_environment" {
     error_message = "SCM and FTP basic credentials must be disabled on main and staging."
   }
   assert {
-    condition     = alltrue([for auth in values(azapi_update_resource.auth) : length(auth.body.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedPrincipals.groups) == 0])
-    error_message = "No group allowlist may widen the two-principal policy."
+    condition     = alltrue([for auth in values(azapi_update_resource.auth) : auth.body.properties.identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedPrincipals.groups == null])
+    error_message = "Group lookup must be disabled without changing the two-principal identity allowlist."
   }
   assert {
     condition     = toset(azapi_update_resource.sticky.body.properties.appSettingNames) == toset(["Web__GatewayBaseUrl", "Web__Model", "Web__TenantId", "Web__GatewayAudience", "Web__OwnerObjectId", "Web__DeployObjectId", "Web__Slot", "OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID", "ASPNETCORE_ENVIRONMENT"])

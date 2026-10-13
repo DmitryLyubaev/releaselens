@@ -19,6 +19,15 @@ def test_no_session_identity_secret_or_retrieval_stack(repo_root: Path):
     assert not re.search(r'\bclientSecret\s*=', text)
 
 
+def test_identity_policy_disables_graph_group_lookup(repo_root: Path):
+    text = (repo_root / 'infra/webapp/auth.tf').read_text()
+    policy = re.search(r'allowedPrincipals\s*=\s*\{([^}]+)\}', text)
+    assert policy is not None
+    assert 'local.bootstrap.webapp_owner_object_id' in policy.group(1)
+    assert 'local.bootstrap.deploy_identity_principal_id' in policy.group(1)
+    assert re.search(r'\bgroups\s*=\s*null\b', policy.group(1)), 'Empty group arrays still invoke Easy Auth Graph lookup'
+
+
 @pytest.mark.parametrize("name", ["webapp_resource_id", "webapp_main_url", "webapp_staging_url", "webapp_frontend_audience"])
 def test_session_identifier_outputs_are_sensitive(repo_root: Path, name: str):
     text = (repo_root / "infra/webapp/outputs.tf").read_text()

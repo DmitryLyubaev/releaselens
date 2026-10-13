@@ -112,6 +112,12 @@ access-token issuance disabled. If an existing registration has ID tokens disabl
 review and approve its bootstrap update before applying it. This browser prerequisite
 does not establish that authenticated health or managed-identity token exchange passes.
 
+Set `allowedPrincipals.groups` to `null` for the identity-only policy. An empty array
+still triggered Easy Auth's Graph group-membership lookup for app-only smoke tokens
+in the live check, failing with AADSTS7000114 and HTTP 500. Keep the existing owner
+and deployment object IDs in `identities`; grant no Graph permissions. Configuration
+verification refuses any non-null group policy, including an empty array.
+
 Use `TF_DATA_DIR=$HOME/tfdata/bootstrap-live`. Preserve existing private variable values
 through process variables and follow the [bootstrap procedure](../infra/bootstrap/README.md).
 Capture init/plan/apply output. Stop if a plan proposes an unrelated replacement or delete;

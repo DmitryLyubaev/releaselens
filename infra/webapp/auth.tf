@@ -36,7 +36,9 @@ locals {
         validation = {
           allowedAudiences = [local.bootstrap.webapp_app_client_id, local.bootstrap.webapp_app_identifier_uri]
           defaultAuthorizationPolicy = {
-            allowedPrincipals = { identities = [local.bootstrap.webapp_owner_object_id, local.bootstrap.deploy_identity_principal_id], groups = [] }
+            # An empty groups array still invokes Easy Auth's Graph lookup for
+            # app-only smoke tokens. Null disables it; only these identities pass.
+            allowedPrincipals = { identities = [local.bootstrap.webapp_owner_object_id, local.bootstrap.deploy_identity_principal_id], groups = null }
           }
         }
       }
