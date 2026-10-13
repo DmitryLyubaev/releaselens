@@ -236,6 +236,17 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                     persist(before)
                     if not before.matches["baseline_healthy"]: raise ValueError()
                 slot = "main" if mode == "seed" else "staging"
+                previous_version = None
+                if not fixture:
+                    diagnostics.phase = 'readiness'
+                    previous = clients[slot].health(frontend())
+                    if previous.http_status == 200:
+                        if (previous.status != 'ok' or previous.configuration_valid is not True
+                                or previous.caller != 'deployment' or previous.slot != slot
+                                or not isinstance(previous.version, str) or not VERSION.fullmatch(previous.version)
+                                or previous.version.endswith('.fixture')): raise ValueError()
+                        previous_version = previous.version
+                    elif previous.http_status not in {404, 502, 503, 504}: raise ValueError()
                 diagnostics.phase = 'scm_deploy'
                 diagnostics.deployments = 1
                 cloud.deploy(slot, package)
@@ -245,8 +256,10 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                     from .contracts import Observation
                     persist(Observation("W5", {**fixture_health.statuses, "main_after": after.http_status}, {**fixture_health.matches, "stage_failed": True, "no_swap": True, "main_unchanged": after.http_status == 200 and after.status=='ok' and after.configuration_valid and after.version == baseline and after.slot == "main" and after.caller == "deployment"}, fixture_health.counts,fixture_health.times))
                     raise ValueError()
+                diagnostics.phase = 'package_digest'
+                if cloud.selected_package_sha256(slot) != manifest["package_sha256"]: raise ValueError()
                 diagnostics.phase = 'readiness'
-                observed = smoke(clients[slot], frontend(), version, slot, now, time.sleep)
+                observed = smoke(clients[slot], frontend(), version, slot, now, time.sleep, previous_version=previous_version)
                 persist(observed)
                 if not all(observed.matches.values()): raise ValueError()
                 diagnostics.phase = 'package_digest'

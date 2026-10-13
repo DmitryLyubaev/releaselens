@@ -104,3 +104,85 @@ def test_seed_receipt_is_not_eligible_and_records_deployment_owner_route_boundar
     assert result['run_id']==900 and result['run_attempt']==1 and result['source_sha']==SHA and result['repository']==REPO
     assert result['observation']['matches']['deployment_health_only'] is True
     assert json.loads((tmp_path/'artifacts/webapp-release/receipt.json').read_text())['kind']=='seed'
+
+
+def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True,settles=True,previous_caller='deployment'):
+    import hashlib,io,zipfile
+    from unittest.mock import patch
+    package=io.BytesIO()
+    with zipfile.ZipFile(package,'w') as archive:
+        for name in ('ReleaseLens.Web.dll','ReleaseLens.Web.deps.json','ReleaseLens.Web.runtimeconfig.json'):archive.writestr(name,'content')
+    value=package.getvalue();digest=hashlib.sha256(value).hexdigest()
+    version=f'{SHA}.900.1.{mode}';old_version=f'{SHA}.777.1.seed';baseline=f'{SHA}.122.1.seed'
+    bundle=tmp_path/'artifacts/webapp-verified';bundle.mkdir(parents=True)
+    (bundle/'package.zip').write_bytes(value)
+    (bundle/'verified.json').write_text(json.dumps(dict(current_sha=SHA,repository=REPO,mode=mode,fixture=False,execution_ci=ci(),ci=ci(),package_sha256=digest,version=version)))
+    env=dict(GITHUB_ACTIONS='true',GITHUB_REF='refs/heads/main',GITHUB_EVENT_NAME='workflow_dispatch',WEBAPP_MODE=mode,WEBAPP_FIXTURE='false',GITHUB_REPOSITORY=REPO,GITHUB_SHA=SHA,GITHUB_RUN_ID='900',GITHUB_RUN_ATTEMPT='1',AZURE_TENANT_ID='placeholder',AZURE_CLIENT_ID='placeholder',AZURE_SUBSCRIPTION_ID='placeholder',WEBAPP_DEPLOY_OBJECT_ID='placeholder',WEBAPP_RESOURCE_ID='placeholder',WEBAPP_FRONTEND_AUDIENCE='api://placeholder',WEBAPP_MAIN_URL='https://main.example.test',WEBAPP_STAGING_URL='https://stage.example.test',WEBAPP_INTENDED_CONFIG='{}',WEBAPP_BASELINE_VERSION=baseline)
+    state=dict(deployments=0,after_health=0,digests=0,events=[])
+    class Cloud:
+        def __init__(self,*args):pass
+        def configuration(self,_):return {}
+        def deploy(self,*args):state['deployments']+=1;state['events'].append('upload')
+        def selected_package_sha256(self,_):
+            state['digests']+=1;state['events'].append('digest')
+            return digest if digest_matches and not (digest_matches=='changes' and state['digests']>1) else 'c'*64
+    class Credential:
+        def __init__(self,*args):pass
+        def get_token(self,_):return type('Token',(),{'token':'private'})()
+    target='main' if mode=='seed' else 'staging'
+    def handle(request):
+        if request.url.path!='/health':return httpx.Response(403)
+        slot='main' if request.url.host=='main.example.test' else 'staging'
+        if slot!=target:return httpx.Response(200,json=dict(status='ok',version=baseline,slot=slot,configurationValid=True,caller='deployment'))
+        if state['deployments']:
+            state['after_health']+=1;state['events'].append('health_after')
+            observed=version if settles and state['after_health']>=2 else old_version
+        else:
+            state['events'].append('health_before');observed=old_version
+        return httpx.Response(200,json=dict(status='ok',version=observed,slot=slot,configurationValid=True,caller=previous_caller))
+    monkeypatch.setattr(cli.time,'sleep',lambda _:None)
+    with patch.object(cli,'AzureReleaseTransport',Cloud),httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        code=cli.main([mode],env=env,http=http,clean_guard=lambda:None,output_guard=lambda _:None,root=tmp_path,credential_factory=Credential)
+    return code,state
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_publish_waits_for_previous_verified_worker_to_yield_to_new_package(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode)
+    assert code==0
+    assert state['deployments']==1
+    assert state['events'].index('health_before')<state['events'].index('upload')
+    assert state['events'].index('digest')<state['events'].index('health_after')
+    assert json.loads((tmp_path/'artifacts/webapp-release/receipt.json').read_text())['checks_passed'] is True
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_selected_package_mismatch_blocks_post_upload_health_and_receipt(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,digest_matches=False)
+    assert code==1
+    assert state['after_health']==0
+    assert not (tmp_path/'artifacts/webapp-release/receipt.json').exists()
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_previous_worker_cannot_be_accepted_as_new_release_after_poll_budget(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,settles=False)
+    assert code==1
+    assert state['deployments']==1
+    assert state['after_health']==30
+    assert not (tmp_path/'artifacts/webapp-release/receipt.json').exists()
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_invalid_previous_worker_identity_blocks_upload(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,previous_caller='owner')
+    assert code==1
+    assert state['deployments']==0
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_package_selection_must_still_match_after_readiness_polling(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,digest_matches='changes')
+    assert code==1
+    assert state['digests']==2
+    assert not (tmp_path/'artifacts/webapp-release/receipt.json').exists()
