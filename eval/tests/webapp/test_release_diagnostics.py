@@ -122,6 +122,25 @@ def test_http_diagnostics_keep_refusal_body_unread_and_drop_headers_and_urls():
     assert all(value not in json.dumps(data) for value in ('private-marker', 'https://', TENANT, CLIENT, 'authorization'))
 
 
+@pytest.mark.parametrize('status', [200, 403])
+def test_scm_readiness_uses_the_deployment_index_without_reading_its_body(status):
+    from app.webapp.diagnostics import ReleaseDiagnostics
+    from .test_http_client import Unreadable
+    body=Unreadable();requests=[]
+    trace=ReleaseDiagnostics(SHA,900,1,'diagnose')
+    trace.hosts['mock-webapp.scm.azurewebsites.net']='main'
+    def handle(request):
+        requests.append(request)
+        assert request.url.path=='/api/deployments'
+        return httpx.Response(status,stream=body,headers={'Location':'https://private-host.test'})
+    with httpx.Client(transport=httpx.MockTransport(handle),event_hooks={'response':[trace.observe]}) as http:
+        cloud=transport.ReadOnlyAzureReleaseTransport(http,lambda _:token(),TENANT,SUB,CLIENT,OID,RESOURCE,'https://mock-webapp.azurewebsites.net','https://mock-webapp-staging.azurewebsites.net')
+        result=trace.collect_probe('deployment_status','main',lambda:cloud.probe_scm('main'))
+    assert result is (True if status==200 else None)
+    assert len(requests)==1 and body.reads==0
+    assert trace.result('collected')['probes'][0]['status']==status
+
+
 def test_hidden_transport_timeout_context_is_classified_without_message():
     from app.webapp.diagnostics import ReleaseDiagnostics
     trace = ReleaseDiagnostics(SHA, 900, 1, 'seed')
@@ -198,10 +217,10 @@ def test_diagnose_retains_each_swallowed_failure_and_anonymous_reachability(tmp_
     bodies, requests = [], []
     def handle(request):
         requests.append(request)
-        assert request.method == 'GET' and request.extensions['timeout']['read'] == 10
+        assert request.method == 'GET' and request.extensions['timeout']['read'] == (30 if '.scm.' in request.url.host else 10)
         main = request.url.host in {'mock-webapp.azurewebsites.net', 'mock-webapp.scm.azurewebsites.net'}
         if '.scm.' in request.url.host:
-            assert request.url.path == '/api/deployments/latest'
+            assert request.url.path == '/api/deployments'
             if not main: return httpx.Response(200, json={})
             status = 404
         else:
