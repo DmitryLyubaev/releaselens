@@ -192,6 +192,66 @@ def test_successful_swap_checks_both_versions_and_settings():
     assert len(saved) == 2
 
 
+def test_promotion_waits_for_staging_warmup_label_after_one_swap():
+    ctx, saved = context()
+    original_swap = ctx.az.call
+    original_health = ctx.staging.health
+    after_swap = False
+    reads = 0
+    def swap(args):
+        nonlocal after_swap
+        result = original_swap(args)
+        after_swap = True
+        return result
+    def health(bearer):
+        nonlocal reads
+        if after_swap:
+            reads += 1
+            if reads == 1:
+                return Health(200, "ok", BASELINE, "main", True, "deployment")
+        return original_health(bearer)
+    ctx.az.call = swap
+    ctx.staging.health = health
+    w4, settings = r.promote(ctx, receipt(), source())
+    assert all(w4.matches.values())
+    assert settings.matches["settings_retained"]
+    assert reads == 2
+    assert len(ctx.az.calls) == 1
+    assert ctx.clock() - NOW == timedelta(seconds=10)
+
+
+@pytest.mark.parametrize("version,slot", [(VERSION, "staging"), (BASELINE, "main"), (VERSION, "main")])
+def test_post_swap_known_version_or_label_can_settle_before_passing(version, slot):
+    clock = Clock()
+    client = Client(BASELINE, "staging")
+    calls = []
+    def health(bearer):
+        calls.append(True)
+        return Health(200, "ok", version, slot, True, "deployment") if len(calls) == 1 else client.value
+    client.health = health
+    result = r.smoke(client, "private bearer", BASELINE, "staging", clock.now, clock.sleep, previous_version=VERSION)
+    assert result.matches["staging_healthy"]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("field,value", [("version", SHA + ".999.1.stage"), ("slot", "unknown"), ("caller", "owner"), ("http_status", 403), ("configuration_valid", False), ("status", "unavailable")])
+def test_post_swap_invalid_identity_configuration_or_unknown_version_still_stops_immediately(field, value):
+    from dataclasses import replace
+    clock = Clock(); client = Client(BASELINE, "staging")
+    client.value = replace(client.value, **{field: value})
+    result = r.smoke(client, "private bearer", BASELINE, "staging", clock.now, clock.sleep, previous_version=VERSION)
+    assert result.matches["staging_healthy"] is False
+    assert client.calls == 1
+
+
+def test_post_swap_permanent_known_mismatch_fails_without_extending_read_budget():
+    clock = Clock(); client = Client(VERSION, "main")
+    result = r.smoke(client, "private bearer", BASELINE, "staging", clock.now, clock.sleep, previous_version=VERSION)
+    assert result.matches["staging_healthy"] is False
+    assert client.calls == 30
+    assert clock.now() - NOW <= timedelta(minutes=5)
+
+
 def test_post_swap_failure_is_recorded_without_automatic_rollback():
     ctx, saved = context(); ctx.az.fail_after = True
     with pytest.raises(TransportRefused): r.promote(ctx, receipt(), source())
