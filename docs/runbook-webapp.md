@@ -371,6 +371,11 @@ health 503 with its immutable fixture version marker, verify the selected stored
 digest, fail the release, record zero swaps/model calls, and confirm main unchanged. A
 platform/startup 503 without the reviewed fixture's marker cannot pass W5. Refusal bodies
 stay unread; bounded readiness polling waits for the actual fixture.
+After the selected package digest matches, HTTP 200 can briefly come from the prior
+worker during startup. The fixture check treats it as pending within the existing
+30-attempt, 300-second polling budget. HTTP 200 never passes the check: only HTTP 503
+with the exact fixture marker and version passes. Authentication failures and redirects
+still stop polling immediately.
 
 **Ask first.** Separately approve the rejected-promotion demonstration referencing that
 failed run/attempt. Promotion preflight must fail and the protected release job must remain
