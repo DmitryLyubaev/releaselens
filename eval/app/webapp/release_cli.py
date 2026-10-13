@@ -208,12 +208,17 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 diagnostics.phase = 'diagnostic_health'
                 statuses = {}
                 for slot, client in clients.items():
-                    try: statuses[slot] = client.health(bearer).http_status
-                    except TransportRefused: statuses[slot] = None
+                    health = diagnostics.collect_probe('health', slot, lambda: client.health(bearer))
+                    statuses[slot] = health.http_status if health is not None else None
+                anonymous = {}
+                for slot, key in (('main', 'WEBAPP_MAIN_URL'), ('staging', 'WEBAPP_STAGING_URL')):
+                    # A fresh client prevents any health-response session cookie being reused.
+                    client = WebAppClient(http, values[key])
+                    anonymous[slot] = diagnostics.collect_probe('anonymous_health', slot, client.anonymous_health_status)
                 diagnostics.phase = 'diagnostic_scm'
-                scm = {slot: cloud.probe_scm(slot) for slot in clients}
+                scm = {slot: diagnostics.collect_probe('deployment_status', slot, lambda: cloud.probe_scm(slot)) is True for slot in clients}
                 diagnostics.phase = 'complete'
-                _save(records / 'diagnostics.json', diagnostics.result('collected') | dict(read_only=True, configuration_matches=True, health_statuses=statuses, scm_readable=scm))
+                _save(records / 'diagnostics.json', diagnostics.result('collected') | dict(read_only=True, configuration_matches=True, health_statuses=statuses, anonymous_health_statuses=anonymous, scm_readable=scm))
             elif mode == "promote":
                 diagnostics.phase = 'promotion'
                 receipt = _load(bundle / "receipt.json")
