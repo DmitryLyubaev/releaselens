@@ -111,14 +111,19 @@ class AzureReleaseTransport:
         if not url.startswith("https://management.azure.com" + self._resource): raise TransportRefused("release_refused")
         result, headers = self._read(method, url, body=body, allow_async=True)
         if result is not None: return result
-        location = headers.get("azure-asyncoperation") or headers.get("location")
+        async_status = headers.get("azure-asyncoperation")
+        location = async_status or headers.get("location")
         if not location: raise TransportRefused("release_refused")
         started = self._clock()
         for _ in range(30):
             if self._clock() - started >= 300: break
-            state, _ = self._read("GET", location)
-            if state.get("status") == "Succeeded": return {}
-            if state.get("status") not in {"InProgress", "Running", "Accepted"}: raise TransportRefused("release_refused")
+            state, _ = self._read("GET", location, allow_async=True)
+            if state is not None:
+                # Location returns 202 while pending, then a resource or no content.
+                # Azure-AsyncOperation instead requires an explicit status body.
+                if not async_status: return state
+                if state.get("status") == "Succeeded": return {}
+                if state.get("status") not in {"InProgress", "Running", "Accepted"}: raise TransportRefused("release_refused")
             self._sleep(10)
         raise TransportRefused("release_refused")
 

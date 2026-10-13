@@ -260,6 +260,61 @@ def deployment_timer():
         def sleep(self, seconds): self.elapsed += seconds
     return Timer()
 
+@pytest.mark.parametrize('completion',[200,204])
+def test_arm_location_pending_then_resource_completion_never_replays_swap(deployment_timer,completion):
+    from .test_http_client import Unreadable
+    body=Unreadable();requests=[]
+    location='https://management.azure.com'+RESOURCE+'/operationResults/owned?api-version=2024-11-01'
+    def handle(request):
+        requests.append(request)
+        if len(requests)==1:return httpx.Response(202,headers={'Location':location})
+        assert str(request.url)==location and request.method=='GET'
+        if len(requests)==2:return httpx.Response(202,headers={'Location':'https://foreign.example/secret'},stream=body)
+        return httpx.Response(200,json={'properties':{'state':'Running'}}) if completion==200 else httpx.Response(204)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        result=adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep)._arm('POST','https://management.azure.com'+RESOURCE+'/slots/staging/slotsswap?api-version=2024-11-01',{'targetSlot':'production'})
+    assert result==({'properties':{'state':'Running'}} if completion==200 else {})
+    assert [r.method for r in requests]==['POST','GET','GET'] and body.reads==0
+
+def test_arm_async_operation_keeps_status_protocol_and_original_header_precedence(deployment_timer):
+    from .test_http_client import Unreadable
+    body=Unreadable();requests=[]
+    location='https://management.azure.com'+RESOURCE+'/operationStatuses/owned?api-version=2024-11-01'
+    def handle(request):
+        requests.append(request)
+        if len(requests)==1:return httpx.Response(202,headers={'Azure-AsyncOperation':location,'Location':'https://foreign.example/secret'})
+        assert str(request.url)==location
+        if len(requests)==2:return httpx.Response(202,stream=body)
+        return httpx.Response(200,json={'status':'InProgress' if len(requests)==3 else 'Succeeded'})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        assert adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep)._arm('POST','https://management.azure.com'+RESOURCE+'/slots/staging/slotsswap?api-version=2024-11-01',{})=={}
+    assert [r.method for r in requests]==['POST','GET','GET','GET'] and body.reads==0
+
+@pytest.mark.parametrize('terminal',['Failed','Canceled'])
+def test_arm_async_operation_pending_then_failure_refuses_without_replaying_swap(deployment_timer,terminal):
+    requests=[]
+    location='https://management.azure.com'+RESOURCE+'/operationStatuses/owned?api-version=2024-11-01'
+    def handle(request):
+        requests.append(request)
+        if len(requests)==1:return httpx.Response(202,headers={'Azure-AsyncOperation':location})
+        if len(requests)==2:return httpx.Response(202)
+        return httpx.Response(200,json={'status':terminal,'error':{'message':'private-marker'}})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep)._arm('POST','https://management.azure.com'+RESOURCE+'/slots/staging/slotsswap?api-version=2024-11-01',{})
+    assert [r.method for r in requests]==['POST','GET','GET']
+    assert deployment_timer.elapsed==10
+
+def test_arm_pending_202_retains_poll_bound_and_one_write(deployment_timer):
+    requests=[]
+    location='https://management.azure.com'+RESOURCE+'/operationResults/owned?api-version=2024-11-01'
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(202,headers={'Location':location})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep)._arm('POST','https://management.azure.com'+RESOURCE+'/slots/staging/slotsswap?api-version=2024-11-01',{})
+    assert sum(r.method=='POST' for r in requests)==1
+    assert len(requests)==31 and deployment_timer.elapsed==300
+
 
 def test_scm_pending_deployment_202_then_success_keeps_original_location(deployment_timer):
     from .test_http_client import Unreadable

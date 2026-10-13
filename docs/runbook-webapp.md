@@ -237,6 +237,14 @@ HTTP refusals and token-acquisition failures stop immediately. Uploads, swaps an
 other writes are never replayed after an ambiguous timeout; their existing timeout
 bounds and SCM polling remain unchanged.
 
+Accepted ARM operations keep the original status URL selected from
+`Azure-AsyncOperation`, or `Location` when that header is absent. A pending GET's
+202 response continues polling without reading its body. The first protocol
+requires an explicit `Succeeded` status; the Location protocol completes with
+the returned resource or empty 204 response. Poll responses cannot replace the
+original URL, and the write is never repeated. This follows
+[Azure's asynchronous-operation protocol](https://learn.microsoft.com/azure/azure-resource-manager/management/async-operations).
+
 Owned SCM GETs use a thirty-second budget with no retry. Pending deployment polls
 limit their request and sleep budgets to the remaining five-minute polling window;
 an upload or swap is never replayed. Before the first seed, configuration, frontend
