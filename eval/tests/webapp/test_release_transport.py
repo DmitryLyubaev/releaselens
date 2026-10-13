@@ -176,6 +176,28 @@ def test_configuration_still_refuses_an_enabled_non_entra_provider():
     with pytest.raises(TransportRefused): read_configuration(intended, responses)
 
 
+@pytest.mark.parametrize('groups', [[], [OID], {}, '', False])
+def test_configuration_refuses_group_policy_even_when_empty(groups):
+    intended, responses = configuration_fixture()
+    provider = responses[("GET", RESOURCE + "/config/authsettingsV2")]["properties"]["identityProviders"]["azureActiveDirectory"]
+    provider['validation'] = {'defaultAuthorizationPolicy': {'allowedPrincipals': {'identities': [OID], 'groups': groups}}}
+    with pytest.raises(TransportRefused): read_configuration(intended, responses)
+
+
+@pytest.mark.parametrize('groups', [None, 'absent'])
+def test_configuration_accepts_disabled_group_lookup(groups):
+    intended, responses = configuration_fixture()
+    for slot in ('main', 'staging'):
+        resource = RESOURCE + ('/slots/staging' if slot == 'staging' else '')
+        expected = {'identities': [OID], 'groups': None}
+        policy = {'validation': {'defaultAuthorizationPolicy': {'allowedPrincipals': expected}}}
+        intended[slot]['auth']['identityProviders']['azureActiveDirectory'].update(copy.deepcopy(policy))
+        actual = copy.deepcopy(policy)
+        if groups == 'absent': del actual['validation']['defaultAuthorizationPolicy']['allowedPrincipals']['groups']
+        responses[('GET', resource + '/config/authsettingsV2')]['properties']['identityProviders']['azureActiveDirectory'].update(actual)
+    assert read_configuration(intended, responses) == intended
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_configuration_refuses_unexpected_custom_auth_provider(enabled):
     intended, responses = configuration_fixture()

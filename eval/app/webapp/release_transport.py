@@ -169,6 +169,8 @@ class AzureReleaseTransport:
             settings = self._arm("POST", base + "/config/appsettings/list?api-version=" + API).get("properties", {})
             auth = get("/config/authsettingsV2").get("properties", {})
             providers = auth.get("identityProviders", {})
+            principals = providers.get("azureActiveDirectory", {}).get("validation", {}).get("defaultAuthorizationPolicy", {}).get("allowedPrincipals", {})
+            if principals.get("groups") is not None: raise TransportRefused("release_refused")
             if any(isinstance(value, dict) and value.get("enabled") is True for key, value in providers.items() if key != "azureActiveDirectory"): raise TransportRefused("release_refused")
             custom = providers.get("customOpenIdConnectProviders")
             if custom not in (None, {}): raise TransportRefused("release_refused")
