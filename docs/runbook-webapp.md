@@ -210,7 +210,15 @@ documents.
 The protected workflow also accepts `mode=diagnose`, with `fixture=false`, for a
 read-only investigation using the actual deployment identity and existing resources.
 It checks intended configuration, obtains the frontend token, and probes main/staging
-health and SCM. The diagnostic transport refuses uploads, ARM writes and swaps before
+health and SCM. It also makes an anonymous health GET on each slot with no bearer or
+session cookie. These six probes retain their individual HTTP status or closed failure
+category, timeout kind (connect/read/write/pool/other), fixed refusal code and optional
+numeric AADSTS code. A response status remains visible if reading its successful body
+later fails. An anonymous refusal with an authenticated failure helps distinguish an
+authentication path from general reachability; it does not by itself prove a root cause.
+Each probe uses the existing ten-second transport timeout, without retries or redirects.
+Anonymous and refused response bodies stay unread.
+The diagnostic transport refuses uploads, ARM writes and swaps before
 token acquisition. It calls no model and creates no eligible receipt. A completed
 diagnostic run means facts were collected; it does not establish healthy deployment.
 

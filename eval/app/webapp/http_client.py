@@ -109,6 +109,10 @@ class WebAppClient:
             if data["status"] not in {"ok", "unavailable"} or not VERSION.fullmatch(data["version"]) or data["slot"] not in {"main", "staging"} or type(data["configurationValid"]) is not bool or data["caller"] not in {"owner", "deployment"}: return Health(status)
             return Health(status, data["status"], data["version"], data["slot"], data["configurationValid"], data["caller"])
 
+    def anonymous_health_status(self) -> int:
+        with self._request('GET', '/health') as response:
+            return response.status_code
+
     def session(self) -> SessionSnapshot:
         with self._request("GET", "/session") as response:
             status = response.status_code

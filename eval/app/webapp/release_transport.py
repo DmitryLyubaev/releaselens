@@ -201,8 +201,6 @@ class ReadOnlyAzureReleaseTransport(AzureReleaseTransport):
         return super()._read(method, url, **kwargs)
 
     def probe_scm(self, slot):
-        try:
-            self._read('GET', self._scm(slot) + '/api/deployments/latest')
-            return True
-        except TransportRefused:
-            return False
+        # The diagnostic collector records this refusal before converting it to False.
+        self._read('GET', self._scm(slot) + '/api/deployments/latest')
+        return True
