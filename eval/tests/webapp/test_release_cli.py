@@ -89,6 +89,7 @@ def test_seed_receipt_is_not_eligible_and_records_deployment_owner_route_boundar
     class Cloud:
         def __init__(self,*args): pass
         def configuration(self,_): return {}
+        def selected_package_present(self,_): return False
         def deploy(self,*args): pass
         def selected_package_sha256(self,_): return digest
     class Credential:
@@ -106,7 +107,7 @@ def test_seed_receipt_is_not_eligible_and_records_deployment_owner_route_boundar
     assert json.loads((tmp_path/'artifacts/webapp-release/receipt.json').read_text())['kind']=='seed'
 
 
-def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True,settles=True,previous_caller='deployment'):
+def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True,settles=True,previous_caller='deployment',package_present=True):
     import hashlib,io,zipfile
     from unittest.mock import patch
     package=io.BytesIO()
@@ -122,6 +123,9 @@ def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True
     class Cloud:
         def __init__(self,*args):pass
         def configuration(self,_):return {}
+        def selected_package_present(self,_):
+            state['events'].append('package_presence')
+            return package_present
         def deploy(self,*args):state['deployments']+=1;state['events'].append('upload')
         def selected_package_sha256(self,_):
             state['digests']+=1;state['events'].append('digest')
@@ -136,8 +140,9 @@ def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True
         if slot!=target:return httpx.Response(200,json=dict(status='ok',version=baseline,slot=slot,configurationValid=True,caller='deployment'))
         if state['deployments']:
             state['after_health']+=1;state['events'].append('health_after')
-            observed=version if settles and state['after_health']>=2 else old_version
+            observed=version if package_present is False or settles and state['after_health']>=2 else old_version
         else:
+            if package_present is False: raise httpx.ReadTimeout('Empty slot has no app worker',request=request)
             state['events'].append('health_before');observed=old_version
         return httpx.Response(200,json=dict(status='ok',version=observed,slot=slot,configurationValid=True,caller=previous_caller))
     monkeypatch.setattr(cli.time,'sleep',lambda _:None)
@@ -185,4 +190,23 @@ def test_package_selection_must_still_match_after_readiness_polling(tmp_path,mon
     code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,digest_matches='changes')
     assert code==1
     assert state['digests']==2
+    assert not (tmp_path/'artifacts/webapp-release/receipt.json').exists()
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_first_publish_does_not_require_an_uninstalled_worker(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,package_present=False)
+    assert code==0
+    assert state['deployments']==1
+    assert 'health_before' not in state['events']
+    assert state['events'].index('package_presence')<state['events'].index('upload')
+    assert state['events'].index('digest')<state['events'].index('health_after')
+    assert json.loads((tmp_path/'artifacts/webapp-release/receipt.json').read_text())['checks_passed'] is True
+
+
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_first_publish_still_refuses_wrong_selected_package(tmp_path,monkeypatch,mode):
+    code,state=publish_with_previous_worker(tmp_path,monkeypatch,mode,package_present=False,digest_matches=False)
+    assert code==1
+    assert state['deployments']==1 and state['after_health']==0
     assert not (tmp_path/'artifacts/webapp-release/receipt.json').exists()

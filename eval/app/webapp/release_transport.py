@@ -139,6 +139,17 @@ class AzureReleaseTransport:
             return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
         except Exception: return subprocess.CompletedProcess(args, 1, "", "")
 
+    def selected_package_present(self, slot):
+        """Only an authenticated 404 at the owned selection file means no package."""
+        try:
+            url = self._scm(slot) + "/api/vfs/data/SitePackages/packagename.txt"
+            with self._http.stream("GET", url, headers={"Authorization": "Bearer " + self._bearer()},
+                                   timeout=30, follow_redirects=False) as response:
+                if response.status_code not in {200, 404}: raise TransportRefused("release_refused")
+                return response.status_code == 200
+        except TransportRefused: raise
+        except Exception: raise TransportRefused("release_refused") from None
+
     def selected_package_sha256(self, slot):
         origin = self._scm(slot)
         selected, _ = self._read("GET", origin + "/api/vfs/data/SitePackages/packagename.txt", binary=True, limit=4096)
