@@ -106,6 +106,12 @@ managed identity, its managed-identity assertion federation, owner `WebApp.Use`,
 `WebApp.Smoke`, delegated gateway pre-authorization, and the private webapp state container
 and owner data role. No model privilege is assigned to the front-end identity.
 
+Easy Auth's browser sign-in requests `code+id_token`. The shared frontend registration
+must enable ID-token issuance in its web implicit-grant settings while keeping implicit
+access-token issuance disabled. If an existing registration has ID tokens disabled,
+review and approve its bootstrap update before applying it. This browser prerequisite
+does not establish that authenticated health or managed-identity token exchange passes.
+
 Use `TF_DATA_DIR=$HOME/tfdata/bootstrap-live`. Preserve existing private variable values
 through process variables and follow the [bootstrap procedure](../infra/bootstrap/README.md).
 Capture init/plan/apply output. Stop if a plan proposes an unrelated replacement or delete;
