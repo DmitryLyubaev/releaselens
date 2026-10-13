@@ -220,3 +220,69 @@ def test_failed_swap_request_is_counted_as_an_attempt():
     with pytest.raises(TransportRefused): r.promote(ctx, receipt(), source())
     assert saved[0].counts["swap_calls"] == 1
     assert not saved[0].matches["swap_succeeded"]
+
+
+def test_fixture_waits_for_exact_503_after_the_prior_worker_returns_200():
+    import httpx
+    from app.webapp.http_client import WebAppClient
+    clock=Clock(); responses=iter([
+        httpx.Response(200),
+        httpx.Response(503,headers={'X-ReleaseLens-Unhealthy':'1','X-ReleaseLens-Fixture-Version':BASELINE}),
+        httpx.Response(503,headers={'X-ReleaseLens-Unhealthy':'1','X-ReleaseLens-Fixture-Version':SHA+'.123.1.fixture'}),
+    ])
+    with httpx.Client(transport=httpx.MockTransport(lambda _:next(responses))) as http:
+        client=WebAppClient(http,'https://staging.example.test')
+        result=r.fixture_smoke(client,'test-bearer',SHA+'.123.1.fixture','b'*64,lambda:'b'*64,clock.now,clock.sleep)
+    assert result.statuses['fixture_health']==503
+    assert result.matches['fixture_health_503'] is True
+    assert result.counts['attempts']==3
+    assert clock.now()-NOW==timedelta(seconds=20)
+    assert result.counts['swap_calls']==result.counts['gateway_calls']==0
+
+
+def test_fixture_that_keeps_returning_200_never_passes_and_stops_polling():
+    import httpx
+    from app.webapp.http_client import WebAppClient
+    clock=Clock()
+    with httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(200))) as http:
+        result=r.fixture_smoke(WebAppClient(http,'https://staging.example.test'),'test-bearer',SHA+'.123.1.fixture','b'*64,lambda:'b'*64,clock.now,clock.sleep)
+    assert result.matches['fixture_health_503'] is False
+    assert result.statuses['fixture_health']==200
+    assert result.counts['attempts']==30
+    assert clock.now()-NOW==timedelta(seconds=290)
+
+
+@pytest.mark.parametrize('status',[302,401,403,404])
+def test_fixture_authentication_or_redirect_failure_stops_immediately(status):
+    import httpx
+    from app.webapp.http_client import WebAppClient
+    clock=Clock()
+    with httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(status))) as http:
+        result=r.fixture_smoke(WebAppClient(http,'https://staging.example.test'),'test-bearer',SHA+'.123.1.fixture','b'*64,lambda:'b'*64,clock.now,clock.sleep)
+    assert result.matches['fixture_health_503'] is False
+    assert result.counts['attempts']==1
+    assert clock.now()==NOW
+
+
+def test_fixture_platform_503_without_its_marker_never_passes():
+    import httpx
+    from app.webapp.http_client import WebAppClient
+    clock=Clock()
+    with httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(503))) as http:
+        result=r.fixture_smoke(WebAppClient(http,'https://staging.example.test'),'test-bearer',SHA+'.123.1.fixture','b'*64,lambda:'b'*64,clock.now,clock.sleep)
+    assert result.matches['fixture_health_503'] is False
+    assert result.counts['attempts']==30
+
+
+def test_fixture_does_not_probe_again_after_a_200_consumes_the_readiness_budget():
+    import httpx
+    from app.webapp.http_client import WebAppClient
+    clock=Clock()
+    def response(_):
+        clock.sleep(299)
+        return httpx.Response(200)
+    with httpx.Client(transport=httpx.MockTransport(response)) as http:
+        result=r.fixture_smoke(WebAppClient(http,'https://staging.example.test'),'test-bearer',SHA+'.123.1.fixture','b'*64,lambda:'b'*64,clock.now,clock.sleep)
+    assert result.matches['fixture_health_503'] is False
+    assert result.counts['attempts']==1
+    assert clock.now()-NOW==timedelta(seconds=300)

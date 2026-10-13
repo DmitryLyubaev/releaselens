@@ -101,7 +101,8 @@ def fixture_smoke(client,bearer,version,digest,selected_digest,clock,sleep)->Obs
             try:
                 health=client.fixture_health(bearer,version); status=health.status
                 if health.version_matches: matched=True; break
-                if status not in {502,503,504}: break
+                # The prior worker can still be healthy while the selected fixture starts.
+                if status not in {200,502,503,504}: break
             except TransportRefused as error:
                 if str(error)!='network': break
             if attempts<30: sleep(min(10,max(0,300-(clock()-start).total_seconds())))
