@@ -73,7 +73,7 @@ def validate_package(value: bytes, expected_sha256: str) -> None:
 def _time(value: datetime) -> str: return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def smoke(client, bearer: str, expected_version: str, expected_slot: str, clock: Callable, sleep: Callable) -> Observation:
+def smoke(client, bearer: str, expected_version: str, expected_slot: str, clock: Callable, sleep: Callable, *, previous_version: str | None = None) -> Observation:
     start = clock(); status = None; attempts = 0; healthy = False
     key = "baseline_healthy" if expected_slot == "main" else "staging_healthy"
     for _ in range(30):
@@ -83,8 +83,16 @@ def smoke(client, bearer: str, expected_version: str, expected_slot: str, clock:
             health = client.health(bearer); status = health.http_status
             if status == 200:
                 healthy = health.status == "ok" and health.configuration_valid is True and health.version == expected_version and health.slot == expected_slot and health.caller == "deployment"
-                break
-            if status not in {502, 503, 504}: break
+                if healthy: break
+                # A completed swap can briefly route staging to its warmed worker.
+                # Wait only for the two verified versions and valid deployment health;
+                # authentication, configuration and unknown-package failures stay final.
+                settling = (previous_version is not None and health.status == "ok"
+                            and health.configuration_valid is True and health.caller == "deployment"
+                            and health.version in {expected_version, previous_version}
+                            and health.slot in {"main", "staging"})
+                if not settling: break
+            elif status not in {502, 503, 504}: break
         except TransportRefused as error:
             if str(error) != "network": break
         if attempts < 30: sleep(min(10, max(0, 300 - (clock() - start).total_seconds())))
@@ -162,8 +170,8 @@ def promote(context: ReleaseContext, receipt: dict, source_metadata: dict) -> tu
         swaps = 1
         ctx.az.call(["rest", "--method", "post", "--url", f"https://management.azure.com{ctx.resource_id}/slots/staging/slotsswap?api-version=2024-11-01", "--body", json.dumps({"targetSlot": "production", "preserveVnet": True})])
         matches["swap_succeeded"] = True
-        main = smoke(ctx.main, token, receipt["version"], "main", ctx.clock, ctx.sleep)
-        stage = smoke(ctx.staging, token, receipt["baseline_version"], "staging", ctx.clock, ctx.sleep)
+        main = smoke(ctx.main, token, receipt["version"], "main", ctx.clock, ctx.sleep, previous_version=receipt["baseline_version"])
+        stage = smoke(ctx.staging, token, receipt["baseline_version"], "staging", ctx.clock, ctx.sleep, previous_version=receipt["version"])
         statuses.update(main.statuses); statuses.update(stage.statuses)
         matches["main_candidate"] = main.matches["baseline_healthy"]
         matches["staging_baseline"] = stage.matches["staging_healthy"]
