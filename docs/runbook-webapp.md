@@ -313,6 +313,11 @@ The offline token/antiforgery cases do not claim live injection through Easy Aut
 **Ask first.** Approve the wait, one platform refresh and W3's single paid question.
 Start this early enough to fit the four-hour target. Supply main's cookie by hidden input
 to a new ephemeral process; retain that process for the initial expiry interval.
+Complete W3 successfully before dispatching the normal promotion. Do not swap slots
+while the expiry wait or refresh is active: the existing session can remain authenticated
+while its provider-token store is no longer available on main after a swap. Stage preparation
+and read-only access checks can run during the wait. If W3 fails, stop before promotion;
+do not repeat its refresh or paid question without new authorization.
 
 ```bash
 "$HOME/.venvs/releaselens-webapp/bin/python" -m app.webapp refresh
@@ -332,7 +337,8 @@ version. After environment approval the job verifies main, staging, package hash
 configuration. Only a successful candidate run creates an eligible receipt.
 
 **Ask first.** Separately approve promotion. Dispatch `mode=promote`, `fixture=false`,
-`source_run` and `source_attempt` for that successful candidate. Preflight has no Azure
+`source_run` and `source_attempt` for that successful candidate only after W1, W2 and W3
+have passed for the measured source. Preflight has no Azure
 authority; it validates run/repository/main/source-CI binding and artifact bytes. The protected
 job re-fetches metadata and rechecks actual staging/main/configuration after approval under
 shared concurrency. It performs one regular swap, then checks both versions and slot labels.
