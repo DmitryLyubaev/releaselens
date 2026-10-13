@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 import subprocess
 import time
@@ -60,7 +61,7 @@ class AzureReleaseTransport:
         if parts.scheme != "https" or not parts.hostname or not parts.hostname.endswith(".azurewebsites.net") or parts.username or parts.query or parts.fragment or parts.port: raise TransportRefused("release_refused")
         return "https://" + parts.hostname.removesuffix(".azurewebsites.net") + ".scm.azurewebsites.net"
 
-    def _read(self, method, url, *, body=None, binary=False, limit=1024 * 1024, allow_async=False):
+    def _read(self, method, url, *, body=None, binary=False, limit=1024 * 1024, allow_async=False, status_only=False, read_budget=None):
         # Only owned, non-mutating ARM configuration reads may be replayed.
         try: parsed = urlsplit(url)
         except Exception: raise TransportRefused('release_refused') from None
@@ -68,16 +69,20 @@ class AzureReleaseTransport:
         read = (body is None and parsed.scheme == 'https' and parsed.netloc == 'management.azure.com'
                 and (method == 'GET' and (parsed.path == self._resource or parsed.path.startswith(self._resource + '/'))
                      or method == 'POST' and parsed.path in lists))
+        scm_read = (method == 'GET' and body is None and parsed.scheme == 'https'
+                    and parsed.netloc in {urlsplit(self._scm(slot)).netloc for slot in ('main','staging')})
+        if status_only and not scm_read: raise TransportRefused('release_refused')
+        if read_budget is not None and (not scm_read or type(read_budget) not in (int,float) or not math.isfinite(read_budget) or not 0<read_budget<=30): raise TransportRefused('release_refused')
         for attempt in range(2 if read else 1):
             try:
-                return self._read_once(method, url, body=body, binary=binary, limit=limit, allow_async=allow_async,
-                                       timeout=30 if read else 120 if isinstance(body, bytes) else 10)
+                return self._read_once(method, url, body=body, binary=binary, limit=limit, allow_async=allow_async,status_only=status_only,
+                                       timeout=read_budget if read_budget is not None else 30 if read or scm_read else 120 if isinstance(body, bytes) else 10)
             except TransportRefused as error:
                 if not read or attempt or str(error) != 'release_refused' or not isinstance(error.__context__, httpx.TimeoutException):
                     raise
                 self._sleep(1)
 
-    def _read_once(self, method, url, *, body, binary, limit, allow_async, timeout):
+    def _read_once(self, method, url, *, body, binary, limit, allow_async, timeout,status_only=False):
         try:
             parsed = urlsplit(url)
             if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment: raise ValueError()
@@ -89,6 +94,7 @@ class AzureReleaseTransport:
                 headers = dict(response.headers)
                 if response.status_code == 202 and allow_async: return None, headers
                 if response.status_code not in {200, 201, 204}: raise TransportRefused("release_refused")
+                if status_only: return {},headers
                 if response.status_code == 204: return (b"" if binary else {}), headers
                 value = bytearray()
                 for chunk in response.iter_bytes():
@@ -144,12 +150,15 @@ class AzureReleaseTransport:
         location, _ = owned_deployment_status_url(origin, headers.get('location', ''))
         started = self._clock()
         for _ in range(30):
-            if self._clock() - started >= 300: break
+            remaining=300-(self._clock()-started)
+            if remaining<=0: break
             # Kudu can report pending deployment with HTTP 202 and an unread body.
-            state, _ = self._read("GET", location, allow_async=True)
+            state, _ = self._read("GET", location, allow_async=True,read_budget=min(30,remaining))
             if state is not None and state.get("status") == 4: return
             if state is not None and state.get("status") not in {0, 1, 2}: raise TransportRefused("release_refused")
-            self._sleep(10)
+            remaining=300-(self._clock()-started)
+            if remaining<=0: break
+            self._sleep(min(10,remaining))
         raise TransportRefused("release_refused")
 
     def configuration(self, intended):
@@ -202,5 +211,6 @@ class ReadOnlyAzureReleaseTransport(AzureReleaseTransport):
 
     def probe_scm(self, slot):
         # The diagnostic collector records this refusal before converting it to False.
-        self._read('GET', self._scm(slot) + '/api/deployments/latest')
+        # The index exists before the first seed; latest history need not exist yet.
+        self._read('GET', self._scm(slot) + '/api/deployments',status_only=True)
         return True

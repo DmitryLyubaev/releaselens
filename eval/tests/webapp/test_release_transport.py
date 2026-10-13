@@ -85,6 +85,41 @@ def test_scm_refusal_is_unread_and_never_falls_back_to_basic_auth():
     assert body.reads == 0
 
 
+def test_slow_owned_scm_poll_receives_a_read_budget_without_replaying_upload():
+    requests=[]
+    def handle(request):
+        requests.append(request)
+        if request.method=='POST':
+            assert request.extensions['timeout']['read']==120
+            return httpx.Response(202,headers={'Location':'/api/deployments/owned-id'})
+        if request.extensions['timeout']['read']<20:
+            raise httpx.ReadTimeout('Simulated response needs twenty seconds')
+        return httpx.Response(200,json={'status':4})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        adapter(http).deploy('main',b'package')
+    assert [request.method for request in requests]==['POST','GET']
+
+
+def test_owned_scm_timeout_is_not_retried():
+    requests=[]
+    def handle(request):
+        requests.append(request)
+        raise httpx.ReadTimeout('private-marker')
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http)._read('GET','https://mock-webapp.scm.azurewebsites.net/api/deployments/latest')
+    assert len(requests)==1 and requests[0].extensions['timeout']['read']==30
+
+
+def test_pending_poll_does_not_sleep_past_remaining_deadline(deployment_timer):
+    def handle(request):
+        if request.method=='POST': return httpx.Response(202,headers={'Location':'/api/deployments/owned-id'})
+        deployment_timer.elapsed=299
+        return httpx.Response(202)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=deployment_timer.clock,sleep=deployment_timer.sleep).deploy('main',b'package')
+    assert deployment_timer.elapsed==300
+
+
 IDENTITY = f"/subscriptions/{SUB}/resourceGroups/mock-bootstrap/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mock-webapp"
 
 
@@ -344,7 +379,7 @@ def test_retry_scope_does_not_expand_to_other_operations(method,location,body,de
         cloud=adapter(http,sleep=deployment_timer.sleep)
         url=cloud._scm('main')+'/api/deployments/latest' if location=='scm' else 'https://management.azure.com'+RESOURCE+('/config/appsettings/list' if location=='settings' else '/config/authsettingsV2')
         with pytest.raises(TransportRefused): cloud._read(method,url,body=body)
-    assert len(requests)==1 and deployment_timer.elapsed==0 and requests[0].extensions['timeout']['read']==10
+    assert len(requests)==1 and deployment_timer.elapsed==0 and requests[0].extensions['timeout']['read']==(30 if location=='scm' else 10)
 
 
 def test_retry_url_classification_preserves_closed_invalid_url_refusal():

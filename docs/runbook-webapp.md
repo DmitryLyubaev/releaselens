@@ -216,7 +216,10 @@ category, timeout kind (connect/read/write/pool/other), fixed refusal code and o
 numeric AADSTS code. A response status remains visible if reading its successful body
 later fails. An anonymous refusal with an authenticated failure helps distinguish an
 authentication path from general reachability; it does not by itself prove a root cause.
-Each probe uses the existing ten-second transport timeout, without retries or redirects.
+Frontend probes use a ten-second transport timeout. SCM reads use thirty seconds,
+without retries or redirects. The SCM availability check is a status-only GET of the
+deployment index, whose body remains unread. It works before any deployment history
+exists; querying the latest deployment is not an initial-installation prerequisite.
 Anonymous and refused response bodies stay unread.
 The diagnostic transport refuses uploads, ARM writes and swaps before
 token acquisition. It calls no model and creates no eligible receipt. A completed
@@ -233,6 +236,13 @@ once after one second. This includes the two exact appsettings-list POST reads.
 HTTP refusals and token-acquisition failures stop immediately. Uploads, swaps and
 other writes are never replayed after an ambiguous timeout; their existing timeout
 bounds and SCM polling remain unchanged.
+
+Owned SCM GETs use a thirty-second budget with no retry. Pending deployment polls
+limit their request and sleep budgets to the remaining five-minute polling window;
+an upload or swap is never replayed. Before the first seed, configuration, frontend
+token acquisition and the SCM deployment index must pass. Runtime health can be
+unavailable while the app has no package. After seed, source-bound runtime health,
+selected package digest, configuration and access checks remain mandatory.
 
 After an accepted upload, a usable HTTPS status location on the exact owned SCM
 origin is retained. A missing, malformed or untrusted hint selects only that

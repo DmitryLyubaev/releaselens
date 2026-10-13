@@ -85,7 +85,7 @@ class ReleaseDiagnostics:
             if host == 'management.azure.com':
                 operation = next((label for suffix, label in (('/config/appsettings/list', 'appsettings'), ('/config/authsettingsV2', 'auth'), ('/config/web', 'siteconfig'), ('/config/slotConfigNames', 'sticky'), ('/slotsswap', 'swap')) if path.endswith(suffix)), 'arm_read')
             elif slot and '.scm.azurewebsites.net' in host:
-                operation = 'zipdeploy' if path.startswith('/api/zipdeploy') else 'deployment_status' if path.startswith('/api/deployments/') else 'selected_manifest' if path.endswith('/packagename.txt') else 'selected_package'
+                operation = 'zipdeploy' if path.startswith('/api/zipdeploy') else 'deployment_status' if path == '/api/deployments' or path.startswith('/api/deployments/') else 'selected_manifest' if path.endswith('/packagename.txt') else 'selected_package'
             elif slot:
                 operation = 'health' if path == '/health' else 'access_probe'
             else:
