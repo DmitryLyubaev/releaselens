@@ -59,8 +59,12 @@ def grade_run(run: dict, observations: dict, allowed_paths: set[Path], index: in
         execution_started, execution_finished = (timestamp(properties[k]) for k in ("startTime", "endTime"))
         times_valid = queued <= execution_started <= started <= finished <= execution_finished
         samples = run["worker_samples"]
-        counts_valid = bool(samples) and all(len(s["executions"]) <= 1 for s in samples)
-        counts_valid = counts_valid and any(s["executions"] == [execution["name"]] for s in samples)
+        sample_times = [timestamp(s["time"]) for s in samples]
+        counts_valid = (bool(samples) and all(queued <= t <= execution_finished for t in sample_times)
+                        and all(a <= b for a, b in zip(sample_times, sample_times[1:]))
+                        and all(len(s["executions"]) <= 1 and set(s["executions"]) <= {execution["name"]} for s in samples)
+                        and any(s["executions"] == [execution["name"]] and execution_started <= t <= execution_finished
+                                for s, t in zip(samples, sample_times)))
         activity = run["activity"]
         no_manual = isinstance(activity["value"], list) and not activity.get("nextLink") and not any(
             r.get("operationName", {}).get("value", "").casefold() == "microsoft.app/jobs/start/action"
@@ -80,7 +84,9 @@ def grade_run(run: dict, observations: dict, allowed_paths: set[Path], index: in
                   and str(build["id"]) == manifest["build_id"] and manifest["session"] == observations["session"]
                   and manifest["workspace_fresh"] is True and bool(manifest["workspace_id"])
                   and task_succeeded(run["timeline"], "Require approved source and fresh workspace")
-                  and task_succeeded(run["timeline"], "Build and test Core and Web"))
+                  and task_succeeded(run["timeline"], "Build and test Core and Web")
+                  and task_succeeded(run["timeline"], "Publish Project 7 test results")
+                  and task_succeeded(run["timeline"], "Publish Project 7 workload artifact"))
         workload_task, = [r for r in run["timeline"]["records"] if r.get("name") == "Build and test Core and Web"]
         work_start, work_finish = (timestamp(workload_task[k]) for k in ("startTime", "finishTime"))
         common = common and started <= work_start <= work_finish <= finished
@@ -178,7 +184,7 @@ def grade(observations: dict, trx_paths: list[Path]) -> dict:
     check("A1", origin and all(g["flags"]["A1"] for g in grades), bool(grades))
     check("A2", all(g["flags"]["A2"] for g in grades), bool(grades))
     try:
-        distinct = all(len({r[field][key] for r in runs[:2]}) == 2 for field, key in
+        distinct = all(len({str(r[field][key]) for r in runs}) == len(runs) for field, key in
                        (("workload", "agent"), ("workload", "workspace_id"), ("execution", "name"), ("build", "id")))
         sequential = all(timestamp(b["build"]["queueTime"]) >= timestamp(a["idle_samples"][-1]["time"])
                          for a, b in zip(runs, runs[1:]))

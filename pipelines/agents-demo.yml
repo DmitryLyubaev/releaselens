@@ -66,6 +66,7 @@ jobs:
         displayName: Intentional negative pipeline step
 
       - task: PublishTestResults@2
+        displayName: Publish Project 7 test results
         condition: always()
         inputs:
           testResultsFormat: VSTest
@@ -76,6 +77,7 @@ jobs:
           publishRunAttachments: true
 
       - task: PublishPipelineArtifact@1
+        displayName: Publish Project 7 workload artifact
         condition: always()
         inputs:
           targetPath: $(Agent.TempDirectory)/p7-results

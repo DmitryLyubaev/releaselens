@@ -18,18 +18,18 @@ mock_provider "azurerm" {
 }
 
 variables {
-  subscription_id  = "00000000-0000-0000-0000-000000000000"
-  tenant_id        = "00000000-0000-0000-0000-000000000002"
-  owner_object_id  = "00000000-0000-0000-0000-000000000003"
-  owner_account    = "owner@example.com"
+  subscription_id           = "00000000-0000-0000-0000-000000000000"
+  tenant_id                 = "00000000-0000-0000-0000-000000000002"
+  owner_object_id           = "00000000-0000-0000-0000-000000000003"
+  owner_account             = "owner@example.com"
   forbidden_account_domains = ["example-employer.invalid"]
-  session_name     = "demo-test"
-  organization_url = "https://dev.azure.com/example"
-  pool_name        = "p7-demo"
-  image_digest     = "ghcr.io/example/releaselens-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  pat_file         = "/tmp/private/pat.txt"
-  session_dir      = "/tmp/private"
-  source_sha       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  session_name              = "demo-test"
+  organization_url          = "https://dev.azure.com/example"
+  pool_name                 = "p7-demo"
+  image_digest              = "ghcr.io/example/releaselens-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  pat_file                  = "/tmp/private/pat.txt"
+  session_dir               = "/tmp/private"
+  source_sha                = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 
 run "bounded_host" {

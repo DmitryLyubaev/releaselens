@@ -213,6 +213,9 @@ The allowlisted artifact has project TRX files and `workload.json` with original
 source, agent, session, unique workspace marker and TRX digests. The fresh marker must not
 exist before the guarded job. Keep each run in its own artifact directory; don't mix TRX
 from different builds. Positive results require executed tests and zero failures/skips.
+Both named publication tasks must have succeeded in the original timeline, including for
+the deliberate failure. Worker samples need ordered current timestamps, and all three
+runs need distinct build/execution/agent/workspace identities.
 
 `scripts/agents/evidence.py` accepts a private observation object assembled from these
 originals, not hand-entered pass labels. Its schema is exercised by

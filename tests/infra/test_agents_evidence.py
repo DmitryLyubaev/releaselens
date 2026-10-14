@@ -39,6 +39,8 @@ def observed(tmp_path):
         timeline[1].update(startTime=f"2026-10-15T00:{i}0:35Z", finishTime=f"2026-10-15T00:{i}0:55Z")
         if i == 2:
             timeline.append({"type": "Task", "name": "Intentional negative pipeline step", "result": "failed"})
+        timeline.extend({"type": "Task", "name": name, "result": "succeeded"} for name in
+                        ("Publish Project 7 test results", "Publish Project 7 workload artifact"))
         runs.append({"build": {"id": i + 1, "status": "completed", "result": "failed" if i == 2 else "succeeded",
                                "sourceVersion": source, "sourceBranch": "refs/heads/main",
                                "queueTime": f"2026-10-15T00:{i}0:00Z", "startTime": f"2026-10-15T00:{i}0:30Z",
@@ -152,3 +154,50 @@ def test_session_origin_and_time_bounds(evidence, observed, change, check):
     if change == "deadline": obs["window"]["closeout_at"] = "2026-10-15T01:10:00Z"
     if change == "queue_late": obs["window"]["queue_cutoff_at"] = "2026-10-15T00:10:00Z"
     assert evidence.grade(obs, paths)["checks"][check]["status"] == "fail"
+
+
+@pytest.mark.parametrize("name", ["Publish Project 7 test results", "Publish Project 7 workload artifact"])
+@pytest.mark.parametrize("status", ["missing", "skipped", "failed"])
+def test_failed_or_missing_negative_publishers_are_not_credited(evidence, observed, name, status):
+    obs, paths = observed
+    records = obs["runs"][2]["timeline"]["records"]
+    if status == "missing":
+        records[:] = [r for r in records if r["name"] != name]
+    else:
+        next(r for r in records if r["name"] == name)["result"] = status
+    result = evidence.grade(obs, paths)
+    assert result["checks"]["A2"]["status"] == "fail"
+    assert result["checks"]["A4"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("change", ["missing", "malformed", "stale", "late", "unordered", "wrong_execution"])
+def test_worker_observations_are_current_and_ordered(evidence, observed, change):
+    obs, paths = observed
+    run = obs["runs"][0]
+    sample = run["worker_samples"][0]
+    if change == "missing": del sample["time"]
+    if change == "malformed": sample["time"] = "unknown"
+    if change == "stale": sample["time"] = "2000-01-01T00:00:00Z"
+    if change == "late": sample["time"] = "2026-10-15T01:00:00Z"
+    if change == "unordered":
+        run["worker_samples"].append({**sample, "time": "2026-10-15T00:00:20Z"})
+    if change == "wrong_execution":
+        run["worker_samples"].append({"time": "2026-10-15T00:00:40Z", "executions": ["other-worker"]})
+    assert evidence.grade(obs, paths)["checks"]["A1"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("identity", ["agent", "execution", "workspace_id", "build"])
+def test_negative_run_cannot_reuse_one_job_identity(evidence, observed, identity):
+    obs, paths = observed
+    previous, negative = obs["runs"][1:]
+    if identity == "agent":
+        negative["workload"]["agent"] = previous["workload"]["agent"]
+        negative["pool_snapshot"]["value"][0]["name"] = previous["workload"]["agent"]
+    if identity == "execution":
+        negative["execution"]["name"] = previous["execution"]["name"]
+        negative["worker_samples"][0]["executions"] = [previous["execution"]["name"]]
+    if identity == "workspace_id": negative["workload"]["workspace_id"] = previous["workload"]["workspace_id"]
+    if identity == "build":
+        negative["build"]["id"] = previous["build"]["id"]
+        negative["workload"]["build_id"] = previous["workload"]["build_id"]
+    assert evidence.grade(obs, paths)["checks"]["A3"]["status"] == "fail"

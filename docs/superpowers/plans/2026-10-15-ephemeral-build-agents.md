@@ -10,6 +10,13 @@
 
 **Spec:** [Approved design](../specs/2026-10-15-ephemeral-build-agents-design.md). Read it before this plan. Approval of the design permits planning; publication, organisation setup and live Azure work have later gates below.
 
+Implementation status, 15 October 2026: the owner approved this plan and native execution.
+Tasks 1-4 and the local implementation/review portion of Task 5 are implemented. One
+independent branch review identified four issues; all were fixed with failing-then-passing
+checks. Local validation passes 347 infrastructure tests, Core39/Web115 tests and Linux
+Terraform validation/mocked plan. Task 5 publication and actual container validation,
+organisation setup and Task 6 live acceptance remain pending their explicit gates.
+
 ## Global Constraints
 
 - CV/interview demonstration only; no full CI migration or Project 8 deployment stages.
