@@ -48,6 +48,25 @@ class Client:
     def ask(self, *args): raise AssertionError('diagnosis asked model')
 
 
+@pytest.mark.parametrize('mode',['seed','stage'])
+def test_package_presence_timeout_has_its_own_phase_before_any_upload(tmp_path,capsys,mode):
+    from app.webapp.contracts import Health
+    baseline=f'{SHA}.777.1.seed'
+    env=prepared(tmp_path,mode)|dict(WEBAPP_BASELINE_VERSION=baseline)
+    class PresenceTimeout(Cloud):
+        def selected_package_present(self,slot):raise httpx.ReadTimeout('private-scm-token private-host')
+    class HealthyMain(Client):
+        def health(self,_):return Health(200,'ok',baseline,'main',True,'deployment')
+    with patch.object(cli,'AzureReleaseTransport',PresenceTimeout),patch.object(cli,'WebAppClient',HealthyMain):
+        assert cli.main([mode],env=env,clean_guard=lambda:None,output_guard=lambda _:None,root=tmp_path,credential_factory=Credential)==1
+    data=json.loads((tmp_path/'artifacts/webapp-release/diagnostics.json').read_text())
+    assert data['phase']=='package_presence'
+    assert data['error_category']=='timeout' and data['timeout_kind']=='read'
+    assert data['deployment_calls']==data['swap_calls']==data['model_calls']==0
+    assert 'private-' not in json.dumps(data)
+    assert capsys.readouterr().out=='status=refused\n'
+
+
 def test_diagnose_collects_read_only_facts_without_a_receipt_or_package(tmp_path, capsys):
     env = prepared(tmp_path, 'diagnose')
     with patch.object(cli, 'ReadOnlyAzureReleaseTransport', Cloud, create=True), patch.object(cli, 'WebAppClient', Client):

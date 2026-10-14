@@ -238,9 +238,10 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                 slot = "main" if mode == "seed" else "staging"
                 previous_version = None
                 if not fixture:
-                    diagnostics.phase = 'readiness'
+                    diagnostics.phase = 'package_presence'
                     package_present = cloud.selected_package_present(slot)
                     if type(package_present) is not bool: raise ValueError()
+                    diagnostics.phase = 'readiness'
                     if package_present:
                         previous = clients[slot].health(frontend())
                         if previous.http_status == 200:

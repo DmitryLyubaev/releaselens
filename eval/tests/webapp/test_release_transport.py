@@ -61,8 +61,89 @@ def test_selected_package_presence_timeout_is_not_absence():
         calls.append(request)
         raise httpx.ReadTimeout('No SCM response',request=request)
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
-        with pytest.raises(TransportRefused):adapter(http).selected_package_present('main')
+        with pytest.raises(TransportRefused):adapter(http,clock=lambda:0,sleep=lambda _:None).selected_package_present('main')
+    assert len(calls)==3
+
+
+@pytest.mark.parametrize('status,present',[(200,True),(404,False)])
+def test_selected_package_presence_retries_only_the_owned_get_after_read_timeout(status,present):
+    from .test_http_client import Unreadable
+    calls=[];sleeps=[];body=Unreadable()
+    def handle(request):
+        calls.append(request)
+        if len(calls)==1:raise httpx.ReadTimeout('No response',request=request)
+        return httpx.Response(status,stream=body)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        assert adapter(http,clock=lambda:0,sleep=sleeps.append).selected_package_present('staging') is present
+    assert len(calls)==2 and body.reads==0 and sleeps==[1]
+    assert all(r.method=='GET' and r.url.host=='mock-webapp-staging.scm.azurewebsites.net'
+               and r.url.path=='/api/vfs/data/SitePackages/packagename.txt' for r in calls)
+
+
+def test_selected_package_presence_shortens_last_read_to_remaining_budget():
+    elapsed=[0];budgets=[];sleeps=[]
+    def handle(request):
+        budgets.append(request.extensions['timeout']['read'])
+        if len(budgets)<3:
+            elapsed[0]+=40
+            raise httpx.ReadTimeout('Slow response',request=request)
+        return httpx.Response(404)
+    def sleep(seconds):sleeps.append(seconds);elapsed[0]+=seconds
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        assert adapter(http,clock=lambda:elapsed[0],sleep=sleep).selected_package_present('staging') is False
+    assert budgets==[30,30,8] and sleeps==[1,1]
+
+
+def test_selected_package_presence_exhausted_budget_never_probes_again():
+    elapsed=[0];calls=[];sleeps=[]
+    def handle(request):
+        calls.append(request);elapsed[0]=90
+        raise httpx.ReadTimeout('Budget exhausted',request=request)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=lambda:elapsed[0],sleep=sleeps.append).selected_package_present('main')
+    assert len(calls)==1 and not sleeps
+
+
+@pytest.mark.parametrize('error',[httpx.ConnectTimeout,httpx.ConnectError,httpx.RemoteProtocolError])
+def test_selected_package_presence_does_not_replay_other_failure_types(error):
+    calls=[];sleeps=[]
+    def handle(request):calls.append(request);raise error('Refused',request=request)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=lambda:0,sleep=sleeps.append).selected_package_present('main')
+    assert len(calls)==1 and not sleeps
+
+
+def test_selected_package_presence_refuses_a_response_after_total_budget():
+    elapsed=[0];calls=[]
+    def handle(request):
+        calls.append(request);elapsed[0]=91
+        return httpx.Response(404)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(TransportRefused):adapter(http,clock=lambda:elapsed[0],sleep=lambda _:None).selected_package_present('main')
     assert len(calls)==1
+
+
+def test_selected_package_presence_rechecks_budget_after_retry_token_acquisition():
+    elapsed=[0];calls=[];tokens=[]
+    def handle(request):calls.append(request);raise httpx.ReadTimeout('No response',request=request)
+    def acquire(_):
+        tokens.append(True)
+        if len(tokens)==2:elapsed[0]=90
+        return token()
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        cloud=adapter(http,clock=lambda:elapsed[0],sleep=lambda _:None);cloud._token=acquire
+        with pytest.raises(TransportRefused):cloud.selected_package_present('main')
+    assert len(calls)==1 and len(tokens)==2
+
+
+def test_selected_package_presence_rechecks_identity_on_retry():
+    calls=[];tokens=[]
+    def handle(request):calls.append(request);raise httpx.ReadTimeout('No response',request=request)
+    def acquire(_):tokens.append(True);return token(oid=OID if len(tokens)==1 else 'wrong')
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        cloud=adapter(http,clock=lambda:0,sleep=lambda _:None);cloud._token=acquire
+        with pytest.raises(TransportRefused,match='account_refused'):cloud.selected_package_present('main')
+    assert len(calls)==1 and len(tokens)==2
 
 
 def test_selected_package_presence_requires_bound_workload_identity():
