@@ -1,0 +1,57 @@
+mock_provider "azurerm" {
+  override_during = plan
+  mock_resource "azurerm_resource_group" {
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo" }
+  }
+  mock_resource "azurerm_key_vault" {
+    defaults = {
+      id        = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo/providers/Microsoft.KeyVault/vaults/p7-demo"
+      vault_uri = "https://example.vault.azure.net/"
+    }
+  }
+  mock_resource "azurerm_user_assigned_identity" {
+    defaults = {
+      id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo/providers/Microsoft.ManagedIdentity/userAssignedIdentities/p7-demo"
+      principal_id = "00000000-0000-0000-0000-000000000001"
+    }
+  }
+}
+
+variables {
+  subscription_id           = "00000000-0000-0000-0000-000000000000"
+  tenant_id                 = "00000000-0000-0000-0000-000000000002"
+  owner_object_id           = "00000000-0000-0000-0000-000000000003"
+  owner_account             = "owner@example.com"
+  forbidden_account_domains = ["example-employer.invalid"]
+  session_name              = "demo-test"
+  organization_url          = "https://dev.azure.com/example"
+  pool_name                 = "p7-demo"
+  image_digest              = "ghcr.io/example/releaselens-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  pat_file                  = "/tmp/private/pat.txt"
+  session_dir               = "/tmp/private"
+  source_sha                = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+
+run "bounded_host" {
+  command = plan
+  assert {
+    condition     = azurerm_container_app_job.worker.replica_timeout_in_seconds == 900 && azurerm_container_app_job.worker.replica_retry_limit == 0 && azurerm_container_app_job.worker.template[0].container[0].cpu == 2 && azurerm_container_app_job.worker.template[0].container[0].memory == "4Gi"
+    error_message = "Worker limits differ from the approved demo."
+  }
+  assert {
+    condition     = azurerm_container_app_job.worker.event_trigger_config[0].scale[0].min_executions == 0 && azurerm_container_app_job.worker.event_trigger_config[0].scale[0].max_executions == 1 && azurerm_container_app_job.worker.event_trigger_config[0].scale[0].polling_interval_in_seconds == 30
+    error_message = "Scale must be min0/max1/poll30 without asserting a global mutex."
+  }
+  assert {
+    condition     = azurerm_container_app_job.placeholder.manual_trigger_config[0].parallelism == 1 && azurerm_container_app_job.worker.event_trigger_config[0].parallelism == 1 && azurerm_container_app_job.worker.event_trigger_config[0].replica_completion_count == 1
+    error_message = "Setup must be manual and worker event-driven with one replica."
+  }
+  assert {
+    condition     = azurerm_role_assignment.reader.scope == azurerm_key_vault.agent.id && azurerm_role_assignment.writer.scope == azurerm_key_vault.agent.id && azurerm_role_assignment.reader.role_definition_name == "Key Vault Secrets User" && azurerm_role_assignment.writer.role_definition_name == "Key Vault Secrets Officer"
+    error_message = "Roles must be limited to the new dedicated vault."
+  }
+  assert {
+    condition     = azurerm_log_analytics_workspace.agent.daily_quota_gb == 0.1 && azurerm_log_analytics_workspace.agent.retention_in_days == 30 && azurerm_key_vault.agent.purge_protection_enabled
+    error_message = "Log bounds and vault soft-delete protection are mandatory."
+  }
+}

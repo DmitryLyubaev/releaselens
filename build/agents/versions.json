@@ -1,0 +1,9 @@
+{
+  "base": "mcr.microsoft.com/dotnet/sdk:10.0.201-noble@sha256:c804b88aaca8d6b76f65998427adec3101dcbbf2e52e705e2509eb81263aab0c",
+  "platform": "linux/amd64",
+  "agent_version": "5.280.0",
+  "agent_url": "https://download.agent.dev.azure.com/agent/5.280.0/vsts-agent-linux-x64-5.280.0.tar.gz",
+  "agent_sha256": "f0daf1ce526af0b5eebf420249d21689de10faf00ffb0f19851626eb4352d791",
+  "release": "https://github.com/microsoft/azure-pipelines-agent/releases/tag/v5.280.0",
+  "license": "https://github.com/microsoft/azure-pipelines-agent/blob/v5.280.0/LICENSE"
+}

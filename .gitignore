@@ -53,10 +53,13 @@ eval/.pytest_cache/
 tests/infra/__pycache__/
 tests/infra/.pytest_cache/
 scripts/__pycache__/
+scripts/agents/__pycache__/
+build/agents/__pycache__/
 
 # Test output
 TestResults/
 coverage/
+.local/project7/
 
 # Eval sweep output. Reports are evidence of a run, not source; the README quotes
 # the headline numbers instead. Committing them would also commit answer text.
