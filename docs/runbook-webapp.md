@@ -1,9 +1,13 @@
 # Runbook: project 6 Webapp session
 
-Implementation is ready for offline review. **No project-6 live check has run.** Follow the
-[approved design](superpowers/specs/2026-10-12-app-service-front-end-design.md), then record
-facts in the [pending report](webapp-report.md). A failed or missing check stays failed or
-not run. The target is one four-hour session, including the token-expiry wait.
+**Acceptance and cleanup completed on 14 October 2026.** See the
+[dated report and original/new evidence provenance](webapp-report.md), including earlier
+failures and not-run measurements. The owner approved several bounded sessions and reuse
+of original W1/W3 evidence with its original source, hashes and times. This record does
+not authorize another session. Follow the
+[approved design and dated changes](superpowers/specs/2026-10-12-app-service-front-end-design.md)
+for a future separately approved run. A failed or missing check stays failed or not run.
+Each authorized resource session retains its own four-hour limit, including any expiry wait.
 
 **The nightly app-stack destroy does not remove the webapp stack.** An S1 plan bills while
 idle. This runbook grants no unattended cleanup, destroy, purge or permanent deletion.
@@ -444,24 +448,32 @@ W6 passes only when both W6a and W6b pass. Missing files are not run, failures r
 
 | Teardown fact | Observation |
 |---|---|
-| Webapp session group absent | not run |
-| Gateway session group absent | not run |
-| S1 plan, main site and staging absent | not run |
-| API Management deleted-service entry absent | not run |
-| Retained bootstrap inventory unchanged | not run |
+| Webapp session group absent | Confirmed canonical absence in final W6b at source B in the report. |
+| Gateway session group absent | Confirmed canonical absence. |
+| S1 plan, main site and staging absent | All canonical owned references absent; session states empty. |
+| API Management deleted-service entry absent | Confirmed canonical absence; no additional purge command needed. |
+| Retained bootstrap inventory unchanged | Complete retained ARM resource-ID inventories equal the captured baseline. |
 
 ## Findings to record after measurement
 
 | Live uncertainty | Finding |
 |---|---|
-| .NET 10 Linux S1 availability and slot warmup | not run |
-| Keyless Easy Auth assertion and owner consent | not run |
-| Token store and expiry/refresh behavior | not run |
-| Entra SCM deployment/digest reads at scoped role | not run |
-| Gateway owner Caller telemetry | not run |
-| Swap versions, sticky settings and fresh per-slot sessions | not run |
-| Teardown, purge and retained bootstrap inventory | not run |
-| Actual charges, currency, runtime and any overrun | not run |
+| .NET 10 Linux S1 availability and slot warmup | Actual final seed/stage/promotion passed. Earlier pre-upload reads timed out; retries alone failed. Reviewed SCM warmup/worker affinity passed in the final runs, without proving every earlier cloud cause. |
+| Keyless Easy Auth assertion and owner consent | Original W1 owner ask and final fresh main/staging sessions succeeded under the intended configuration. One owner and shared slot registration/identity were measured. |
+| Token store and expiry/refresh behavior | Original W3 observed expiry, one 200 refresh with advanced expiry, and one 200 ask. Explicitly reused original evidence; no final-session refresh. |
+| Entra SCM deployment/digest reads at scoped role | Successful final seed/stage with digest and configuration gates. No basic publishing credentials or privilege widening. |
+| Post-apply Terraform normalization | Two gateway policy and two webapp site changes remained in post-plans. Canonical policies and actual intended configuration comparisons passed before release; no corrective resource apply. Future plans may still show normalization. |
+| Gateway owner Caller telemetry | Original W1 matched one owner metric row for one gateway call. This is one sample. |
+| Swap versions, sticky settings and fresh per-slot sessions | W4 records one successful normal swap; W6a confirms intended/retained settings and distinct fresh post-swap sessions. W5 rejected the unhealthy fixture's promotion before protected release. |
+| Teardown, purge and retained bootstrap inventory | W6b passed: exact owned resources absent, empty states, deleted-service reference absent, complete bootstrap inventories unchanged. Reviewer settings restored and owned keeper stopped. |
+| Actual charges, currency, runtime and any overrun | Invoiced charges not measured. Final apply 17:27:36.717159 to verified closeout 18:57:44.606596 Brisbane; within four hours. Zero final-session model calls/refreshes, one swap. |
+
+The report records the original and new source bindings separately. Do not copy original
+W1/W3 into a new source report: the harness's cross-commit refusal remains in force.
+The owner's one-off settings-only continuation used explicitly confirmed fresh separate
+post-swap sessions via a private input transport. Values stayed in memory and were not
+published. That approval does not replace the hidden-prompt default or authorize future
+file inputs without a new explicit instruction.
 
 After all measurements, publish only the guarded report and sanitized findings after owner
 review. Obtain separate approval for a documentation commit/push/PR. Preserve scratch and
