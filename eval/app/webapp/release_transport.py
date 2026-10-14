@@ -40,6 +40,7 @@ class AzureReleaseTransport:
         self._tenant, self._subscription, self._client, self._principal = tenant, subscription, client_id, principal_id
         self._resource = resource_id
         self._origins = {"main": main_origin, "staging": staging_origin}
+        self._scm_affinity = {}
         self._clock, self._sleep = clock, sleep
         if not resource_id.startswith(f"/subscriptions/{subscription}/resourceGroups/") or "/providers/Microsoft.Web/sites/" not in resource_id:
             raise TransportRefused("release_refused")
@@ -90,7 +91,11 @@ class AzureReleaseTransport:
             if parsed.hostname != "management.azure.com" and parsed.hostname not in own_scm: raise ValueError()
             if parsed.hostname == "management.azure.com" and not parsed.path.startswith(f"/subscriptions/{self._subscription}/"): raise ValueError()
             kwargs = {"content": body} if isinstance(body, bytes) else {"json": body} if body is not None else {}
-            with self._http.stream(method, url, headers={"Authorization": "Bearer " + self._bearer()}, timeout=timeout, follow_redirects=False, **kwargs) as response:
+            headers = {"Authorization": "Bearer " + self._bearer()}
+            for slot in ("main", "staging"):
+                if parsed.hostname == urlsplit(self._scm(slot)).hostname and slot in self._scm_affinity:
+                    headers["Cookie"] = self._scm_affinity[slot]
+            with self._http.stream(method, url, headers=headers, timeout=timeout, follow_redirects=False, **kwargs) as response:
                 headers = dict(response.headers)
                 if response.status_code == 202 and allow_async: return None, headers
                 if response.status_code not in {200, 201, 204}: raise TransportRefused("release_refused")
@@ -139,6 +144,43 @@ class AzureReleaseTransport:
             return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
         except Exception: return subprocess.CompletedProcess(args, 1, "", "")
 
+    def warm_scm(self, slot):
+        """Prepare the owned Linux Kudu worker before reading its package files."""
+        try:
+            origin = self._scm(slot)
+            self._scm_affinity.pop(slot, None)
+            base = "https://management.azure.com" + self._resource + ("/slots/staging" if slot == "staging" else "")
+            data = self._arm("GET", base + "/instances?api-version=" + API)
+            instances = data.get("value")
+            if data.get("nextLink") or not isinstance(instances, list) or not 1 <= len(instances) <= 16:
+                raise TransportRefused("release_refused")
+            names = [item.get("name") if isinstance(item, dict) else None for item in instances]
+            if any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", name) for name in names):
+                raise TransportRefused("release_refused")
+            if len(set(names)) != len(names): raise TransportRefused("release_refused")
+            instance = sorted(names)[0]
+            cookie = f"ARRAffinity={instance}; ARRAffinitySameSite={instance}"
+            started = self._clock()
+            for attempt in range(3):
+                headers = {"Authorization": "Bearer " + self._bearer(), "Cookie": cookie}
+                remaining = 180 - (self._clock() - started)
+                if remaining <= 0: raise TransportRefused("release_refused")
+                try:
+                    with self._http.stream("GET", origin + "/api/deployments?warmup=true",
+                                           headers=headers, timeout=min(60, remaining), follow_redirects=False) as response:
+                        if self._clock() - started >= 180: raise TransportRefused("release_refused")
+                        if response.status_code in {200, 201, 202}:
+                            self._scm_affinity[slot] = cookie
+                            return
+                        if response.status_code not in {502, 503, 504}: raise TransportRefused("release_refused")
+                except httpx.ReadTimeout:
+                    if attempt == 2: raise TransportRefused("release_refused") from None
+                remaining = 180 - (self._clock() - started)
+                if attempt == 2 or remaining <= 0: raise TransportRefused("release_refused")
+                self._sleep(min(1, remaining))
+        except TransportRefused: raise
+        except Exception: raise TransportRefused("release_refused") from None
+
     def selected_package_present(self, slot):
         """Bounded read-timeout retries; only an authenticated 404 means absent."""
         try:
@@ -148,6 +190,7 @@ class AzureReleaseTransport:
                 # Credential failures never enter the retry handler. Recheck the
                 # total budget after acquisition, immediately before each GET.
                 headers = {"Authorization": "Bearer " + self._bearer()}
+                if slot in self._scm_affinity: headers["Cookie"] = self._scm_affinity[slot]
                 remaining = 90 - (self._clock() - started)
                 if remaining <= 0: raise TransportRefused("release_refused")
                 try:
