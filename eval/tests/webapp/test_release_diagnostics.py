@@ -29,6 +29,7 @@ def prepared(tmp_path, mode):
 class Cloud:
     def __init__(self, *args): pass
     def configuration(self, intended): return intended
+    def warm_scm(self, slot): pass
     def selected_package_present(self, slot): return True
     def probe_scm(self, slot): return False
     def deploy(self, *args): raise AssertionError('diagnosis deployed')

@@ -89,6 +89,7 @@ def test_seed_receipt_is_not_eligible_and_records_deployment_owner_route_boundar
     class Cloud:
         def __init__(self,*args): pass
         def configuration(self,_): return {}
+        def warm_scm(self,_): pass
         def selected_package_present(self,_): return False
         def deploy(self,*args): pass
         def selected_package_sha256(self,_): return digest
@@ -123,6 +124,7 @@ def publish_with_previous_worker(tmp_path,monkeypatch,mode,*,digest_matches=True
     class Cloud:
         def __init__(self,*args):pass
         def configuration(self,_):return {}
+        def warm_scm(self,_):state['events'].append('scm_warmup')
         def selected_package_present(self,_):
             state['events'].append('package_presence')
             return package_present

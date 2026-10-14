@@ -237,6 +237,8 @@ def main(argv=None, *, env=None, http=None, clean_guard=None, output_guard=None,
                     if not before.matches["baseline_healthy"]: raise ValueError()
                 slot = "main" if mode == "seed" else "staging"
                 previous_version = None
+                diagnostics.phase = 'scm_warmup'
+                cloud.warm_scm(slot)
                 if not fixture:
                     diagnostics.phase = 'package_presence'
                     package_present = cloud.selected_package_present(slot)
