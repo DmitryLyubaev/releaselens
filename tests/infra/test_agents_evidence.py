@@ -1,0 +1,154 @@
+"""Original-result and TRX mutations must never become false acceptance passes."""
+import copy
+import hashlib
+import importlib.util
+import json
+
+import pytest
+
+
+@pytest.fixture
+def evidence(repo_root):
+    spec = importlib.util.spec_from_file_location("agents_evidence", repo_root / "scripts/agents/evidence.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def observed(tmp_path):
+    source, image, session = "a" * 40, "ghcr.io/example/releaselens-agent@sha256:" + "b" * 64, "demo-test"
+    group = "/subscriptions/private-sub/resourceGroups/rg-p7-demo-test"
+    owned = [group] + [group + "/providers/Example/type/" + str(i) for i in range(8)]
+    runs, paths = [], []
+    for i in range(3):
+        folder = tmp_path / str(i)
+        agent = f"p7-{session}-worker-nonce{i}"
+        hashes = {}
+        for name in ("ReleaseLens.Core.Tests", "ReleaseLens.Web.Tests"):
+            path = folder / name / f"{name}.trx"
+            path.parent.mkdir(parents=True)
+            path.write_text('''<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+              <Results><UnitTestResult executionId="test-1" outcome="Passed" duration="00:00:00.250" /></Results>
+              <ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" notExecuted="0" /></ResultSummary>
+            </TestRun>''')
+            hashes[path.relative_to(folder).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            paths.append(path)
+        timeline = [{"type": "Task", "name": name, "result": "succeeded"} for name in
+                    ("Require approved source and fresh workspace", "Build and test Core and Web")]
+        timeline[1].update(startTime=f"2026-10-15T00:{i}0:35Z", finishTime=f"2026-10-15T00:{i}0:55Z")
+        if i == 2:
+            timeline.append({"type": "Task", "name": "Intentional negative pipeline step", "result": "failed"})
+        runs.append({"build": {"id": i + 1, "status": "completed", "result": "failed" if i == 2 else "succeeded",
+                               "sourceVersion": source, "sourceBranch": "refs/heads/main",
+                               "queueTime": f"2026-10-15T00:{i}0:00Z", "startTime": f"2026-10-15T00:{i}0:30Z",
+                               "finishTime": f"2026-10-15T00:{i}1:00Z"},
+                     "timeline": {"records": timeline}, "artifact_dir": str(folder),
+                     "execution": {"name": f"exec-private-{i}", "properties": {"status": "Succeeded",
+                                   "startTime": f"2026-10-15T00:{i}0:10Z", "endTime": f"2026-10-15T00:{i}1:10Z",
+                                   "template": {"containers": [{"image": image}]}}},
+                     "workload": {"schema_version": 1, "build_id": str(i + 1), "source": source, "agent": agent,
+                                  "session": session, "workspace_fresh": True, "workspace_id": f"workspace-{i}", "trx": hashes},
+                     "pool_snapshot": {"value": [{"name": agent, "status": "online"}]},
+                     "activity": {"value": []},
+                     "worker_samples": [{"time": f"2026-10-15T00:{i}0:30Z", "executions": [f"exec-private-{i}"]}],
+                     "idle_samples": [{"time": f"2026-10-15T00:{i}2:{sec}Z", "workers": [], "online_agents": [], "queued": 0}
+                                      for sec in ("00", "30")] +
+                                     [{"time": f"2026-10-15T00:{i}3:00Z", "workers": [], "online_agents": [], "queued": 0}]})
+    obs = {"schema_version": 1, "source": source, "image_digest": image, "session": session,
+           "initial_idle": {"time": "2026-10-14T23:59:59Z", "workers": [], "online_agents": [], "queued": 0},
+           "window": {"apply_started_at": "2026-10-14T23:59:00Z", "queue_cutoff_at": "2026-10-15T00:29:00Z",
+                      "cleanup_started_at": "2026-10-15T00:30:00Z", "cleanup_deadline_at": "2026-10-15T00:59:00Z",
+                      "closeout_at": "2026-10-15T00:40:00Z"},
+           "worker_definition": {"properties": {"configuration": {"triggerType": "Event"}}},
+           "placeholder": {"name": f"p7-{session}-placeholder", "status": "offline"}, "runs": runs,
+           "owned_group_id": group, "owned_ids": owned,
+           "closeout": {"group_exists": False, "state_read_ok": True, "terraform_addresses": [],
+                        "destroyed_ids": owned, "operations_active": [], "cleanup_lock_exclusive": True,
+                        "queue_disabled": True, "queued": 0, "pat_revoked": True,
+                        "pat_revocation_confirmed_at": "2026-10-15T00:40:00Z",
+                        "retained_before": {"private-bootstrap-group": ["private-retained-resource"]},
+                        "retained_after": {"private-bootstrap-group": ["private-retained-resource"]},
+                        "inventories_complete": True}}
+    return obs, paths
+
+
+def test_actual_positive_and_expected_negative_grade(evidence, observed):
+    obs, paths = observed
+    result = evidence.grade(obs, paths)
+    assert {k: v["status"] for k, v in result["checks"].items()} == {f"A{i}": "pass" for i in range(1, 7)}
+    assert result["runs"][0]["executed_tests"] == 2
+    assert result["runs"][2]["pipeline_result"] == "failed"
+    assert result["runs"][0]["queue_to_agent_seconds"] == 30
+    assert result["runs"][0]["build_test_seconds"] == 20
+    assert "exec-private" not in json.dumps(result)
+    assert "private-sub" not in json.dumps(result)
+    assert "artifact_dir" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mutation,check", [
+    ("manual", "A1"), ("source", "A2"), ("image", "A1"), ("duplicates", "A1"),
+    ("agent_reuse", "A3"), ("workspace_reuse", "A3"), ("publication", "A2"),
+    ("negative_success", "A4"), ("negative_other_failure", "A4"), ("timestamp", "A1"),
+    ("idle", "A5"), ("inventory", "A6"), ("pat", "A6"), ("apply_active", "A6"),
+    ("ownership", "A6"), ("state_unknown", "A6"),
+])
+def test_inconsistent_originals_fail(evidence, observed, mutation, check):
+    obs, paths = observed
+    first = obs["runs"][0]
+    if mutation == "manual": first["activity"]["value"] = [{"operationName": {"value": "Microsoft.App/jobs/start/action"}}]
+    if mutation == "source": first["build"]["sourceVersion"] = "c" * 40
+    if mutation == "image": first["execution"]["properties"]["template"]["containers"][0]["image"] = "wrong"
+    if mutation == "duplicates": first["worker_samples"][0]["executions"].append("unexpected")
+    if mutation == "agent_reuse": obs["runs"][1]["workload"]["agent"] = first["workload"]["agent"]
+    if mutation == "workspace_reuse": obs["runs"][1]["workload"]["workspace_id"] = first["workload"]["workspace_id"]
+    if mutation == "publication": first["workload"]["trx"] = {}
+    if mutation == "negative_success": obs["runs"][2]["build"]["result"] = "succeeded"
+    if mutation == "negative_other_failure": obs["runs"][2]["timeline"]["records"][1]["result"] = "failed"
+    if mutation == "timestamp": first["build"]["startTime"] = "not-a-time"
+    if mutation == "idle": first["idle_samples"][1]["workers"] = ["still-running"]
+    if mutation == "inventory": obs["closeout"]["retained_after"] = {}
+    if mutation == "pat": obs["closeout"]["pat_revoked"] = False
+    if mutation == "apply_active": obs["closeout"]["operations_active"] = ["terraform"]
+    if mutation == "ownership": obs["closeout"]["destroyed_ids"].append("unrelated")
+    if mutation == "state_unknown": obs["closeout"]["state_read_ok"] = False
+    assert evidence.grade(obs, paths)["checks"][check]["status"] == "fail"
+
+
+@pytest.mark.parametrize("change", ["missing", "empty", "skipped", "failed", "hash", "counter_only"])
+def test_invalid_trx_never_passes(evidence, observed, change):
+    obs, paths = observed
+    path = paths[0]
+    if change == "missing": path.unlink()
+    else:
+        text = path.read_text()
+        if change == "empty": text = text.replace('total="1" executed="1" passed="1"', 'total="0" executed="0" passed="0"').replace('<UnitTestResult executionId="test-1" outcome="Passed" duration="00:00:00.250" />', '')
+        if change == "skipped": text = text.replace('outcome="Passed"', 'outcome="NotExecuted"')
+        if change == "failed": text = text.replace('outcome="Passed"', 'outcome="Failed"')
+        if change == "counter_only": text = text.replace('executed="1"', 'executed="2"')
+        if change == "hash": text += ' '
+        path.write_text(text)
+        if change != "hash": obs["runs"][0]["workload"]["trx"][path.relative_to(path.parents[1]).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert evidence.grade(obs, paths)["checks"]["A2"]["status"] == "fail"
+
+
+def test_missing_results_stay_not_run_and_output_sanitized(evidence):
+    result = evidence.grade({"source": "private-secret", "image_digest": "private-token"}, [])
+    assert all(c["status"] == "not-run" for c in result["checks"].values())
+    assert "private-" not in json.dumps(result)
+
+
+def test_nonfinite_or_negative_time_is_rejected(evidence, observed):
+    obs, paths = observed
+    obs["runs"][0]["build"]["startTime"] = "2020-01-01T00:00:00Z"
+    assert evidence.grade(obs, paths)["checks"]["A1"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("change,check", [("baseline", "A1"), ("overlap", "A3"), ("deadline", "A6"), ("queue_late", "A6")])
+def test_session_origin_and_time_bounds(evidence, observed, change, check):
+    obs, paths = observed
+    if change == "baseline": obs["initial_idle"]["workers"] = ["existing"]
+    if change == "overlap": obs["runs"][1]["build"]["queueTime"] = obs["runs"][0]["build"]["queueTime"]
+    if change == "deadline": obs["window"]["closeout_at"] = "2026-10-15T01:10:00Z"
+    if change == "queue_late": obs["window"]["queue_cutoff_at"] = "2026-10-15T00:10:00Z"
+    assert evidence.grade(obs, paths)["checks"][check]["status"] == "fail"

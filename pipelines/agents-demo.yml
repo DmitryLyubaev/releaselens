@@ -1,0 +1,82 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: controlledFailure
+    type: boolean
+    default: false
+
+jobs:
+  - job: demo
+    timeoutInMinutes: 12
+    pool:
+      name: $(P7_POOL)
+      demands:
+        - P7Agent -equals ReleaseLens
+    steps:
+      - bash: |
+          set -euo pipefail
+          test "$BUILD_SOURCEBRANCH" = refs/heads/main
+          test "$P7_SOURCE_SHA" != ''
+          test "$BUILD_SOURCEVERSION" = "$P7_SOURCE_SHA"
+          test ! -e "$PIPELINE_WORKSPACE/.p7-claimed"
+          python3 -c 'import uuid; print(uuid.uuid4().hex)' > "$PIPELINE_WORKSPACE/.p7-claimed"
+        displayName: Require approved source and fresh workspace
+        env:
+          P7_SOURCE_SHA: $(P7_SOURCE_SHA)
+
+      - checkout: self
+        clean: true
+        persistCredentials: false
+
+      - bash: |
+          set -euo pipefail
+          for name in ReleaseLens.Core.Tests ReleaseLens.Web.Tests; do
+            project="tests/$name/$name.csproj"
+            dotnet restore "$project"
+            dotnet build "$project" --configuration Release --no-restore
+            dotnet test "$project" --configuration Release --no-build --no-restore \
+              --logger "trx;LogFileName=$name.trx" \
+              --results-directory "$AGENT_TEMPDIRECTORY/p7-results/$name"
+          done
+        displayName: Build and test Core and Web
+
+      - bash: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['AGENT_TEMPDIRECTORY']) / 'p7-results'
+          root.mkdir(parents=True, exist_ok=True)
+          result = {'schema_version': 1, 'build_id': os.environ['BUILD_BUILDID'],
+                    'source': os.environ['BUILD_SOURCEVERSION'], 'agent': os.environ['AGENT_NAME'],
+                    'session': os.environ['P7_SESSION'], 'workspace_fresh': True,
+                    'workspace_id': (Path(os.environ['PIPELINE_WORKSPACE']) / '.p7-claimed').read_text().strip(),
+                    'trx': {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                            for p in root.rglob('*.trx')}}
+          (root / 'workload.json').write_text(json.dumps(result), encoding='utf-8')
+          PY
+        condition: always()
+        displayName: Record allowlisted workload manifest
+        env:
+          P7_SESSION: $(P7_SESSION)
+
+      - bash: exit 17
+        condition: and(succeeded(), ${{ eq(parameters.controlledFailure, true) }})
+        displayName: Intentional negative pipeline step
+
+      - task: PublishTestResults@2
+        condition: always()
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '$(Agent.TempDirectory)/p7-results/**/*.trx'
+          mergeTestResults: false
+          failTaskOnFailedTests: true
+          failTaskOnMissingResultsFile: true
+          publishRunAttachments: true
+
+      - task: PublishPipelineArtifact@1
+        condition: always()
+        inputs:
+          targetPath: $(Agent.TempDirectory)/p7-results
+          artifact: p7-results
