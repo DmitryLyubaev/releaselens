@@ -5,7 +5,7 @@ import httpx
 from .private_az import TransportRefused
 from .release_transport import owned_deployment_status_url
 
-PHASES = {'source_ci', 'bundle_validation', 'credential_setup', 'arm_token', 'frontend_token', 'configuration_before', 'main_baseline', 'scm_deploy', 'readiness', 'package_digest', 'configuration_after', 'access_probes', 'receipt', 'promotion', 'diagnostic_health', 'diagnostic_scm', 'complete'}
+PHASES = {'source_ci', 'bundle_validation', 'credential_setup', 'arm_token', 'frontend_token', 'configuration_before', 'main_baseline', 'scm_deploy', 'package_presence', 'readiness', 'package_digest', 'configuration_after', 'access_probes', 'receipt', 'promotion', 'diagnostic_health', 'diagnostic_scm', 'complete'}
 
 
 def _error_facts(error):
