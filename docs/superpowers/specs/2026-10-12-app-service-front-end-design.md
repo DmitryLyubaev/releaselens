@@ -464,7 +464,16 @@ route, use secrets, add retrieval stacks, relax pass rules or collapse approval 
 
 ## 13. Changes after approval
 
-None. Add dated entries after owner approval when new evidence requires a change, including
-the original decision, new evidence, proposed change, approval and effect on fixed checks.
-The draft itself may be corrected after builder review before approval; those corrections do
-not represent measured Azure results.
+The following changes were explicitly approved by the owner on 14 October 2026 and
+recorded after measurement. They do not grant authority for another deployment or paid run.
+
+| Original decision | New evidence and approved change | Effect on fixed checks |
+|---|---|---|
+| Complete live work in one four-hour resource session. | Deployment/readiness failures and owner-input deadlines prevented completion in earlier sessions. The owner separately authorized bounded continuations and fresh sessions, each with its own identity-bound ownership, cutoffs and cleanup. The final session retained resources after a failed gate for at most one read-only diagnosis until its cleanup deadline, instead of automatically deleting them. | Failures and missing measurements stay failed/not run. Actual final cleanup passed within four hours; bootstrap and other stacks were preserved. |
+| Measure W1/W3 as live prerequisites for release. | Actual source-A W1/W3 passed. The owner explicitly approved their reuse after source/tree review proved application, authentication, infrastructure and workflow files unchanged through source B; original bytes, hashes and times were regraded and retained. | No pass flag was invented and no record was relabeled. The public report distinguishes original W1/W3 from newly measured W2/W4/W5/W6a/W6b; the harness still rejects cross-commit result sets. No additional paid questions/refreshes were authorized in the final session. |
+| Use the reviewed keyless package deployment and immutable promotion gates. | Pre-upload SCM reads timed out, including after a retry-only fix. Reviewed PRs #53/#54 bounded reads, corrected the diagnostic phase and added authenticated warmup/worker affinity. The owner authorized one new attempt after green CI; final seed/stage/promotion succeeded. | No upload/swap replay or weakened trust gate. The earlier failed runs stay failed. One final normal swap passed W4; the unhealthy fixture and rejected promotion passed W5 with zero further swaps. |
+| Obtain real separate fresh owner sessions through hidden console prompts for W6a. | The first final-session console produced no W6a result. The owner requested another settings-only attempt, explicitly supplied two private inputs and confirmed they were whole Cookie values from separate fresh post-swap sign-ins. A reviewed one-shot continuation preserved the original reservation and read those inputs in memory. | Source, workflow/digest, deadline and distinct effective-session checks were retained; no fabricated sign-in attestation, model call, refresh, deployment or swap. Actual W6a passed. Private inputs/helpers remain unpublished. |
+
+The owner requested public evidence publication and finalization after verified cleanup.
+The dated [report](../../webapp-report.md) preserves original source/time/hash provenance,
+earlier failures, sample limits and the actual teardown facts.

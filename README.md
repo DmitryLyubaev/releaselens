@@ -6,10 +6,13 @@ answered with citations back to the specific artefacts.
 Indexed repository: [`microsoft/semantic-kernel`](https://github.com/microsoft/semantic-kernel).
 
 Project 6 adds an owner-only .NET 10 Razor Pages front end with main/staging slots and a
-direct API Management gateway route. Its code, release gate and offline checks are implemented;
-the live Azure checks are **not run**. See the [pending report](docs/webapp-report.md) and
+direct API Management gateway route. **Acceptance completed on 14 October 2026:** W1-W5
+and both W6 halves passed across explicitly approved sessions. W1/W3 retain their original
+source and measurement times; the remaining checks were measured after the release fixes.
+See the [dated evidence and limitations](docs/webapp-report.md) and
 [session runbook](docs/runbook-webapp.md). This small front end sends one question directly
-to the gateway and has no retrieval or citation path.
+to the gateway and has no retrieval or citation path. Session resources were removed and
+bootstrap preservation was verified.
 
 | Project 6 responsibility | Placement |
 |---|---|
@@ -19,6 +22,12 @@ to the gateway and has no retrieval or citation path.
 | Front-end registration, identity, consent and state container | Long-lived bootstrap stack |
 | Plan, sites, sticky/auth configuration and deployment role | Session-owned webapp stack |
 | Immutable packages and separately approved swap | Manual protected webapp-release workflow |
+
+| Hosting choice | Work placed there | Reason in this portfolio |
+|---|---|---|
+| Azure Functions | Event/queue-driven ingestion and the MCP search tool | Flex Consumption fits the existing background triggers and tool endpoint. |
+| App Service | The owner browser UI with main/staging slots | Easy Auth, token store and protected slot promotion are the Project 6 service-specific work. |
+| Container Apps | The existing containerized retrieval API | It retains its container deployment; the small Project 6 front end calls the gateway directly. |
 
 The nightly app-stack destroy does not remove the webapp stack. The session needs its own
 approved teardown and measured absence checks.
@@ -371,7 +380,7 @@ See [docs/architecture.md](docs/architecture.md).
 | Agent | Tool-calling loop over Anthropic or any OpenAI-wire-format endpoint |
 | API | ASP.NET Core minimal API, API-key auth, per-tenant daily token budget |
 | Telemetry | OpenTelemetry → Aspire Dashboard locally. In Azure, logs stream with `az containerapp logs show`; there is no Log Analytics workspace |
-| Infrastructure | Terraform in four stacks: a long-lived bootstrap stack, an app stack (Container Apps scale-to-zero, Postgres Flexible Server), and two short-lived stacks the owner applies for one session each, one for the retrieval benchmark and one for the AI gateway. A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
+| Infrastructure | Terraform in six stacks: long-lived bootstrap, the container app and Postgres, and separate short-lived retrieval, gateway, Functions and webapp stacks. A manual OIDC deploy and a nightly destroy in GitHub Actions; GitHub holds no credentials. Azure OpenAI with key authentication disabled, on Global Standard. Budget alerts |
 | Evaluation | Python FastAPI harness, golden query set, LLM-judge groundedness |
 
 ## Running it
@@ -457,15 +466,17 @@ nothing is deployed. The rest of this section is about what the code configures,
 Azure fact carries its source and date. The
 detail is in [docs/architecture.md](docs/architecture.md#azure-deployment).
 
-There are two Terraform stacks for the app, a third for the retrieval benchmark, a fourth for the AI gateway and a fifth for the Azure Functions:
+There are six Terraform stacks: bootstrap and the container app, plus separate session stacks
+for the retrieval benchmark, AI gateway, Azure Functions and App Service front end.
 
 | Stack | Applied by | Holds |
 |---|---|---|
-| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its four deployments, the chat model, two embedding models and a tiny `releaselens-chat-failover-test` deployment for the gateway test; a second account in Southeast Asia with two deployments (`releaselens-chat` and its own `releaselens-chat-failover-test`), and the AI gateway's identity, Entra app and monitoring; the ingestion storage account with its Event Grid delivery to a queue, the two Function apps' host storage accounts and identities and the search tool's Entra app; the budget; the empty app resource group; every role assignment except the search stack's four |
+| [`infra/bootstrap`](infra/bootstrap/README.md) | the owner, locally, once; never destroyed | the Terraform state storage; the deploy and app identities; the one federated credential; the Azure OpenAI account and its four deployments, the chat model, two embedding models and a tiny `releaselens-chat-failover-test` deployment for the gateway test; a second account in Southeast Asia with two deployments (`releaselens-chat` and its own `releaselens-chat-failover-test`), and the AI gateway's identity, Entra app and monitoring; the ingestion storage account with its Event Grid delivery to a queue, the two Function apps' host storage accounts and identities and the search tool's Entra app; the front-end registration, identity and state container; the budget; the empty app resource group; retained role assignments, with scoped search/webapp roles owned by their session stacks |
 | [`infra/terraform`](infra/terraform/README.md) | GitHub Actions through OIDC, every session | the Container App and Postgres, and nothing else |
 | [`infra/search`](infra/search/README.md) | the owner, locally, for one benchmark session, then destroyed | its own resource group, one keyless AI Search service on Basic, the owner's two roles on it, and the two Function identities' roles |
 | [`infra/gateway`](infra/gateway/README.md) | the owner, locally, for one gateway session, then destroyed | its own resource group and one API Management service, Basic v2, in front of the two accounts; see [AI gateway](#ai-gateway) |
 | [`infra/functions`](infra/functions/README.md) | the owner, locally, for one functions session, then destroyed | its own resource group and two Flex Consumption Function apps, and the search tool published as an MCP API on the gateway; see [Azure Functions](#azure-functions) |
+| [`infra/webapp`](infra/webapp/README.md) | the owner, for an explicitly approved webapp session, then destroyed | its own resource group, Linux S1 plan, main/staging sites and scoped deployment role; [Project 6 evidence](docs/webapp-report.md) records verified teardown |
 
 **Bootstrap once.** The owner follows the runbook in
 [infra/bootstrap/README.md](infra/bootstrap/README.md). The budget comes first: the first apply
