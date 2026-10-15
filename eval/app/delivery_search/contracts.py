@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import re
+from urllib.parse import urlsplit
 
 
 class DeliveryRefused(Exception):
@@ -41,6 +43,40 @@ class VerifiedBundle:
     root: Path
     manifest: ReleaseManifest
     digest: str
+
+
+@dataclass(frozen=True)
+class SearchTarget:
+    endpoint: str
+    index: str
+    allowed_host: str
+
+    def __post_init__(self):
+        parsed = urlsplit(self.endpoint)
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,58}[a-z0-9]\.search\.windows\.net", self.allowed_host)
+            or parsed.scheme != "https" or parsed.netloc != self.allowed_host
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or self.index not in ("p8-test", "p8-demo-prod")):
+            raise DeliveryRefused("target")
+
+
+@dataclass(frozen=True)
+class GateCase:
+    qid: str
+    top1: int
+    error: str | None
+
+
+@dataclass(frozen=True)
+class GateResult:
+    expected: int
+    evaluated: int
+    correct: int
+    errors: int
+    missing: int
+    skipped: int
+    passed: bool
+    cases: tuple[GateCase, ...] = ()
 
 
 def canonical(value) -> bytes:
