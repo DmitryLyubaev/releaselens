@@ -109,6 +109,8 @@ def test_human_receipt_binds_actual_scope_and_absence_inventory(session_module,t
         "absence":[{"id":group,"status":404} for group in raw["owned_group_ids"]],
         "retained":{"resources":[],"roleAssignments":[],"deletedVaults":[]}})
     receipt={k:raw[k] for k in ("session","source_sha","tree_sha","release_digest")}
+    raw["manifest_sha256"]=hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
+    raw["baseline_sha256"]=hashlib.sha256(json.dumps(baseline).encode()).hexdigest()
     receipt.update({"kind":"human-live-approval","message_ref":"test-only-receipt",
         "scope_sha256":session_module.scope_digest(raw)})
     for filename,value,key in (("cleanup-manifest.json",manifest,"manifest_sha256"),
@@ -116,6 +118,21 @@ def test_human_receipt_binds_actual_scope_and_absence_inventory(session_module,t
         data=json.dumps(value).encode(); (tmp_path/filename).write_bytes(data); raw[key]=hashlib.sha256(data).hexdigest()
     (tmp_path/"authority.json").write_text(json.dumps(raw))
     session_module.load(tmp_path)
+    manifest["components"][2]["resources"]=[{"address":"azurerm_resource_group.extra","id":raw["owned_group_ids"][0],
+        "kind":"arm","api_version":"2021-04-01"}]
+    data=json.dumps(manifest).encode(); (tmp_path/"cleanup-manifest.json").write_bytes(data)
+    changed=dict(raw,manifest_sha256=hashlib.sha256(data).hexdigest())
+    (tmp_path/"authority.json").write_text(json.dumps(changed))
+    with pytest.raises(Exception): session_module.load(tmp_path)
+    manifest["components"][2]["resources"]=[]
+    (tmp_path/"cleanup-manifest.json").write_bytes(json.dumps(manifest).encode())
     raw["owner"]["object_id"]="different-owner"
     (tmp_path/"authority.json").write_text(json.dumps(raw))
     with pytest.raises(Exception): session_module.load(tmp_path)
+
+
+def test_watchdog_never_adopts_a_replacement_ownership_manifest(session_module):
+    from dataclasses import replace
+    watchdog=importlib.import_module("scripts.pipelines.watchdog")
+    original=session_module.SessionAuthority(**authority())
+    with pytest.raises(Exception): watchdog.adopt_authority(original,replace(original,manifest_sha256="e"*64))

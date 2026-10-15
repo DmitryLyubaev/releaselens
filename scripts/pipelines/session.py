@@ -66,7 +66,7 @@ def bound_file(directory: Path,relative: str) -> Path:
 
 def scope_digest(raw: dict) -> str:
     return hashlib.sha256(canonical({key:raw[key] for key in ("owner","owned_group_ids","principals","scopes",
-        "pipeline_id","storage_host","search_host")})).hexdigest()
+        "pipeline_id","storage_host","search_host","manifest_sha256","baseline_sha256")})).hexdigest()
 
 
 def load(directory: Path) -> tuple[SessionAuthority,dict,dict]:
@@ -98,6 +98,8 @@ def load(directory: Path) -> tuple[SessionAuthority,dict,dict]:
         if not all(key in baseline["retained"] for key in ("resources","roleAssignments","deletedVaults")):
             raise DeliveryRefused("authority")
         validate_manifest(manifest,raw,directory)
+        from .ownership import resolve_existing
+        manifest=resolve_existing(directory,raw,manifest)
         return a,raw,manifest
     except (KeyError,TypeError,ValueError): raise DeliveryRefused("authority") from None
 
@@ -122,8 +124,12 @@ def validate_manifest(manifest: dict,authority: dict,directory: Path):
             if sum(r.get("kind")=="local" for r in rows)>1: raise DeliveryRefused("authority")
             for row in rows:
                 key = (component["name"],row["address"])
-                if key in seen or not row["id"]: raise DeliveryRefused("authority")
+                if key in seen: raise DeliveryRefused("authority")
                 seen.add(key)
+                if row.get("id") is None:
+                    from .ownership import validate_policy
+                    validate_policy(component,row,authority,directory)
+                elif not isinstance(row["id"],str) or not row["id"]: raise DeliveryRefused("authority")
                 if component["name"].startswith("index-"):
                     if (row["address"] != "azapi_data_plane_resource.index" or row["kind"] != "index"
                         or row["name"] != "p8-"+component["name"][6:] or row["host"] != authority["search_host"]):
@@ -131,7 +137,7 @@ def validate_manifest(manifest: dict,authority: dict,directory: Path):
                 elif row.get("kind") == "local":
                     if component["name"] != "agents" or not row["address"].startswith("terraform_data."):
                         raise DeliveryRefused("authority")
-                elif (row["kind"] != "arm" or not any(row["id"].lower() == g.lower() or row["id"].lower().startswith(g.lower()+"/") for g in groups)
+                elif (row["kind"] != "arm" or row.get("id") is not None and not any(row["id"].lower() == g.lower() or row["id"].lower().startswith(g.lower()+"/") for g in groups)
                     or not re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}(-preview)?",row["api_version"])):
                     raise DeliveryRefused("authority")
     except (KeyError,TypeError,ValueError): raise DeliveryRefused("authority") from None

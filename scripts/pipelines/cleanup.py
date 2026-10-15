@@ -24,11 +24,15 @@ def require_idle(driver):
 
 def quiescence_before(directory,a,raw):
     try:
-        from .evidence import Originals
-        originals=Originals(directory,a,raw)
-        definition=originals.json("definition-disabled"); queue=originals.json("queue-after")
-        return (definition["id"]==raw["pipeline_id"] and definition["queueStatus"]=="disabled"
-            and queue["count"]==0 and queue["value"]==[])
+        from .quiescence import request,status
+        # An early completed/explicit-stop closeout uses the same browser protocol.
+        # Missing browser acknowledgement is recorded, never an unbounded billable wait.
+        request(directory,a,raw,datetime.now(timezone.utc),early=True)
+        observed=status(directory,a,raw)
+        number=1
+        while (directory/f"quiescence-before-{number}.json").exists(): number+=1
+        exclusive_json(directory/f"quiescence-before-{number}.json",observed)
+        return observed["verified"]
     except Exception: return False
 
 
@@ -77,6 +81,8 @@ def execute(directory: Path,now: datetime,*,driver=None) -> dict:
         from .owner import OwnerDriver
         driver=OwnerDriver(directory,raw,manifest)
     with operation_lock(directory):
+        for intent in (directory/"intents").glob("cleanup-*.json"):
+            if read(intent)["identity_sha256"]!=a.manifest_sha256: raise DeliveryRefused("authority")
         require_idle(driver)
         driver.verify_owner()
         attempt=1

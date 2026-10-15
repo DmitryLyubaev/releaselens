@@ -1,9 +1,10 @@
 # Project 8: checked Search delivery
 
 Local checkpoint, 16 October 2026: Tasks 1-6 are implemented. Offline verification
-passed 454 infrastructure tests, 1,185 eval tests, three Terraform validations and
+passed 485 infrastructure tests, 1,185 eval tests, three Terraform validations and
 four mock plans. The real Windows-to-WSL ownership/path/exit probe also passed without
-Azure access. Whole-branch review is pending at this checkpoint. Actual image/PR/main
+Azure access. Independent whole-branch review completed; nine Important findings
+were fixed in one regression-tested pass, with no deferred minors. Actual image/PR/main
 CI, account setup, paid preparation and P8-1 through P8-8 live acceptance have not run.
 
 This CV demonstration delivers one frozen Search schema and S2 configuration to
@@ -113,13 +114,16 @@ every job. Upload the archive only to the new approved private inputs container.
 Retain complete original input/source provenance privately.
 
 `build` seals the release once and creates the original test plan; `test` consumes
-that exact binary plan, loads once, grades and creates the original prod plan;
-`prod` regrades the original complete test JSON/JUnit before consuming the prod
-plan. Bind plan bytes, input/lock hashes, source/release, target and canonical
+that exact binary plan, loads once and grades. The separate `plan-prod` job uses
+only the Prod identity, regrades the original test gate and creates the prod plan.
+The approved `prod` deployment regrades that gate before consuming the prod plan.
+Test never accesses the prod state backend. Bind plan bytes, input/lock hashes, source/release, target and canonical
 state lineage/serial/hash. Authenticated initial Blob absence is distinct from a
 failed read. Wrong target, dirty source, stale state or changed artifact refuses.
 Private Blob `If-None-Match: *` receipts prevent replay across disposable agents.
-Plan binaries/inputs and gate originals also publish as private pipeline artifacts.
+Complete binding verification precedes backend initialization. Shown plans,
+pre-apply canonical state, apply intents and success/failure results persist in
+private Blob evidence and pipeline artifacts before the one-shot agent exits.
 Limit artifact retention to 7 days and verify owner-only effective access. The
 evidence container's contributor roles must not imply public access.
 
@@ -188,7 +192,7 @@ the `SessionAuthority` fields plus exact owner/principal/scope bindings, new pip
 ID, storage/Search hosts, WSL session path and SHA-256 bindings for the original human
 receipt and baseline. The actual human receipt contains its real chat message reference,
 source/tree/release and `session.scope_digest(authority)`. This digest binds the owner,
-groups, CI principals, grants, pipeline and hosts. Never manufacture a human receipt
+groups, CI principals, grants, pipeline, hosts and immutable manifest/baseline hashes. Never manufacture a human receipt
 from a failure, heartbeat or synthetic test. The baseline contains all three authenticated
 group-absence originals and full retained resources, role assignments and deleted vaults.
 
@@ -198,10 +202,24 @@ relative directory, `owner.config_digest`, original resource address/ID pairs an
 binding. ARM records also include kind and API version; index records include exact host
 and logical name; only the agents component permits its one local terraform_data gate.
 Bounds are one index each, foundation 23 ARM, identity 7 ARM, agents 9 ARM plus the local
-gate. Fresh canonical group absence and original create-only plans establish ownership;
-actual identity binding must preserve already frozen IDs. A missing/partial manifest
-must be resolved against those originals before downstream work. A group name match
+gate. Fresh canonical group absence and original create-only plans establish ownership.
+The manifest bytes never change after approval. IDs unknown before apply may fill only
+predeclared typed `resolve` slots: exact role scope/role/principal (or fixed UAMI reference),
+exact index host/name, or the single local gate's frozen input. Components with slots
+carry an original hash-bound `create_plan`: `owner` names the binary/shown files and
+their SHA-256 values; `pipeline-index` names only its exact logical target.
+The separately approved owner launcher calls `ownership.reserve_owner_apply` immediately
+before its one original owner apply. Index jobs publish their original apply intent;
+retain it as `apply-intents/index-<target>.json` before cleanup ownership is reconciled.
+`ownership.bind_state` validates actual state against the original create plan/intent,
+fixed addresses and typed predicates. It writes create-only hash-bound state snapshots
+and identity bindings, preserving both manifest bytes and every already bound ID.
+No recovery operation can add an address or widen a scope. A group name match
 alone is insufficient. No bootstrap or prior-session state belongs in this manifest.
+
+The pinned [AzAPI 2.8.0 resource ID mapping](https://github.com/Azure/terraform-provider-azapi/blob/v2.8.0/internal/services/parse/data_plane_resources.json)
+defines a Search index ID as `<host>/indexes('<name>')`; an arbitrary opaque ID or
+another host cannot fill an index slot.
 
 Prepare and verify the owner's private backend metadata before billing. Remote index
 backends must point to the exact new account, `test-state`/`prod-state`, `index.tfstate`,
@@ -230,6 +248,29 @@ hash and a fresh continuing heartbeat, not merely an earlier probe. Start the fi
 supervisor before apply; it can adopt the first actual apply timestamp once and cannot
 reset it. Every subsequent authority must retain the same human receipt/source/release.
 
+Immediately after each original browser dispatch, retain its actual build JSON and run
+`quiescence --session <session> --register-build release|negative|scheduled --original <json>`.
+This validates the new pipeline, exact main source, dispatch reservation and queue time.
+At cutoff the Windows watchdog writes one `quiescence/request.json` with only those
+original build IDs and their hashes. It never acquires a Build PAT or exports cookies.
+
+Before billing, prepare the owner-browser monitor to inspect this request at least once
+per minute: disable only its exact new pipeline, cancel only its listed session-owned
+unfinished builds, restore the exact original variables/settings, and retain actual
+definition/empty-queue and `quiesced-build-<id>` originals through the private inbox.
+Register those bytes in `originals.json`, then run `quiescence --session <session>
+--acknowledge verified --request-sha256 <actual-request-sha256>`. The acknowledgement
+rechecks those originals, every build and the request digest. For early successful or
+explicit-stop cleanup, use `--request-closeout` and complete the same browser handoff
+before requesting native cleanup; this command independently checks early authority.
+
+If the browser is unavailable or an action fails, record `--acknowledge unavailable`
+or `failed` against that same request. Missing/unverified acknowledgements are recorded
+at cleanup, never an unbounded wait past +78/+80. Physical cleanup still proceeds within
+its scope; P8-8 cannot pass without actual pre-delete disabled/empty/restored evidence.
+The concrete monitor must preserve these instructions and adopt the existing watchdog
+and native helper rather than launching duplicates. No monitor is created by this runbook.
+
 Reservations precede browser queueing and corpus/query context. Release reserves test
 and prod sets together; negative and scheduled require original positive gates. Worker
 Blob reservations enforce the same no-replay rule on new agents. Metadata requests use
@@ -243,6 +284,11 @@ After all exact-owned Terraform/providers have exited, an authorized continuatio
 `cleanup --session <session>` creates a fresh plan for remaining original IDs. Provider
 refresh observations may remove already absent original IDs from state; physical actions
 remain delete-only. Empty-state checkpoints survive deletion of the storage backend.
+If an index was never created, a successful CLI exit with no state is insufficient.
+Require both authenticated canonical backend absence/empty placeholder and an actual
+index 404, or original exact parent ARM 404 observations. A failed state command never
+becomes absence. The typed observation is retained as `empty-state-absence-<name>`;
+ordinary existing states still require successful empty `terraform state list` originals.
 Preserve the original error, intent, plan, state and every attempt. No automatic replay
 or extra deployment is available. Continue safe physical cleanup after a missed bound.
 
@@ -267,7 +313,7 @@ The grader consumes these original keys, with no fallback to older sessions:
 
 - `bundle`, `image-run`, `image-digest`, `image-smoke`, `image-anonymous-pull`.
 - `release-build`, `negative-build`, `scheduled-build`; actual Azure DevOps build JSON.
-- `identity-test`, `identity-prod`, `identity-verify`, `rbac`; token-free claim/account
+- `identity-test`, `identity-plan-prod`, `identity-prod`, `identity-verify`, `rbac`; token-free claim/account
   projections and original scoped ARM role-assignment results.
 - For targets `test` and `demo-prod`, `plan-<target>-binding`, `-binary`, `-inputs`,
   `-locks`, `-state-before` (JSON null for proved initial absence), `-shown`, `-apply-result`.
@@ -285,10 +331,16 @@ The grader consumes these original keys, with no fallback to older sessions:
   `empty-state-command-<name>` / `empty-state-result-<name>`. Retain the original owner
   command/result records: matching PID, exact `terraform state list`, expected directory,
   successful exit and truly empty output. Group observations require all three exact 404s.
+  Only never-created index states may instead use the authenticated typed
+  `empty-state-absence-<name>` original described above.
 - `pat-revocation`, `helper-exit`; real owner message after cleanup starts and actual
   native/WSL exit observations, including the supervisor and cleanup helper.
 
 Register original bytes, never a public sanitized dump. Raw originals remain private.
+The container smoke emits one machine-readable `P8_TOOLCHAIN_RECEIPT` only after
+the actual container checks finish; the published image binding records the same
+config digest and source plus its registry digest. The grader compares these originals.
+Version labels or an unrelated successful smoke log cannot stand in for that image.
 The grader re-extracts and validates the bundle, regrades every gate with the frozen
 scorer, verifies plans/roles/checks/provenance and checks actual first-delete/verified
 timestamps. Cleanup self-reported success alone is insufficient. Missing originals are

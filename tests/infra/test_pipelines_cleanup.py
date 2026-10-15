@@ -188,3 +188,57 @@ def test_resume_adopts_proved_empty_index_after_state_storage_deleted(cleanup,tm
     driver=Driver()
     assert not cleanup.execute(tmp_path,start+timedelta(minutes=78),driver=driver)["physical_pass"]
     assert cleanup.execute(tmp_path,start+timedelta(minutes=79),driver=driver)["physical_pass"]
+
+
+def test_never_created_index_uses_authenticated_absence_not_cli_failure(cleanup):
+    owner=importlib.import_module("scripts.pipelines.owner")
+    driver=object.__new__(owner.OwnerDriver)
+    driver.index_state_absence=lambda component:True
+    driver.component_dir=lambda component:pytest.fail("absence must be checked before backend init metadata")
+    driver.process=lambda *args,**kw:pytest.fail("state list exits 1 for a nonexistent state")
+    assert driver.state({"name":"index-test"})==[]
+
+
+def test_index_absence_requires_both_backend_and_index_proof(cleanup,tmp_path,monkeypatch):
+    owner=importlib.import_module("scripts.pipelines.owner")
+    import httpx
+    records=[]
+    statuses=[404,404]
+    def server(request):
+        if request.method=="PUT": return httpx.Response(201)
+        status=statuses[0] if request.url.host.endswith("blob.core.windows.net") else statuses[1]
+        return httpx.Response(status,headers={"x-ms-error-code":"BlobNotFound"})
+    new_client=httpx.Client
+    monkeypatch.setattr(owner.httpx,"Client",lambda **kw:new_client(transport=httpx.MockTransport(server)))
+    monkeypatch.setattr(owner,"TokenSource",lambda *args: type("Tokens",(),{"token":lambda self:"synthetic"})())
+    driver=object.__new__(owner.OwnerDriver)
+    driver.a={"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
+        "owner":{"tenant_id":"tenant"},"session":"p8-1016x","source_sha":"a"*40}
+    driver.directory=tmp_path; driver.record=lambda name,value:records.append((name,value))
+    assert driver.index_state_absence({"name":"index-test"})
+    assert records[-1][1]["index"]["status"]==404
+    driver._absent_indices={}; statuses[1]=200
+    with pytest.raises(Exception): driver.index_state_absence({"name":"index-test"})
+
+
+def test_missing_nested_role_is_not_absence_of_its_search_parent(cleanup,tmp_path,monkeypatch):
+    owner=importlib.import_module("scripts.pipelines.owner")
+    import httpx
+    new_client=httpx.Client
+    def server(request):
+        if request.method=="PUT": return httpx.Response(201)
+        if request.url.host=="management.azure.com":
+            return httpx.Response(404 if "roleAssignments" in request.url.path else 200)
+        if request.url.host.endswith("blob.core.windows.net"): return httpx.Response(404,headers={"x-ms-error-code":"BlobNotFound"})
+        return httpx.Response(200,json={"name":"p8-test"})
+    monkeypatch.setattr(owner.httpx,"Client",lambda **kw:new_client(transport=httpx.MockTransport(server)))
+    token=type("Tokens",(),{"token":lambda self:"synthetic"})()
+    monkeypatch.setattr(owner,"TokenSource",lambda *args:token)
+    driver=object.__new__(owner.OwnerDriver); driver.directory=tmp_path; driver.tokens=token
+    driver.a={"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
+        "owner":{"tenant_id":"tenant"},"session":"p8-1016x","source_sha":"a"*40}
+    parent="/subscriptions/s/resourceGroups/owned/providers/Microsoft.Search/searchServices/owned"
+    driver.manifest={"components":[{"name":"foundation","resources":[{"id":value,"kind":"arm","api_version":"2024-01-01"}
+        for value in (parent,parent+"/providers/Microsoft.Authorization/roleAssignments/nested")]}]}
+    driver.record=lambda *args:None
+    with pytest.raises(Exception): driver.index_state_absence({"name":"index-test"})

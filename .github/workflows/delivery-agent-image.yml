@@ -73,3 +73,4 @@ jobs:
         run: |
           docker push "$IMAGE:p8-sha-$SOURCE"
           docker image inspect "$IMAGE:p8-sha-$SOURCE" --format '{{range .RepoDigests}}{{println .}}{{end}}' >> "$GITHUB_STEP_SUMMARY"
+          docker image inspect "$IMAGE:p8-sha-$SOURCE" | python build/delivery-agents/toolchain_receipt.py --binding

@@ -64,8 +64,14 @@ def apply_exact(binding: PlanBinding, plan: Path, bundle: VerifiedBundle, target
         state = state_reader()
     verify_plan(binding,plan,bundle,target,state,inputs,locks)
     exclusive_json(reservation,asdict(binding))
-    result = runner(["terraform","apply","-input=false",str(plan.resolve())],cwd=cwd,env=env,
-                    capture_output=True,text=True,timeout=480)
+    try:
+        result = runner(["terraform","apply","-input=false",str(plan.resolve())],cwd=cwd,env=env,
+                        capture_output=True,text=True,timeout=480)
+    except Exception as exc:
+        exclusive_json(reservation.with_suffix(".result.json"),{"binding":asdict(binding),"returncode":None,
+            "error_type":type(exc).__name__,"error":str(exc),
+            "stdout":str(getattr(exc,"stdout",None)),"stderr":str(getattr(exc,"stderr",None))})
+        raise
     exclusive_json(reservation.with_suffix(".result.json"),{"binding":asdict(binding),"returncode":result.returncode,
         "stdout":result.stdout,"stderr":result.stderr})
     if result.returncode != 0:

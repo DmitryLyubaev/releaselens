@@ -40,6 +40,41 @@ def require_empty_state(command,result,cwd):
         raise DeliveryRefused("gate")
 
 
+def require_no_matches(rows):
+    if len(rows)!=229 or any(row.hits for row in rows): raise DeliveryRefused("gate")
+
+
+def require_toolchain(log,binding,source):
+    lines=[line.split("=",1)[1] for line in log.splitlines() if line.startswith("P8_TOOLCHAIN_RECEIPT=")]
+    if len(lines)!=1: raise DeliveryRefused("inputs")
+    receipt=json.loads(lines[0])
+    if (receipt["kind"]!="container-toolchain" or receipt["source_sha"]!=source or binding["source_sha"]!=source
+        or receipt["config_digest"]!=binding["config_digest"]
+        or receipt["versions"]!={"terraform":"1.15.8","azure_cli":"2.81.0","agent":"5.280.0","python":"3.12"}):
+        raise DeliveryRefused("inputs")
+
+
+def require_index_absence(proof,component,authority,manifest):
+    target=component["name"][6:]
+    if component["name"] not in ("index-test","index-demo-prod") or proof["component"]!=component["name"]:
+        raise DeliveryRefused("gate")
+    backend,index=proof["backend"],proof["index"]
+    def parent(observation,marker):
+        expected={r["id"] for c in manifest["components"] if c["name"]=="foundation" for r in c["resources"]
+            if r.get("id") and marker in r["id"].lower() and "/" not in r["id"].lower().split(marker,1)[1]}
+        return observation["status"]==404 and observation["id"] in expected
+    if backend["kind"]=="arm-parent":
+        valid_backend=parent(backend,"/microsoft.storage/storageaccounts/")
+    else:
+        valid_backend=(backend["kind"]=="blob" and backend["host"]==authority["storage_host"]
+            and backend["container"]==("test-state" if target=="test" else "prod-state") and backend["key"]=="index.tfstate"
+            and (backend["status"]==404 and backend["error_code"] in ("BlobNotFound","ContainerNotFound")
+                or backend["status"]==200 and backend["length"]==0))
+    if index["kind"]=="arm-parent": valid_index=parent(index,"/microsoft.search/searchservices/")
+    else: valid_index=(index["kind"]=="index" and index["host"]==authority["search_host"] and index["name"]=="p8-"+target and index["status"]==404)
+    if not valid_backend or not valid_index: raise DeliveryRefused("gate")
+
+
 def require_evaluations(suites,expected,plan_id):
     if not suites or not plan_id or any(str(suite["context"]["PlanId"]).lower()!=str(plan_id).lower() for suite in suites):
         raise DeliveryRefused("checks")
@@ -103,6 +138,7 @@ class Originals:
             or grade.evaluated!=229 or grade.errors or grade.missing or grade.skipped):
             raise DeliveryRefused("gate")
         if negative:
+            require_no_matches(rows)
             if grade.passed or grade.correct!=0 or suite.get("failures")!="1": raise DeliveryRefused("gate")
         elif not grade.passed or suite.get("failures")!="0": raise DeliveryRefused("gate")
         return {"evaluated":229,"correct":grade.correct,"errors":0,"missing":0,"skipped":0}
@@ -151,14 +187,14 @@ def grade(directory: Path) -> dict[str,dict]:
             inputs()
             run=o.json("image-run"); digest=o.json("image-digest"); pull=o.json("image-anonymous-pull")
             smoke=o.path("image-smoke").read_text(encoding="utf-8")
+            require_toolchain(smoke,digest,a.source_sha)
             if (run["status"]!="completed" or run["conclusion"]!="success" or run["head_sha"]!=a.source_sha
                 or digest["source_sha"]!=a.source_sha or not re.fullmatch(r"sha256:[0-9a-f]{64}",digest["digest"])
-                or pull["digest"]!=digest["digest"] or pull["authenticated"] is not False or pull["status"]!=200
-                or any(value not in smoke for value in ("Terraform v1.15.8","2.81.0","5.280.0"))):
+                or pull["digest"]!=digest["digest"] or pull["authenticated"] is not False or pull["status"]!=200):
                 raise DeliveryRefused("inputs")
         perform(1,image)
         def identities():
-            for stage,role in (("test","test"),("prod","prod"),("verify","verify")): _check_identity(o,stage,role)
+            for stage,role in (("test","test"),("plan-prod","prod"),("prod","prod"),("verify","verify")): _check_identity(o,stage,role)
             rows=o.json("rbac")
             actual={(r["principalId"],r["roleDefinitionId"].rsplit("/",1)[-1],r["scope"]) for r in rows
                 if r["principalId"] in {p["object_id"] for p in raw["principals"].values()}}
@@ -225,8 +261,11 @@ def grade(directory: Path) -> dict[str,dict]:
             require_group_absence([o.json("group-absence-"+str(i)) for i in range(len(raw["owned_group_ids"]))],raw["owned_group_ids"])
             for component in manifest["components"]:
                 cwd=raw["owner_session_path"].rstrip("/")+"/"+component["directory"]
-                require_empty_state(o.json("empty-state-command-"+component["name"]),
-                    o.json("empty-state-result-"+component["name"]),cwd)
+                try:
+                    command=o.json("empty-state-command-"+component["name"])
+                except MissingOriginal:
+                    require_index_absence(o.json("empty-state-absence-"+component["name"]),component,raw,manifest)
+                else: require_empty_state(command,o.json("empty-state-result-"+component["name"]),cwd)
             baseline=read(directory/"baseline.json")
             retained=read(directory/f"retained-after-{cleanup['attempt']}.json")
             revoked=o.json("pat-revocation"); exited=o.json("helper-exit")

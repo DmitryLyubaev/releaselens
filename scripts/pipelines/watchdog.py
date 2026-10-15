@@ -76,10 +76,22 @@ def probe(directory: Path):
 
 def adopt_authority(previous,current):
     current.validate()
-    if (any(getattr(previous,k)!=getattr(current,k) for k in ("session","source_sha","tree_sha","release_digest"))
+    if (any(getattr(previous,k)!=getattr(current,k) for k in ("session","source_sha","tree_sha","release_digest","manifest_sha256"))
         or previous.apply_started_at is not None and previous.apply_started_at!=current.apply_started_at):
         raise DeliveryRefused("authority")
     return current
+
+
+def cutoff_handoff(directory,a,raw,now):
+    if now>=instant(a.queue_cutoff_at):
+        from .quiescence import request
+        try: request(directory,a,raw,now)
+        except Exception as exc:
+            path=directory/"cutoff-handoff-failure.json"
+            if not path.exists():
+                exclusive_json(path,{"source_sha":a.source_sha,"session":a.session,"at":now.isoformat(),
+                    "code":exc.code if isinstance(exc,DeliveryRefused) else "internal"})
+            # A missing browser handoff cannot cancel the independent cleanup deadline.
 
 
 def verify_exits(directory: Path):
@@ -149,6 +161,7 @@ def supervise(directory: Path):
                 # actual first-apply start before this finite live supervisor is launched.
                 if a.apply_started_at is not None:
                     ctypes.windll.kernel32.SetThreadExecutionState(0x80000003)
+                    cutoff_handoff(directory,a,new_raw,datetime.now(timezone.utc))
                     if a.cleanup_due(datetime.now(timezone.utc)) and child is None:
                         child=dispatch_cleanup(directory)
                 heartbeat={"pid":os.getpid(),"at":datetime.now(timezone.utc).isoformat(),

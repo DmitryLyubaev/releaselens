@@ -26,7 +26,8 @@ stages:
 
           test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
 
-          /opt/p8-workload/bin/python -m scripts.pipelines.run verify --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only'
+          /opt/p8-workload/bin/python -m scripts.pipelines.run verify --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"
+          --guard-only'
         displayName: Guard exact main source before Azure login
         env:
           PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -87,7 +88,8 @@ stages:
 
             test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
 
-            /opt/p8-workload/bin/python -m scripts.pipelines.run build --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only'
+            /opt/p8-workload/bin/python -m scripts.pipelines.run build --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"
+            --guard-only'
           displayName: Guard exact main source before Azure login
           env:
             PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -105,7 +107,8 @@ stages:
             keepAzSessionActive: true
             inlineScript: 'set -euo pipefail
 
-              /opt/p8-workload/bin/python -m scripts.pipelines.run build --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"'
+              /opt/p8-workload/bin/python -m scripts.pipelines.run build --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+              "$(Agent.TempDirectory)/p8-publish"'
             workingDirectory: $(Build.SourcesDirectory)
           env:
             PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -127,7 +130,7 @@ stages:
           inputs:
             targetPath: $(Agent.TempDirectory)/p8-publish
             artifact: p8-build
-    - stage: ApplyTestGateAndProdPlan
+    - stage: ApplyTestAndGate
       dependsOn: BuildAndTestPlan
       condition: succeeded()
       jobs:
@@ -153,7 +156,8 @@ stages:
 
                   test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
 
-                  /opt/p8-workload/bin/python -m scripts.pipelines.run test --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only'
+                  /opt/p8-workload/bin/python -m scripts.pipelines.run test --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                  "$(Agent.TempDirectory)/p8-publish" --guard-only'
                 displayName: Guard exact main source before Azure login
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -171,7 +175,8 @@ stages:
                   keepAzSessionActive: true
                   inlineScript: 'set -euo pipefail
 
-                    /opt/p8-workload/bin/python -m scripts.pipelines.run test --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"'
+                    /opt/p8-workload/bin/python -m scripts.pipelines.run test --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                    "$(Agent.TempDirectory)/p8-publish"'
                   workingDirectory: $(Build.SourcesDirectory)
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -193,8 +198,71 @@ stages:
                 inputs:
                   targetPath: $(Agent.TempDirectory)/p8-publish
                   artifact: p8-test
+    - stage: PlanProd
+      dependsOn: ApplyTestAndGate
+      condition: succeeded()
+      jobs:
+      - job: PlanProd
+        timeoutInMinutes: 6
+        cancelTimeoutInMinutes: 1
+        pool:
+          name: ReleaseLens-P7
+          demands:
+          - P8Agent -equals ReleaseLens
+        steps:
+        - checkout: self
+          clean: true
+          persistCredentials: false
+        - bash: 'set -euo pipefail
+
+            test "$BUILD_SOURCEBRANCH" = refs/heads/main
+
+            test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
+
+            /opt/p8-workload/bin/python -m scripts.pipelines.run plan-prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+            "$(Agent.TempDirectory)/p8-publish" --guard-only'
+          displayName: Guard exact main source before Azure login
+          env:
+            PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+            P8_AUTHORITY_JSON: $(P8_AUTHORITY_JSON)
+            P8_AUTHORITY_SHA256: $(P8_AUTHORITY_SHA256)
+            P8_SOURCE_SHA: $(P8_SOURCE_SHA)
+        - task: AzureCLI@2
+          displayName: Plan prod using scoped Prod federation
+          inputs:
+            azureSubscription: ReleaseLens-P8-Prod
+            scriptType: bash
+            scriptLocation: inlineScript
+            addSpnToEnvironment: true
+            visibleAzLogin: false
+            keepAzSessionActive: true
+            inlineScript: 'set -euo pipefail
+
+              /opt/p8-workload/bin/python -m scripts.pipelines.run plan-prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+              "$(Agent.TempDirectory)/p8-publish"'
+            workingDirectory: $(Build.SourcesDirectory)
+          env:
+            PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+            P8_AUTHORITY_JSON: $(P8_AUTHORITY_JSON)
+            P8_AUTHORITY_SHA256: $(P8_AUTHORITY_SHA256)
+            P8_SOURCE_SHA: $(P8_SOURCE_SHA)
+            SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+            SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)
+        - task: PublishTestResults@2
+          condition: always()
+          inputs:
+            testResultsFormat: JUnit
+            testResultsFiles: $(Agent.TempDirectory)/p8-publish/**/*.xml
+            failTaskOnFailedTests: true
+            failTaskOnMissingResultsFile: true
+            testRunTitle: P8 plan-prod
+        - task: PublishPipelineArtifact@1
+          condition: always()
+          inputs:
+            targetPath: $(Agent.TempDirectory)/p8-publish
+            artifact: p8-plan-prod
     - stage: ApplyProdAndGate
-      dependsOn: ApplyTestGateAndProdPlan
+      dependsOn: PlanProd
       condition: succeeded()
       jobs:
       - deployment: ApplyProdAndGate
@@ -219,7 +287,8 @@ stages:
 
                   test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
 
-                  /opt/p8-workload/bin/python -m scripts.pipelines.run prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only'
+                  /opt/p8-workload/bin/python -m scripts.pipelines.run prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                  "$(Agent.TempDirectory)/p8-publish" --guard-only'
                 displayName: Guard exact main source before Azure login
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -237,7 +306,8 @@ stages:
                   keepAzSessionActive: true
                   inlineScript: 'set -euo pipefail
 
-                    /opt/p8-workload/bin/python -m scripts.pipelines.run prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"'
+                    /opt/p8-workload/bin/python -m scripts.pipelines.run prod --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                    "$(Agent.TempDirectory)/p8-publish"'
                   workingDirectory: $(Build.SourcesDirectory)
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -284,7 +354,8 @@ stages:
 
                   test "$BUILD_SOURCEVERSION" = "$P8_SOURCE_SHA"
 
-                  /opt/p8-workload/bin/python -m scripts.pipelines.run negative --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only'
+                  /opt/p8-workload/bin/python -m scripts.pipelines.run negative --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                  "$(Agent.TempDirectory)/p8-publish" --guard-only'
                 displayName: Guard exact main source before Azure login
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
@@ -302,7 +373,8 @@ stages:
                   keepAzSessionActive: true
                   inlineScript: 'set -euo pipefail
 
-                    /opt/p8-workload/bin/python -m scripts.pipelines.run negative --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir "$(Agent.TempDirectory)/p8-publish"'
+                    /opt/p8-workload/bin/python -m scripts.pipelines.run negative --authority "$(Agent.TempDirectory)/p8-authority.json" --receipt-dir
+                    "$(Agent.TempDirectory)/p8-publish"'
                   workingDirectory: $(Build.SourcesDirectory)
                 env:
                   PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval

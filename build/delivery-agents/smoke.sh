@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Actual GitHub-hosted container execution. No registration, Azure login or model call.
 set -euo pipefail
-docker run --rm --entrypoint bash -v "$PWD:/source:ro" "${1:?image required}" -c '
+source_sha="$(git rev-parse HEAD)"
+config_digest="$(docker image inspect "${1:?image required}" --format '{{.Id}}')"
+docker run --rm --entrypoint bash -v "$PWD:/source:ro" \
+  -e P8_SMOKE_SOURCE="$source_sha" -e P8_SMOKE_CONFIG_DIGEST="$config_digest" "$1" -c '
   set -euo pipefail
   test "$(id -u)" = 10001
   test "$P8Agent" = ReleaseLens
@@ -10,7 +13,7 @@ docker run --rm --entrypoint bash -v "$PWD:/source:ro" "${1:?image required}" -c
   terraform version -json > /tmp/tf-version.json
   python -c "import json; assert json.load(open(\"/tmp/cli-version.json\"))[\"azure-cli\"] == \"2.81.0\"; assert json.load(open(\"/tmp/tf-version.json\"))[\"terraform_version\"] == \"1.15.8\""
   python -c "import azure.identity, httpx, numpy, pydantic, yaml, pytest, anthropic, truststore"
-  /opt/azp/bin/Agent.Listener --version
+  /opt/azp/bin/Agent.Listener --version > /tmp/agent-version.txt
   cp -a /source /tmp/work
   cd /tmp/work
   python -m pytest tests/infra/test_agents_runtime.py tests/infra/test_pipelines_image.py -q
@@ -22,4 +25,5 @@ docker run --rm --entrypoint bash -v "$PWD:/source:ro" "${1:?image required}" -c
     terraform -chdir="infra/pipelines/$root" validate
     terraform -chdir="infra/pipelines/$root" test
   done
+  python /source/build/delivery-agents/toolchain_receipt.py
 '

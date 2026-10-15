@@ -26,18 +26,18 @@ from app.retrieval.arms import ArmResult,Hit
 from app.retrieval.azure_auth import TokenSource
 from .checks import verify_checks
 from .identity import verify_principal,terraform_environment
-from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan
+from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_plan
 from .storage import BlobStore
 
 ROOT = Path(__file__).resolve().parents[2]
-STAGES = ("build","test","prod","negative","verify")
+STAGES = ("build","test","plan-prod","prod","negative","verify")
 
 
 class StageBudget:
     """Leave a minute for publishing and one-shot agent shutdown before the YAML limit."""
     def __init__(self,stage,cutoff,*,clock=time.monotonic):
         self.clock = clock
-        limit = {"build":300,"test":720,"prod":660,"negative":300,"verify":300}[stage]
+        limit = {"build":300,"test":720,"plan-prod":300,"prod":660,"negative":300,"verify":300}[stage]
         self.ends = clock()+min(limit,(cutoff-datetime.now(timezone.utc)).total_seconds())
 
     def remaining(self,maximum):
@@ -54,7 +54,7 @@ class StageBudget:
 
 def dependencies(stage: str) -> tuple[str,...]:
     try:
-        return {"build":(),"test":("test-plan",),"prod":("test-gate","prod-plan"),
+        return {"build":(),"test":("test-plan",),"plan-prod":("test-gate",),"prod":("test-gate","prod-plan"),
                 "negative":("prod-gate",),"verify":("prod-gate",)}[stage]
     except KeyError: raise DeliveryRefused("authority") from None
 
@@ -62,7 +62,7 @@ def dependencies(stage: str) -> tuple[str,...]:
 def connection_role(stage: str,reason: str) -> str:
     if stage not in STAGES or reason not in ("Manual","Schedule") or (stage == "verify") != (reason == "Schedule"):
         raise DeliveryRefused("authority")
-    return "verify" if stage == "verify" else "prod" if stage == "prod" else "test"
+    return "verify" if stage == "verify" else "prod" if stage in ("plan-prod","prod") else "test"
 
 
 def require_gate(receipt: dict,expected: dict) -> None:
@@ -74,6 +74,11 @@ def require_gate(receipt: dict,expected: dict) -> None:
             or gate["errors"] != 0 or gate["missing"] != 0 or gate["skipped"] != 0 or gate["passed"] is not True):
             raise DeliveryRefused("gate")
     except (KeyError,TypeError): raise DeliveryRefused("gate") from None
+
+
+def negative_passes(result,rows) -> bool:
+    return (not result.passed and result.correct==0 and result.evaluated==229
+        and result.errors==result.missing==result.skipped==0 and len(rows)==229 and all(not row.hits for row in rows))
 
 
 def require_result_files(directory: Path) -> None:
@@ -192,23 +197,30 @@ class Runtime:
             self.release = self.store.json("evidence","claims/release.json")
             if any(self.release[k] != self.proof[k] for k in ("source_sha","release_digest")):
                 raise DeliveryRefused("authority")
-            if self.stage in ("test","prod") and self.release["run_id"] != self.run_id:
+            if self.stage in ("test","plan-prod","prod") and self.release["run_id"] != self.run_id:
                 raise DeliveryRefused("authority")
 
     def target(self,name: str) -> SearchTarget:
         host = self.a["search_host"]
         return SearchTarget("https://"+host,"p8-"+name,host)
 
-    def terraform(self,target: str) -> Path:
+    def prepare_workspace(self,target: str) -> Path:
         directory = self.work/("index-"+target)
         directory.mkdir()
         for name in ("main.tf","variables.tf","versions.tf","outputs.tf","backend.tf",".terraform.lock.hcl"):
             shutil.copyfile(ROOT/"infra/pipelines/index"/name,directory/name)
+        return directory
+
+    def initialize(self,directory: Path,target: str):
         container = "test-state" if target == "test" else "prod-state"
         args = ["terraform","init","-input=false","-reconfigure","-lockfile=readonly",
             "-backend-config=storage_account_name="+self.a["storage_account_name"],
             "-backend-config=container_name="+container]
         self.command(args,directory,"init-"+target,120)
+
+    def terraform(self,target: str) -> Path:
+        directory=self.prepare_workspace(target)
+        self.initialize(directory,target)
         return directory
 
     def command(self,args: list[str],cwd: Path,name: str,seconds: int):
@@ -242,27 +254,60 @@ class Runtime:
             self.store.put_once("evidence",f"plans/{target}/{filename}",data)
             (plan_publish/filename).write_bytes(data)
         self.store.put_json(f"plans/{target}/binding.json",envelope)
+        self.store.put_once("evidence",f"plans/{target}/shown.json",shown.stdout.encode())
         exclusive_json(plan_publish/"binding.json",envelope)
+        with (plan_publish/"shown.json").open("xb") as out: out.write(shown.stdout.encode())
         exclusive_json(plan_publish/"summary.json",{"target":target,"creates":1,"updates":0,"deletes":0,
                                                     "plan_sha256":binding.plan_sha256,"release_digest":self.bundle.digest})
+        suite=ET.Element("testsuite",name="Exact saved plan",tests="1",failures="0",errors="0",skipped="0")
+        ET.SubElement(suite,"testcase",classname="search.plan",name="create-only-bound-plan")
+        with (plan_publish/"contract.xml").open("xb") as out: out.write(ET.tostring(suite,encoding="utf-8"))
 
     def apply_and_load(self,target: str):
+        validated=self.target(target)
         envelope = self.store.json("evidence",f"plans/{target}/binding.json")
         if any(envelope[k] != self.proof[k] for k in self.proof): raise DeliveryRefused("plan")
-        directory = self.terraform(target)
+        directory = self.prepare_workspace(target)
         for name in ("plan.tfplan","inputs.tfvars.json"):
             (directory/name).write_bytes(self.store.get("evidence",f"plans/{target}/{name}",maximum=16*1024*1024))
         expected_lock = self.store.get("evidence",f"plans/{target}/.terraform.lock.hcl")
         if expected_lock != (directory/".terraform.lock.hcl").read_bytes(): raise DeliveryRefused("plan")
+        binding=PlanBinding(**envelope["binding"])
+        before=self.store.state(target)
+        verify_plan(binding,directory/"plan.tfplan",self.bundle,target,before,directory/"inputs.tfvars.json",directory/".terraform.lock.hcl")
+        shown=self.store.json("evidence",f"plans/{target}/shown.json")
+        validate_index_plan(shown,validated.allowed_host,target)
         # The only authorized schema operation is creating an absent new index.
-        response = self.client.get(f"https://{self.a['search_host']}/indexes/p8-{target}",
+        response = self.client.get(f"{validated.endpoint}/indexes/{validated.index}",
             params={"api-version":"2024-07-01"},headers={"Authorization":"Bearer "+self.search_tokens.token()},
             follow_redirects=False,timeout=20)
         if response.status_code != 404: raise DeliveryRefused("plan")
-        apply_exact(PlanBinding(**envelope["binding"]),directory/"plan.tfplan",self.bundle,target,
-            directory/"inputs.tfvars.json",directory/".terraform.lock.hcl",reservation=self.work/("apply-"+target+".json"),
-            cwd=directory,env=self.tf_env,state_reader=lambda:self.store.state(target),runner=self.process)
-        upload_bundle(self.bundle,self.target(target),self.search_tokens,self.client,reservation=self.work/("upload-"+target+".json"))
+        published=self.publish/(target+"-apply"); published.mkdir()
+        exclusive_json(published/"state-before.json",before)
+        self.store.put_once("evidence",f"applies/{target}/state-before.json",(published/"state-before.json").read_bytes())
+        intent=self.proof | {"session":self.a["session"],
+            "component":"index-"+target,"manifest_sha256":self.a["manifest_sha256"],"binding":asdict(binding)}
+        exclusive_json(published/"intent.json",intent)
+        self.store.put_once("evidence",f"applies/{target}/intent.json",(published/"intent.json").read_bytes())
+        reservation=self.work/("apply-"+target+".json")
+        try:
+            self.initialize(directory,target)
+            apply_exact(binding,directory/"plan.tfplan",self.bundle,target,
+                directory/"inputs.tfvars.json",directory/".terraform.lock.hcl",reservation=reservation,
+                cwd=directory,env=self.tf_env,state_reader=lambda:self.store.state(target),runner=self.process)
+        except Exception as exc:
+            original=reservation.with_suffix(".result.json")
+            if not original.exists():
+                exclusive_json(original,{"binding":asdict(binding),"returncode":None,
+                    "error_type":type(exc).__name__,"error":str(exc)})
+            raise
+        finally:
+            original=reservation.with_suffix(".result.json")
+            if original.exists():
+                data=original.read_bytes()
+                with (published/"result.json").open("xb") as out: out.write(data)
+                self.store.put_once("evidence",f"applies/{target}/result.json",data)
+        upload_bundle(self.bundle,validated,self.search_tokens,self.client,reservation=self.work/("upload-"+target+".json"))
 
     def measure(self,target: str,*,negative=False) -> bool:
         result,rows = run_gate(self.bundle,self.target(target),read_json(self.bundle.root/(
@@ -271,8 +316,7 @@ class Runtime:
         write_gate(result,rows,output)
         require_result_files(output)
         receipt = self.proof | {"stage":self.stage,"gate":asdict(result),"reason":os.environ["BUILD_REASON"],
-            "expected_negative":negative,"acceptance_pass":(not result.passed and result.correct==0 and result.evaluated==229
-                and result.errors==result.missing==result.skipped==0) if negative else result.passed}
+            "expected_negative":negative,"acceptance_pass":negative_passes(result,rows) if negative else result.passed}
         for name in ("results.json","results.xml"):
             data = (output/name).read_bytes()
             self.store.put_once("evidence",f"gates/{self.stage}/{name}",data)
@@ -307,6 +351,8 @@ class Runtime:
         elif self.stage == "test":
             self.apply_and_load("test")
             self.measure("test")
+        elif self.stage == "plan-prod":
+            self.prior_gate("test")
             self.plan("demo-prod")
         elif self.stage == "prod":
             self.prior_gate("test")

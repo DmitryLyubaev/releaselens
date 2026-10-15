@@ -79,3 +79,13 @@ def test_terraform_download_wrong_digest_creates_no_executable(repo_root,tmp_pat
         module.install_terraform({"terraform_version":"1.15.8","terraform_sha256":"a"*64},
             tmp_path / "terraform",opener=lambda *a,**kw: Reply(payload.getvalue()))
     assert not (tmp_path / "terraform").exists()
+
+
+def test_actual_container_versions_emit_a_bound_receipt(repo_root):
+    spec=importlib.util.spec_from_file_location("p8_receipt",repo_root/"build/delivery-agents/toolchain_receipt.py")
+    module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    receipt=module.create_receipt("a"*40,"sha256:"+"b"*64,{"azure-cli":"2.81.0"},
+        {"terraform_version":"1.15.8"},"5.280.0",(3,12))
+    assert receipt["source_sha"]=="a"*40 and receipt["versions"]["agent"]=="5.280.0"
+    with pytest.raises(ValueError): module.create_receipt("a"*40,"sha256:"+"b"*64,
+        {"azure-cli":"2.81.0"},{"terraform_version":"1.15.8"},"5.280.0",(3,14))

@@ -11,6 +11,7 @@ import time
 import httpx
 
 from app.delivery_search.contracts import DeliveryRefused,canonical,exclusive_json,sha256_file
+from app.delivery_search.contracts import SearchTarget
 from app.retrieval.azure_auth import TokenSource
 from .run import jwt_claims
 from .session import bound_file
@@ -127,12 +128,76 @@ class OwnerDriver:
         return cwd
 
     def state(self,component):
+        if component["name"].startswith("index-") and self.index_state_absence(component): return []
         cwd=self.component_dir(component)
         shown=json.loads(self.process(["terraform","show","-json"],cwd))
+        if any(r.get("resolve") for r in component["resources"]):
+            from .ownership import bind_state
+            bind_state(self.directory,self.a,component,shown)
         rows=state_rows(shown)
         listed=self.process(["terraform","state","list"],cwd).splitlines()
         if set(listed)!={r["address"] for r in rows}: raise DeliveryRefused("plan")
         return rows
+
+    def index_state_absence(self,component):
+        """A nonexistent backend is empty only with an authenticated absent-index proof."""
+        from .storage import BlobStore
+        from .session import reserve_budget
+        target=component["name"][6:]
+        checked=SearchTarget("https://"+self.a["search_host"],"p8-"+target,self.a["search_host"])
+        if component["name"] in getattr(self,"_absent_indices",{}): return True
+        container="test-state" if target=="test" else "prod-state"
+        storage_tokens=TokenSource("https://storage.azure.com/.default",self.a["owner"]["tenant_id"])
+        with httpx.Client(timeout=20,follow_redirects=False) as client:
+            store=BlobStore(self.a["storage_host"],storage_tokens,client)
+            parents={}
+            for group in getattr(self,"manifest",{}).get("components",[]):
+                if group["name"]!="foundation": continue
+                for resource in group["resources"]:
+                    if not resource.get("id"): continue
+                    low=resource["id"].lower()
+                    kind=next((kind for kind,marker in (("storage","/microsoft.storage/storageaccounts/"),
+                        ("search","/microsoft.search/searchservices/")) if marker in low and "/" not in low.split(marker,1)[1]),None)
+                    if kind and resource.get("kind")=="arm" and getattr(self,"tokens",None) is not None:
+                        expected_host=low.rsplit("/",1)[1]+(".blob.core.windows.net" if kind=="storage" else ".search.windows.net")
+                        if parents.get(kind) or self.a["storage_host" if kind=="storage" else "search_host"]!=expected_host:
+                            raise DeliveryRefused("target")
+                        response=client.get("https://management.azure.com"+resource["id"],params={"api-version":resource["api_version"]},
+                            headers={"Authorization":"Bearer "+self.tokens.token()})
+                        self.record("parent-absence",{"id":resource["id"],"status":response.status_code,"body":response.text})
+                        if response.status_code not in (200,404): raise DeliveryRefused("plan")
+                        parents[kind]={"kind":"arm-parent","id":resource["id"],"status":response.status_code}
+            if parents.get("storage",{}).get("status")==404:
+                backend=parents["storage"]
+            else:
+                response=client.get(store._url(container,"index.tfstate"),headers={
+                    "Authorization":"Bearer "+storage_tokens.token(),"x-ms-version":"2023-11-03"})
+                backend={"kind":"blob","host":self.a["storage_host"],"container":container,"key":"index.tfstate",
+                    "status":response.status_code,"error_code":response.headers.get("x-ms-error-code"),"length":len(response.content)}
+                self.record("backend-observation",backend | {"body":response.text})
+                if response.status_code==200 and response.content: return False
+                if not (response.status_code==200 and response.headers.get("content-length")=="0" or
+                    response.status_code==404 and backend["error_code"] in ("BlobNotFound","ContainerNotFound")):
+                    raise DeliveryRefused("plan")
+            if parents.get("search",{}).get("status")==404:
+                index=parents["search"]
+            else:
+                if backend.get("error_code")=="ContainerNotFound" or backend["kind"]=="arm-parent":
+                    # Infrastructure failed before any dispatch, so no worker can have
+                    # consumed metadata slots. Never use this fallback after dispatch.
+                    if (self.directory/"intents/dispatch-release.json").exists(): raise DeliveryRefused("plan")
+                    reserve_budget(self.directory,"metadata",120)
+                else: store.reserve_budget("metadata",120)
+                response=client.get(f"{checked.endpoint}/indexes/{checked.index}",params={"api-version":"2024-07-01"},
+                    headers={"Authorization":"Bearer "+TokenSource("https://search.azure.com/.default",self.a["owner"]["tenant_id"]).token()})
+                index={"kind":"index","host":checked.allowed_host,"name":checked.index,"status":response.status_code}
+                if response.status_code!=404: raise DeliveryRefused("plan")
+            proof={"component":component["name"],"backend":backend,"index":index,"source_sha":self.a["source_sha"],
+                "session":self.a["session"],"at":datetime.now(timezone.utc).isoformat()}
+            self.record("index-state-absence",proof)
+            if not hasattr(self,"_absent_indices"): self._absent_indices={}
+            self._absent_indices[component["name"]]=proof
+            return True
 
     def plan(self,component,attempt,remaining):
         cwd=self.component_dir(component)
@@ -180,7 +245,7 @@ class OwnerDriver:
             "--fill-principal-name","false","--fill-role-definition-name","false"])
         deleted=self.az(["keyvault","list-deleted"])
         owned_vaults={r["id"].lower() for c in self.manifest["components"] for r in c["resources"]
-            if "/providers/microsoft.keyvault/vaults/" in r["id"].lower()}
+            if r.get("id") and "/providers/microsoft.keyvault/vaults/" in r["id"].lower()}
         new_deleted=[r for r in deleted if r.get("properties",{}).get("vaultId","").lower() in owned_vaults]
         self.record("owned-soft-deleted-no-purge",new_deleted)
         return {"resources":[r for r in resources if retained_id(r)],
