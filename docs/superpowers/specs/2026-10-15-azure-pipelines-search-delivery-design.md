@@ -1,7 +1,8 @@
 # Project 8: Azure Pipelines search delivery - scope refresh
 
-Status: proposed scope, 15 October 2026. Owner requested the refresh; implementation,
-public publication, identity changes, Azure resources and paid calls are not authorized.
+Status: search-only scope approved by the owner on 16 October 2026. Scope refreshed
+15 October. Approval authorizes the implementation plan; implementation, public publication,
+identity changes, Azure resources and paid calls retain their separate gates.
 Audit baseline: ReleaseLens main `3baa6bf92e30848ccde0852792da82462b031a5e`.
 
 ## Intent
@@ -14,7 +15,7 @@ project stays private. The production label describes a demo target.
 
 This proposal narrows the September plan to search index/schema/query-configuration
 delivery. It does not migrate the whole RAG application or deploy a new HTTP application.
-That boundary is an explicit scope decision for the owner to approve.
+The owner approved that boundary and the full designer defaults on 16 October 2026.
 
 ## What the audit found
 
@@ -165,10 +166,11 @@ and tested before any identity preparation, not discovered by adding roles to a 
 Validate data-plane provider plan/apply support and toolchain in offline/contract tests before
 billing. Keep published P2/P5/P6/P7 evidence and frozen session controllers unchanged.
 
-This document proposes the search-only scope and designer defaults. Owner approval of the
-full scope is required before an implementation plan or product changes. Public push/merge,
+The owner approved this search-only scope and designer defaults on 16 October 2026 via
+`call_895ab24090224ca4b7e4dfcfcf8eaf34` ("Approve the search-only scope"). The implementation
+plan is authorized; product implementation waits for plan review. Public push/merge,
 identity/federation changes, paid preparation and a billable attempt each retain their
-separate existing approval gates. None are requested or performed by this refresh.
+separate existing approval gates. None were performed by this refresh.
 
 ## Official references checked 15 October 2026
 
