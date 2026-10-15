@@ -88,6 +88,50 @@ def test_actual_positive_and_expected_negative_grade(evidence, observed):
     assert "artifact_dir" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("change", ["group_prefix", "resource_names", "destroyed_ids", "all_ids"])
+def test_closeout_accepts_equivalent_arm_id_casing_without_changing_originals(evidence, observed, change):
+    obs, paths = observed
+    if change == "group_prefix":
+        # Terraform and ARM returned different casing for the same group prefix.
+        obs["owned_group_id"] = obs["owned_group_id"].lower()
+    if change == "resource_names":
+        obs["owned_ids"] = [value.upper() for value in obs["owned_ids"]]
+    if change == "destroyed_ids":
+        obs["closeout"]["destroyed_ids"] = [value.upper() for value in obs["closeout"]["destroyed_ids"]]
+    if change == "all_ids":
+        obs["owned_group_id"] = obs["owned_group_id"].upper()
+        obs["owned_ids"] = [value.lower() for value in obs["owned_ids"]]
+        obs["closeout"]["destroyed_ids"] = [value.swapcase() for value in obs["closeout"]["destroyed_ids"]]
+    original = copy.deepcopy(obs)
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "pass"
+    assert obs == original
+
+
+@pytest.mark.parametrize("change", [
+    "owned_duplicate", "destroyed_duplicate", "sibling_group", "foreign_subscription", "wrong_resource",
+])
+def test_case_insensitive_closeout_still_requires_nine_distinct_exact_owned_ids(evidence, observed, change):
+    obs, paths = observed
+    owned = list(obs["owned_ids"])
+    destroyed = list(obs["closeout"]["destroyed_ids"])
+    if change == "owned_duplicate":
+        owned[-1] = owned[0].upper()
+        destroyed = list(owned)
+    if change == "destroyed_duplicate":
+        destroyed[-1] = destroyed[0].upper()
+    if change == "sibling_group":
+        owned[-1] = owned[-1].replace("rg-p7-demo-test/", "rg-p7-demo-test-foreign/")
+        destroyed[-1] = owned[-1]
+    if change == "foreign_subscription":
+        owned[-1] = owned[-1].replace("private-sub", "foreign-sub")
+        destroyed[-1] = owned[-1]
+    if change == "wrong_resource":
+        destroyed[-1] += "-foreign"
+    obs["owned_ids"] = owned
+    obs["closeout"]["destroyed_ids"] = destroyed
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "fail"
+
+
 def test_early_cleanup_does_not_require_waiting_for_scheduled_queue_cutoff(evidence, observed):
     obs, paths = observed
     # All three runs and idle checks ended by 00:23; cleanup may begin immediately.
