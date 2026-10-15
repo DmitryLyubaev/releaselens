@@ -29,7 +29,8 @@ variable "session_name" {
   }
 }
 variable "organization_url" {
-  type = string
+  type        = string
+  description = "Personal Azure DevOps organisation root URL; an optional trailing slash is removed for KEDA and both agents."
   validation {
     condition     = can(regex("^https://dev[.]azure[.]com/[A-Za-z0-9_-]+/?$", var.organization_url))
     error_message = "Use the private personal organisation URL."

@@ -1,7 +1,8 @@
 locals {
-  tags = { project = "ReleaseLens", purpose = "project7-demo", session = var.session_name }
+  organization_url = trimsuffix(var.organization_url, "/")
+  tags             = { project = "ReleaseLens", purpose = "project7-demo", session = var.session_name }
   environments = {
-    AZP_URL    = var.organization_url
+    AZP_URL    = local.organization_url
     AZP_POOL   = var.pool_name
     P7_SESSION = var.session_name
     P7Agent    = "ReleaseLens"
@@ -109,7 +110,7 @@ resource "azurerm_container_app_job" "worker" {
         name             = "pipeline-queue"
         custom_rule_type = "azure-pipelines"
         metadata = {
-          organizationURL            = var.organization_url
+          organizationURL            = local.organization_url
           poolName                   = var.pool_name
           targetPipelinesQueueLength = "1"
         }
