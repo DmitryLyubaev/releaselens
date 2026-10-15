@@ -133,11 +133,12 @@ def closeout_valid(obs: dict) -> bool:
         window = {k: timestamp(v) for k, v in obs["window"].items()}
         start, cutoff = window["apply_started_at"], window["queue_cutoff_at"]
         cleanup, deadline, end = (window[k] for k in ("cleanup_started_at", "cleanup_deadline_at", "closeout_at"))
-        timing = (start <= cutoff <= cleanup <= end <= deadline
+        timing = (start <= cleanup <= end <= deadline and start <= cutoff <= deadline
                   and (cutoff - start).total_seconds() <= 1800
                   and (cleanup - start).total_seconds() <= 2700
                   and (deadline - start).total_seconds() <= 3600
-                  and all(start <= timestamp(r["build"]["queueTime"]) <= cutoff for r in obs["runs"])
+                  and all(start <= timestamp(r["build"]["queueTime"]) <= min(cutoff, cleanup)
+                          for r in obs["runs"])
                   and cleanup <= timestamp(close["pat_revocation_confirmed_at"]) <= end)
         return (len(owned) == len(set(owned)) == 9 and all(i == group or i.startswith(group + "/") for i in owned)
                 and len(close["destroyed_ids"]) == 9 and set(close["destroyed_ids"]) == set(owned)

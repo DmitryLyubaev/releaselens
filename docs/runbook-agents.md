@@ -161,6 +161,9 @@ terraform -chdir=infra/agents output -json owned >"$p7dir/owned.json"
 
 The single apply creates the vault/owner role, invokes `seed_pat.py` with path/metadata
 only, then creates jobs after its private upload receipt and managed-identity role.
+The environment must explicitly select `logs_destination = "log-analytics"` for its
+dedicated workspace. A mocked provider plan alone does not exercise AzureRM's real
+diff validation when that newly created workspace ID resolves during apply.
 Role readiness retries are bounded to 120 seconds. A failed apply/gate stops further
 deployment/queues. Retain resources/state for diagnosis inside the agreed window; do not
 destroy/recreate or run a corrective apply automatically. Keep any partial ownership.
@@ -255,6 +258,13 @@ partially created resources. Require only their deletes, then apply that saved d
 plan with raw output captured privately. There is **no Key Vault purge**: protection and
 soft-deleted metadata remain. Do not delete the DevOps organisation/project/pool, change
 bootstrap or stop unrelated jobs. Soft-deleted retention is distinct from running compute.
+
+If an uncreated resource's configuration also blocks a partial-session destroy plan,
+preserve that failure and target every address actually present in this session's state.
+Review the saved destroy plan against those same owned IDs, then require the entire
+session state to be empty afterward. Do not use targeting to retry creation or abandon
+remaining state. Cleanup may finish before the scheduled queue cutoff; no further run
+may be queued once cleanup begins.
 
 Capture these actual closeout facts:
 

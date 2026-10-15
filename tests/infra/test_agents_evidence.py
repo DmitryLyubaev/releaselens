@@ -88,6 +88,25 @@ def test_actual_positive_and_expected_negative_grade(evidence, observed):
     assert "artifact_dir" not in json.dumps(result)
 
 
+def test_early_cleanup_does_not_require_waiting_for_scheduled_queue_cutoff(evidence, observed):
+    obs, paths = observed
+    # All three runs and idle checks ended by 00:23; cleanup may begin immediately.
+    obs["window"].update(cleanup_started_at="2026-10-15T00:24:00Z", closeout_at="2026-10-15T00:27:00Z")
+    obs["closeout"]["pat_revocation_confirmed_at"] = "2026-10-15T00:26:00Z"
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "pass"
+
+
+@pytest.mark.parametrize("cleanup,queued", [
+    ("2026-10-15T00:24:00Z", "2026-10-15T00:24:01Z"),
+    ("2026-10-15T00:30:00Z", "2026-10-15T00:29:01Z"),
+])
+def test_no_run_can_be_queued_after_cleanup_or_cutoff(evidence, observed, cleanup, queued):
+    obs, paths = observed
+    obs["window"]["cleanup_started_at"] = cleanup
+    obs["runs"][2]["build"]["queueTime"] = queued
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "fail"
+
+
 @pytest.mark.parametrize("mutation,check", [
     ("manual", "A1"), ("source", "A2"), ("image", "A1"), ("duplicates", "A1"),
     ("agent_reuse", "A3"), ("workspace_reuse", "A3"), ("publication", "A2"),
