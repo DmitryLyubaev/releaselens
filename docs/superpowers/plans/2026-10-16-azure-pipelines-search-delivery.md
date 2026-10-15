@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-15-azure-pipelines-search-delivery-design.md`
 
-Status: implementation plan for review, 16 October 2026. Design approval is recorded in the spec. No implementation, public push, identity mutation, embedding call or live deployment has been performed under this plan.
+Status: local Native implementation approved on 16 October 2026 via `call_4aa3ab0648184500be087b607c127eb6`. Tasks 1-6 are implemented locally; Task 7 remains gated on whole-branch review and separate publication/preparation/live approvals. No public push, identity mutation, embedding call or live deployment has been performed under this plan.
 
 ## Global Constraints
 
@@ -147,7 +147,7 @@ Public configuration contains no actual account names/IDs. Add `.local/project8/
 
 Spec coverage: release/input integrity -> Task 1; S2/strict JUnit/negative -> Task 2; exact state/plan/WIF/RBAC -> Task 3; agent prerequisites -> Task 4; actual main/template/approval/schedule controls -> Task 5; lifecycle/privacy/cleanup/evidence -> Task 6; bounded actual acceptance/publication -> Task 7. Each of the five Review Focus conditions has named owning tests. Shared types/signatures are declared once and consumed by name. Task 7 is an approval-gated operational checklist, not an instruction to deploy during implementation.
 
-This plan has been checked against the approved spec and repository interfaces. It does not claim implemented code, passing new tests, working live provider support or measured Project 8 results.
+The design-stage self-review checked this plan against the approved spec and repository interfaces. Subsequent local implementation evidence is recorded in the runbook. Offline checks do not claim working live provider apply, actual container acceptance or measured Project 8 results.
 
 ## Version and platform references
 

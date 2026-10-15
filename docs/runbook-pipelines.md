@@ -1,5 +1,11 @@
 # Project 8: checked Search delivery
 
+Local checkpoint, 16 October 2026: Tasks 1-6 are implemented. Offline verification
+passed 454 infrastructure tests, 1,185 eval tests, three Terraform validations and
+four mock plans. The real Windows-to-WSL ownership/path/exit probe also passed without
+Azure access. Whole-branch review is pending at this checkpoint. Actual image/PR/main
+CI, account setup, paid preparation and P8-1 through P8-8 live acceptance have not run.
+
 This CV demonstration delivers one frozen Search schema and S2 configuration to
 `p8-test` and `p8-demo-prod` on one new Basic service. It uses 41,825 existing
 chunks and 229 audited questions. The gate is complete 229-question top-1 scoring
