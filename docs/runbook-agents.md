@@ -84,6 +84,12 @@ pat_file, session_dir, source_sha
 `pat_file` and `session_dir` are absolute WSL paths. `image_digest` must be the published
 `ghcr.io/<owner>/releaselens-agent@sha256:<digest>`, never a mutable tag.
 
+`organization_url` accepts the organisation root with or without one trailing slash.
+The module removes that slash before setting KEDA's `organizationURL` and both jobs'
+`AZP_URL`. Check these planned values are identical and end in the organisation name;
+KEDA cannot extract an organisation name from a URL ending in `/`. Offline Terraform
+tests cover both accepted forms. They do not replace live queue-to-worker acceptance.
+
 Before every Azure operation capture `az account show`, verify exact personal user,
 subscription and tenant, and stop on mismatch. Do not print the account object. For
 subsequent commands, this WSL helper assumes the private metadata variables are already
