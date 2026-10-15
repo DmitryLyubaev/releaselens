@@ -35,7 +35,7 @@ def terraform_environment(expected: dict, assertion: str, inherited: dict | None
         raise DeliveryRefused("identity")
     # Never inherit alternate ARM authentication or developer credentials into this subprocess.
     env = {k:v for k,v in (os.environ if inherited is None else inherited).items()
-           if not k.startswith(("ARM_","AZURE_","TF_LOG"))}
+           if not k.startswith(("ARM_","AZURE_","TF_"))}
     env.update({"ARM_USE_OIDC":"true","ARM_USE_AZUREAD":"true","ARM_USE_CLI":"false",
         "ARM_CLIENT_ID":expected["client_id"],"ARM_TENANT_ID":expected["tenant_id"],
         "ARM_SUBSCRIPTION_ID":expected["subscription_id"],"ARM_OIDC_TOKEN":assertion,

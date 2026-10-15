@@ -79,3 +79,9 @@ def test_terraform_never_inherits_debug_logging(identity,principal):
     env = identity.terraform_environment(principal[2],"assertion",{
         "TF_LOG":"TRACE","TF_LOG_PATH":"public.log","TF_LOG_PROVIDER":"TRACE","PATH":"safe"})
     assert not any(key.startswith("TF_LOG") for key in env)
+
+
+def test_terraform_never_inherits_cli_or_variable_overrides(identity,principal):
+    env=identity.terraform_environment(principal[2],"assertion",{
+        "TF_CLI_ARGS_plan":"-target=unreviewed","TF_VAR_target":"demo-prod","TF_WORKSPACE":"wrong"})
+    assert not any(key in env for key in ("TF_CLI_ARGS_plan","TF_VAR_target","TF_WORKSPACE"))

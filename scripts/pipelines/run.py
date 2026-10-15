@@ -127,6 +127,14 @@ def jwt_claims(token: str) -> dict:
     except (ValueError,KeyError,TypeError): raise DeliveryRefused("identity") from None
 
 
+def identity_receipt(account: dict,claims: dict) -> dict:
+    return {"at":datetime.now(timezone.utc).isoformat(),
+        "account":{k:account[k] for k in ("id","tenantId","state","user")},
+        "claims":{kind:{k:value[k] for k in keys if k in value} for kind,value,keys in (
+            ("federation",claims["federation"],("iss","sub","aud","exp")),
+            ("access",claims["access"],("tid","oid","appid","azp","exp")))}}
+
+
 class Runtime:
     def __init__(self,a: dict,principal: dict,stage: str,receipt_dir: Path,client: httpx.Client):
         self.a,self.principal,self.stage,self.client = a,principal,stage,client
@@ -148,9 +156,15 @@ class Runtime:
         verify_principal(account,claims,principal)
         self.tf_env = terraform_environment(principal,assertion)
         # Only a digest/provenance-safe projection is retained; never the assertion/access token.
-        exclusive_json(self.publish/"identity.json",self.proof | {"role":connection_role(stage,os.environ["BUILD_REASON"]),
-            "verified":True,"scheme":"WorkloadIdentityFederation"})
+        exclusive_json(self.publish/"identity.json",self.proof | identity_receipt(account,claims) | {
+            "role":connection_role(stage,os.environ["BUILD_REASON"]),"verified":True,"scheme":"WorkloadIdentityFederation"})
         self.store = BlobStore(a["storage_host"],TokenSource("https://storage.azure.com/.default",principal["tenant_id"]),client)
+        # Reserve before fetching any corpus/query context. A fresh agent cannot replay a set.
+        self.store.put_json(f"operations/{stage}.json",self.proof | {"stage":stage})
+        def metadata_budget(request):
+            if request.url.host==a["search_host"] and request.method=="GET":
+                self.store.reserve_budget("metadata",120)
+        client.event_hooks["request"].append(metadata_budget)
         checks = self.store.get("inputs","checks/snapshot.json")
         if hashlib.sha256(checks).hexdigest() != a["checks_snapshot_sha256"]: raise DeliveryRefused("checks")
         verify_checks(json.loads(checks),a["checks_expected"])
@@ -163,7 +177,6 @@ class Runtime:
             if sha256_file(self.bundle.root/bundled) != sha256_file(source): raise DeliveryRefused("bundle")
         self.search_tokens = TokenSource("https://search.azure.com/.default",principal["tenant_id"])
         self.claim_release()
-        self.store.put_json(f"operations/{stage}.json",self.proof | {"stage":stage})
 
     @staticmethod
     def az_json(args: list[str]) -> dict:

@@ -174,3 +174,122 @@ watchdog/keeper/inbox exit. Late timing remains a failure after safe physical cl
 Keep raw originals private; public results use an explicit allowlist and report
 failed/not-run outcomes and true provenance. Cost can remain unavailable; an estimate
 must not be relabelled as measured cost. Public report/README publication is separate.
+
+## Private controller protocol
+
+Keep the live checkout frozen at the approved source/tree. `authority.json` carries
+the `SessionAuthority` fields plus exact owner/principal/scope bindings, new pipeline
+ID, storage/Search hosts, WSL session path and SHA-256 bindings for the original human
+receipt and baseline. The actual human receipt contains its real chat message reference,
+source/tree/release and `session.scope_digest(authority)`. This digest binds the owner,
+groups, CI principals, grants, pipeline and hosts. Never manufacture a human receipt
+from a failure, heartbeat or synthetic test. The baseline contains all three authenticated
+group-absence originals and full retained resources, role assignments and deleted vaults.
+
+Before billing prepare the five components in `cleanup-manifest.json`: `index-test`,
+`index-demo-prod`, `foundation`, `identity`, `agents`. Freeze each component's private
+relative directory, `owner.config_digest`, original resource address/ID pairs and backend
+binding. ARM records also include kind and API version; index records include exact host
+and logical name; only the agents component permits its one local terraform_data gate.
+Bounds are one index each, foundation 23 ARM, identity 7 ARM, agents 9 ARM plus the local
+gate. Fresh canonical group absence and original create-only plans establish ownership;
+actual identity binding must preserve already frozen IDs. A missing/partial manifest
+must be resolved against those originals before downstream work. A group name match
+alone is insufficient. No bootstrap or prior-session state belongs in this manifest.
+
+Prepare and verify the owner's private backend metadata before billing. Remote index
+backends must point to the exact new account, `test-state`/`prod-state`, `index.tfstate`,
+AAD enabled and OIDC disabled for owner cleanup. Local backends must resolve inside
+their component. Preserve the deployment backend metadata separately. Copied reviewed
+configuration, inputs and provider lock are hashed; alternate Terraform environment
+overrides, workspace, trace and credentials are removed. Never reinitialize a backend
+as an improvised cleanup fix.
+
+Run the watchdog probe on the real Windows side with the existing Python and root/eval
+on PYTHONPATH. It uses structured argv, the fixed WSL owner Python and no shell quoting:
+
+```text
+python -m scripts.pipelines.watchdog --session <absolute-session> --probe
+python -m scripts.pipelines.watchdog --session <absolute-session> --run
+python -m scripts.pipelines.session --session <session> --reserve-dispatch release
+python -m scripts.pipelines.session --session <session> --reserve-dispatch negative
+python -m scripts.pipelines.session --session <session> --reserve-dispatch scheduled
+```
+
+The first two commands run on Windows; reservations run in the reviewed owner runtime.
+Probe files are create-only. Use a fresh probe directory when code changes and preserve
+old outcomes. The real probe captures native creation time/command and exit as well as
+the WSL path, without Azure access. Before an actual attempt require this exact helper
+hash and a fresh continuing heartbeat, not merely an earlier probe. Start the finite
+supervisor before apply; it can adopt the first actual apply timestamp once and cannot
+reset it. Every subsequent authority must retain the same human receipt/source/release.
+
+Reservations precede browser queueing and corpus/query context. Release reserves test
+and prod sets together; negative and scheduled require original positive gates. Worker
+Blob reservations enforce the same no-replay rule on new agents. Metadata requests use
+120 conditional-create slots shared across the session, and each upload has at most
+200 requests. A reserved slot is consumed even if its request subsequently fails.
+
+Use the original watchdog's `--request-cleanup` path for an authorized early closeout.
+At due time it adopts that exact native helper. Inspect `cleanup --status` and original
+process-group records after a timeout; never blindly repeat the old saved destroy.
+After all exact-owned Terraform/providers have exited, an authorized continuation of
+`cleanup --session <session>` creates a fresh plan for remaining original IDs. Provider
+refresh observations may remove already absent original IDs from state; physical actions
+remain delete-only. Empty-state checkpoints survive deletion of the storage backend.
+Preserve the original error, intent, plan, state and every attempt. No automatic replay
+or extra deployment is available. Continue safe physical cleanup after a missed bound.
+
+After native cleanup and the finite supervisor have exited, use Windows
+`watchdog --session <absolute-session> --verify-exit`. It compares real PID, creation and
+command observations and checks WSL operations without Azure login. PID reuse cannot
+authorize an unrelated stop. `--verify-exit` only reads processes; if an exact helper is
+still active, wait/adopt it or use a separately verified exact-owned stop after physical
+cleanup. Never terminate an unrelated process. The watcher lease ends at closeout+30
+minutes. Capture and stop only this attempt's inbox/observer after the final originals.
+
+## Original evidence registry and grading
+
+`originals.json` is private, `kind: actual`, source/session bound. Each named file entry
+has a session-relative path, byte SHA-256, capture time, source/session, `kind: actual`
+and capture channel (`owner-browser`, `owner-arm`, `runtime`, `github`). Retain raw
+browser/API/ZIP/TRX/JUnit files first, then register them. Do not label test fixtures as
+actual. The registry is an integrity/provenance index, not proof of an API action by
+itself; review the captures and their actual request/run association before live grading.
+
+The grader consumes these original keys, with no fallback to older sessions:
+
+- `bundle`, `image-run`, `image-digest`, `image-smoke`, `image-anonymous-pull`.
+- `release-build`, `negative-build`, `scheduled-build`; actual Azure DevOps build JSON.
+- `identity-test`, `identity-prod`, `identity-verify`, `rbac`; token-free claim/account
+  projections and original scoped ARM role-assignment results.
+- For targets `test` and `demo-prod`, `plan-<target>-binding`, `-binary`, `-inputs`,
+  `-locks`, `-state-before` (JSON null for proved initial absence), `-shown`, `-apply-result`.
+- For stages `test`, `prod`, `negative`, `verify`, `gate-<stage>-json`, `-xml`, `-receipt`.
+- `checks-snapshot`, `checks-evaluations`, `prod-approval`, `prod-approval-map`, `offline-boundaries`;
+  real resource checks/suites/approval and retained source-labelled offline refusal tests.
+  Suites must carry the actual release build's orchestration PlanId. Preserve the real
+  browser association of that build ID, approval ID and approval check-run ID in the map;
+  a successful approval from an earlier run does not satisfy this attempt.
+- `prod-before-negative`, `prod-after-negative`; identical full schema/state/document
+  digests, not unchanged document count alone.
+- `definition-original`, `definition-disabled`, `queue-after`; original variables and
+  relevant settings restored, exact new pipeline disabled, count zero and empty queue.
+- `cleanup-first-delete`, `group-absence-0` through `-2`, and for each manifest component
+  `empty-state-command-<name>` / `empty-state-result-<name>`. Retain the original owner
+  command/result records: matching PID, exact `terraform state list`, expected directory,
+  successful exit and truly empty output. Group observations require all three exact 404s.
+- `pat-revocation`, `helper-exit`; real owner message after cleanup starts and actual
+  native/WSL exit observations, including the supervisor and cleanup helper.
+
+Register original bytes, never a public sanitized dump. Raw originals remain private.
+The grader re-extracts and validates the bundle, regrades every gate with the frozen
+scorer, verifies plans/roles/checks/provenance and checks actual first-delete/verified
+timestamps. Cleanup self-reported success alone is insufficient. Missing originals are
+NOT RUN or FAIL; a physically clean but late session cannot pass P8-8. The public
+projection validates both field names and values and leaves measured cost unavailable.
+
+Official API references used by the controller: [role assignment inventory](https://learn.microsoft.com/en-us/cli/azure/role/assignment?view=azure-cli-latest),
+[deleted-vault inventory](https://learn.microsoft.com/en-us/cli/azure/keyvault?view=azure-cli-latest),
+[original check evaluations](https://learn.microsoft.com/en-us/rest/api/azure/devops/approvalsandchecks/check-evaluations/get?view=azure-devops-rest-7.1),
+[original approval](https://learn.microsoft.com/en-us/rest/api/azure/devops/approvalsandchecks/approvals/get?view=azure-devops-rest-7.1).

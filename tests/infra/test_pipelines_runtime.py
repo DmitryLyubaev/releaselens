@@ -68,3 +68,13 @@ def test_stage_budget_stops_before_another_request_or_process(run):
     ticks[0] += 721
     with pytest.raises(run.DeliveryRefused,match="deadline"): budget.remaining(120)
     with pytest.raises(run.DeliveryRefused,match="deadline"): budget.before_request(None)
+
+
+def test_identity_original_keeps_claims_but_no_tokens(run):
+    receipt=run.identity_receipt({"id":"sub","tenantId":"tenant","state":"Enabled",
+        "user":{"type":"servicePrincipal","name":"client"},"accessToken":"NEVER"},
+        {"federation":{"iss":"issuer","sub":"subject","aud":"aud","exp":99,"token":"NEVER"},
+         "access":{"tid":"tenant","oid":"object","appid":"client","exp":99,"token":"NEVER"}})
+    import json
+    assert "NEVER" not in json.dumps(receipt)
+    assert receipt["claims"]["access"]["oid"]=="object"

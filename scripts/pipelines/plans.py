@@ -66,7 +66,7 @@ def apply_exact(binding: PlanBinding, plan: Path, bundle: VerifiedBundle, target
     exclusive_json(reservation,asdict(binding))
     result = runner(["terraform","apply","-input=false",str(plan.resolve())],cwd=cwd,env=env,
                     capture_output=True,text=True,timeout=480)
-    exclusive_json(reservation.with_suffix(".result.json"),{"returncode":result.returncode,
+    exclusive_json(reservation.with_suffix(".result.json"),{"binding":asdict(binding),"returncode":result.returncode,
         "stdout":result.stdout,"stderr":result.stderr})
     if result.returncode != 0:
         raise DeliveryRefused("plan")

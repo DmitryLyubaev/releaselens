@@ -56,6 +56,18 @@ class BlobStore:
     def put_json(self,key: str,value: dict) -> None:
         self.put_once("evidence",key,canonical(value))
 
+    def reserve_budget(self,name: str,maximum: int) -> str:
+        if not re.fullmatch(r"[a-z-]{1,32}",name) or not 1<=maximum<=200:
+            raise DeliveryRefused("authority")
+        for i in range(maximum):
+            key=f"budgets/{name}/{i:03}.json"
+            try:
+                self.put_json(key,{"slot":i,"budget":name})
+                return key
+            except DeliveryRefused as exc:
+                if exc.code!="reserved": raise
+        raise DeliveryRefused("reserved")
+
     def state(self,target: str) -> dict | None:
         if target not in ("test","demo-prod"): raise DeliveryRefused("target")
         container = "test-state" if target == "test" else "prod-state"

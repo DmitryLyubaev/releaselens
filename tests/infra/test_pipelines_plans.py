@@ -60,6 +60,8 @@ def test_apply_is_exact_once(plans,files,tmp_path):
     plans.apply_exact(binding,f["plan"],f["bundle"],"test",f["inputs"],f["locks"],
                       reservation=reservation,cwd=tmp_path,env={},runner=runner)
     assert calls == [["terraform","state","pull"],["terraform","apply","-input=false",str(f["plan"].resolve())]]
+    original=json.loads(reservation.with_suffix(".result.json").read_bytes())
+    assert original["binding"]==plans.asdict(binding)
     calls.clear()
     with pytest.raises(Exception):
         plans.apply_exact(binding,f["plan"],f["bundle"],"test",f["inputs"],f["locks"],

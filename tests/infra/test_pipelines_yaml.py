@@ -117,3 +117,20 @@ def test_missing_results_files_refuse(modules,tmp_path):
     with pytest.raises(Exception): run.require_result_files(tmp_path)
     (tmp_path/"results.json").write_text("{}")
     with pytest.raises(Exception): run.require_result_files(tmp_path)
+
+
+def test_metadata_budget_survives_new_agent(modules):
+    _,_,storage=modules
+    keys=set()
+    class Tokens:
+        def token(self): return "synthetic"
+    def server(request):
+        if request.url.path in keys: return httpx.Response(412)
+        keys.add(request.url.path)
+        return httpx.Response(201)
+    with httpx.Client(transport=httpx.MockTransport(server)) as client:
+        for i in range(3):
+            storage.BlobStore("owned.blob.core.windows.net",Tokens(),client).reserve_budget("metadata",3)
+        with pytest.raises(Exception):
+            storage.BlobStore("owned.blob.core.windows.net",Tokens(),client).reserve_budget("metadata",3)
+    assert len(keys)==3
