@@ -139,3 +139,18 @@ def test_cli_repeated_bad_authority_never_exposes_private_error(tmp_path, capsys
     assert main(args) == 2 and main(args) == 2
     public = capsys.readouterr()
     assert public.out == "status=refused code=internal\n"*2 and public.err == ""
+
+
+def test_gate_rejects_responses_returned_after_deadline(gate_bundle, monkeypatch):
+    from app.delivery_search import gate as module
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module, "wait_for_count", lambda *args: 41825)
+    def late(*args):
+        clock[0] = 241.0
+        return []
+    monkeypatch.setattr(module, "search_once", late)
+    target = SearchTarget("https://owned.search.windows.net", "p8-test", "owned.search.windows.net")
+    with httpx.Client() as client:
+        result, rows = run_gate(gate_bundle,target,{"top":50,"k":50,"filter":None},Tokens(),client)
+    assert result.errors == 229 and all(row.error == "deadline" for row in rows)

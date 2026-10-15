@@ -58,3 +58,24 @@ def test_oidc_environment_has_no_client_secret(identity,principal):
     assert env["ARM_USE_OIDC"] == "true" and env["ARM_USE_AZUREAD"] == "true"
     assert env["ARM_OIDC_TOKEN"] == "fresh-assertion" and "ARM_CLIENT_SECRET" not in env
     assert env["ARM_CLIENT_ID"] == "client" and env["ARM_TENANT_ID"] == "tenant"
+
+
+def test_ado_provider_requests_fresh_assertions(identity,principal):
+    _,_,expected = principal
+    expected |= {"service_connection_id":"connection","oidc_request_origin":"https://dev.azure.com",
+                 "oidc_path_prefix":"/example/"}
+    inherited = {"SYSTEM_ACCESSTOKEN":"synthetic-job-token", "SYSTEM_OIDCREQUESTURI":"https://dev.azure.com/example/oidctoken",
+                 "AZURESUBSCRIPTION_SERVICE_CONNECTION_ID":"connection","PATH":"test"}
+    env = identity.terraform_environment(expected,"initial-assertion",inherited)
+    assert "ARM_OIDC_TOKEN" not in env
+    assert env["ARM_OIDC_REQUEST_TOKEN"] == "synthetic-job-token"
+    assert env["ARM_OIDC_REQUEST_URL"] == "https://dev.azure.com/example/oidctoken"
+    assert env["ARM_ADO_PIPELINE_SERVICE_CONNECTION_ID"] == "connection"
+    inherited["SYSTEM_OIDCREQUESTURI"] = "https://evil.example/oidctoken"
+    with pytest.raises(Exception,match="identity"): identity.terraform_environment(expected,"initial-assertion",inherited)
+
+
+def test_terraform_never_inherits_debug_logging(identity,principal):
+    env = identity.terraform_environment(principal[2],"assertion",{
+        "TF_LOG":"TRACE","TF_LOG_PATH":"public.log","TF_LOG_PROVIDER":"TRACE","PATH":"safe"})
+    assert not any(key.startswith("TF_LOG") for key in env)

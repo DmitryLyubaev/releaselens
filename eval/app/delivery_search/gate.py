@@ -71,6 +71,8 @@ def run_gate(bundle: VerifiedBundle, target: SearchTarget, config: dict, tokens,
             return ArmResult(q.qid, "S2", [], 0, "deadline")
         try:
             hits = search_once(target, q.question, vectors[i], config, tokens, client)
+            if time.monotonic() - started >= 240:
+                return ArmResult(q.qid, "S2", [], (time.monotonic()-begin)*1000, "deadline")
             return ArmResult(q.qid, "S2", hits, (time.monotonic()-begin)*1000, None)
         except Exception:
             return ArmResult(q.qid, "S2", [], (time.monotonic()-begin)*1000, "request")

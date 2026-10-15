@@ -1,6 +1,7 @@
 """Workload-federation identity and the explicit service/container grant matrix."""
 import os
 import time
+from urllib.parse import urlsplit
 
 from app.delivery_search.contracts import DeliveryRefused
 
@@ -34,11 +35,28 @@ def terraform_environment(expected: dict, assertion: str, inherited: dict | None
         raise DeliveryRefused("identity")
     # Never inherit alternate ARM authentication or developer credentials into this subprocess.
     env = {k:v for k,v in (os.environ if inherited is None else inherited).items()
-           if not k.startswith("ARM_") and not k.startswith("AZURE_")}
+           if not k.startswith(("ARM_","AZURE_","TF_LOG"))}
     env.update({"ARM_USE_OIDC":"true","ARM_USE_AZUREAD":"true","ARM_USE_CLI":"false",
         "ARM_CLIENT_ID":expected["client_id"],"ARM_TENANT_ID":expected["tenant_id"],
         "ARM_SUBSCRIPTION_ID":expected["subscription_id"],"ARM_OIDC_TOKEN":assertion,
         "TF_IN_AUTOMATION":"true","TF_INPUT":"false"})
+    if expected.get("service_connection_id"):
+        source = os.environ if inherited is None else inherited
+        try:
+            uri = urlsplit(source["SYSTEM_OIDCREQUESTURI"])
+            origin = urlsplit(expected["oidc_request_origin"])
+            if (uri.scheme != "https" or uri.netloc != origin.netloc or uri.username or uri.fragment
+                or not uri.path.startswith(expected["oidc_path_prefix"])
+                or source["AZURESUBSCRIPTION_SERVICE_CONNECTION_ID"] != expected["service_connection_id"]
+                or not source["SYSTEM_ACCESSTOKEN"]):
+                raise DeliveryRefused("identity")
+            env.pop("ARM_OIDC_TOKEN")
+            env.update({"ARM_ADO_PIPELINE_SERVICE_CONNECTION_ID":expected["service_connection_id"],
+                "ARM_OIDC_AZURE_SERVICE_CONNECTION_ID":expected["service_connection_id"],
+                "ARM_OIDC_REQUEST_TOKEN":source["SYSTEM_ACCESSTOKEN"],
+                "ARM_OIDC_REQUEST_URL":source["SYSTEM_OIDCREQUESTURI"]})
+        except (KeyError,TypeError,ValueError):
+            raise DeliveryRefused("identity") from None
     return env
 
 

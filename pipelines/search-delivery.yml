@@ -1,0 +1,21 @@
+# Private Project 8 pipeline only. Creating/enabling it requires separate owner approval.
+trigger: none
+pr: none
+parameters:
+  - name: mode
+    type: string
+    default: release
+    values: [release, negative]
+variables:
+  - group: ReleaseLens-P8
+schedules:
+  - cron: '0 9 * * *'
+    displayName: Bounded nightly read-only verification
+    branches:
+      include: [main]
+    always: true
+lockBehavior: sequential
+extends:
+  template: templates/search-delivery.yml
+  parameters:
+    mode: ${{ parameters.mode }}
