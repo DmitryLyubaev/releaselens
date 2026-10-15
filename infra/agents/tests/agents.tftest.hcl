@@ -3,6 +3,9 @@ mock_provider "azurerm" {
   mock_resource "azurerm_resource_group" {
     defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo" }
   }
+  mock_resource "azurerm_log_analytics_workspace" {
+    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo/providers/Microsoft.OperationalInsights/workspaces/p7-demo" }
+  }
   mock_resource "azurerm_key_vault" {
     defaults = {
       id        = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/p7-demo/providers/Microsoft.KeyVault/vaults/p7-demo"
@@ -34,6 +37,10 @@ variables {
 
 run "bounded_host" {
   command = plan
+  assert {
+    condition     = azurerm_container_app_environment.agent.logs_destination == "log-analytics" && azurerm_container_app_environment.agent.log_analytics_workspace_id == azurerm_log_analytics_workspace.agent.id
+    error_message = "The dedicated workspace requires an explicit Log Analytics destination before apply."
+  }
   assert {
     condition     = azurerm_container_app_job.worker.replica_timeout_in_seconds == 900 && azurerm_container_app_job.worker.replica_retry_limit == 0 && azurerm_container_app_job.worker.template[0].container[0].cpu == 2 && azurerm_container_app_job.worker.template[0].container[0].memory == "4Gi"
     error_message = "Worker limits differ from the approved demo."
