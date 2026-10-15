@@ -1,0 +1,10 @@
+# Delivery workload plus offline regression imports. Never invokes either research CLI.
+httpx==0.28.1
+numpy==2.5.3
+azure-identity==1.26.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+PyYAML==6.0.3
+pydantic==2.13.4
+anthropic==0.121.0
+truststore==0.10.4
