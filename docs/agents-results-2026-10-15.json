@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "checks": {
+    "A1": {
+      "status": "pass",
+      "reason": "queue, execution, image, agent or worker-count proof"
+    },
+    "A2": {
+      "status": "pass",
+      "reason": "original build, source, published manifest and executed TRX proof"
+    },
+    "A3": {
+      "status": "pass",
+      "reason": "distinct fresh agents, executions and workspaces"
+    },
+    "A4": {
+      "status": "pass",
+      "reason": "original deliberate failure after successful ordinary tests"
+    },
+    "A5": {
+      "status": "pass",
+      "reason": "three idle observations with cleared queue and offline placeholder"
+    },
+    "A6": {
+      "status": "pass",
+      "reason": "owned absence, empty state, inventories, exclusive cleanup and PAT revocation"
+    }
+  },
+  "runs": [
+    {
+      "label": "run-1",
+      "pipeline_result": "succeeded",
+      "queue_to_agent_seconds": 74.177789,
+      "build_seconds": 88.614465,
+      "build_test_seconds": 29.273334,
+      "executed_tests": 154,
+      "return_to_idle_seconds": 18.364367
+    },
+    {
+      "label": "run-2",
+      "pipeline_result": "succeeded",
+      "queue_to_agent_seconds": 110.610116,
+      "build_seconds": 62.810445,
+      "build_test_seconds": 28.813333,
+      "executed_tests": 154,
+      "return_to_idle_seconds": 23.360723
+    },
+    {
+      "label": "negative",
+      "pipeline_result": "failed",
+      "queue_to_agent_seconds": 82.600516,
+      "build_seconds": 67.21758,
+      "build_test_seconds": 29.023333,
+      "executed_tests": 154,
+      "return_to_idle_seconds": 7.993309
+    }
+  ],
+  "source": "c063829792f5f80f0f206dd3afb52ad7be46ff8f",
+  "image_digest": "ghcr.io/dmitrylyubaev/releaselens-agent@sha256:3167931608ce2390fdc565d737074c9aaa57098f2099aabffe9f2fc431d94c82"
+}

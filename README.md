@@ -5,6 +5,14 @@ answered with citations back to the specific artefacts.
 
 Indexed repository: [`microsoft/semantic-kernel`](https://github.com/microsoft/semantic-kernel).
 
+Project 7 demonstrates queue-driven, short-lived Azure Pipelines agents on Container Apps
+jobs. **Live acceptance completed on 15 October 2026:** two positive Core/Web builds and
+one deliberate pipeline failure each executed 154 tests on a distinct fresh agent and
+workspace, then returned to zero running workers. A1-A6 passed, including verified
+session cleanup. See the [measured results and earlier failed attempts](docs/agents-report.md)
+and [agent session runbook](docs/runbook-agents.md). This is a small CV demonstration;
+multi-agent scale-out, production readiness and zero total idle cost are not claimed.
+
 Project 6 adds an owner-only .NET 10 Razor Pages front end with main/staging slots and a
 direct API Management gateway route. **Acceptance completed on 14 October 2026:** W1-W5
 and both W6 halves passed across explicitly approved sessions. W1/W3 retain their original
