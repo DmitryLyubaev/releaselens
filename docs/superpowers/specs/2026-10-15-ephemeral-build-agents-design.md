@@ -147,6 +147,11 @@ times and the monetary ceiling before apply. One host apply is planned. A failed
 further queuing and retains resources for diagnosis within that window, rather than deleting
 and rebuilding automatically. No repeat apply or new paid attempt without further approval.
 
+A new session may instead use the prospective fixed 45/50/90-minute profile described
+in `docs/runbook-agents.md`, only after explicit owner approval of its reviewed tree,
+actual plan, unchanged monetary ceiling and new session. This amendment provides no
+live authorization. Earlier sessions retain their original deadlines and results.
+
 Before teardown, stop this demo's queuing/scaling and handle only its owned executions.
 Destroy only the new session's Azure resources and verify absence. Revoke the PAT; keep
 the private Azure DevOps organisation/project, pool/known offline placeholder, work item

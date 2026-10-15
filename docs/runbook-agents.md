@@ -132,6 +132,22 @@ no queues after **30 minutes**, cleanup starts by **45 minutes**. Record approve
 limit, exact Brisbane start/queue/cleanup/end deadlines and source/digest privately.
 Budget alerts and min0 do not prove a hard monetary cap or zero total idle cost.
 
+The default grader retains those 30/45/60-minute limits for existing sessions. When
+observed Azure creation/deletion times leave insufficient margin, the owner may
+prospectively approve the fixed `owner-approved-90` profile for a new session:
+no queues after 45 minutes, cleanup starts by 50, verified closeout by 90. The
+monetary ceiling is separately approved and is not automatically increased.
+Never add this approval to a session that has already started or regrade an old
+failure under it. Delayed Azure deletion still fails A6 if closeout misses its bound.
+
+Before apply, retain the actual human approval reply/reference, timestamp, exact
+reviewed tree, session and saved plan privately. Publication approval may cover the
+eventual merge SHA only when its tree exactly matches the approved reviewed tree
+and original CI is green. Bind the receipt to that verified merged source. The
+operator and reviewer must check the reference against the actual owner reply;
+the offline grader checks document consistency, not human authenticity. A local
+`approved: true` value alone is not authority to deploy.
+
 Before apply, establish a finite cleanup monitor and one exclusive operation lock for
 this session, including apply/cleanup reservation and process IDs. A monitor resumes an
 existing owned cleanup rather than launching another. Capture canonical absence of the
@@ -242,12 +258,21 @@ originals, not hand-entered pass labels. Its schema is exercised by
 | `.worker_samples` | Timestamped active execution-name lists, at least matching owned execution; unexpected duplicates fail |
 | `.idle_samples` | At least three timestamps separated by 30 seconds; zero workers, online agents and queued jobs |
 | `window` | `apply_started_at`, `queue_cutoff_at`, `cleanup_started_at`, `cleanup_deadline_at`, `closeout_at` |
+| `source_tree`, `timing_approval` | Optional prospective profile receipt below; omit for legacy limits |
 | `owned_group_id`, `owned_ids` | Fresh baseline, saved plan and actual manifest-bound nine ARM identities |
 | `closeout` | The verified facts listed below, never inferred from a destroy exit code |
 
 Times use explicit UTC offsets. Runs are sequential and source-bound. The grader reports
 queue-to-agent, original pipeline duration, actual build/test task duration, executed test
 counts and return-to-idle time. Count samples do not prove a global concurrency mutex.
+
+For the optional profile, `source_tree` is the actual merged Git tree. The private
+`timing_approval` object requires `profile: "owner-approved-90"`, `approved: true`,
+matching `source` and `session`, matching `reviewed_tree`, a nonempty
+`owner_approval_reference`, and explicit-offset `recorded_at` no later than apply.
+Missing, malformed, late or mismatched approval cannot enable the longer limits.
+There is no arbitrary-duration override. Approval references are not emitted in
+the sanitized grade. Preserve the original approval and source/tree/merge proof.
 
 ## Scoped teardown and A6
 

@@ -96,6 +96,76 @@ def test_early_cleanup_does_not_require_waiting_for_scheduled_queue_cutoff(evide
     assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "pass"
 
 
+@pytest.fixture
+def approved_ninety(observed):
+    obs, paths = observed
+    obs["source_tree"] = "c" * 40
+    obs["timing_approval"] = {
+        "profile": "owner-approved-90", "approved": True,
+        "source": obs["source"], "session": obs["session"],
+        "reviewed_tree": obs["source_tree"],
+        "owner_approval_reference": "chat:synthetic-test-only",
+        "recorded_at": "2026-10-14T23:58:00Z",
+    }
+    obs["window"].update(queue_cutoff_at="2026-10-15T00:44:00Z",
+                         cleanup_started_at="2026-10-15T00:49:00Z",
+                         cleanup_deadline_at="2026-10-15T01:29:00Z",
+                         closeout_at="2026-10-15T01:20:00Z")
+    obs["closeout"]["pat_revocation_confirmed_at"] = "2026-10-15T01:19:00Z"
+    return obs, paths
+
+
+def test_prospectively_approved_fixed_ninety_minute_window(evidence, approved_ninety):
+    obs, paths = approved_ninety
+    result = evidence.grade(obs, paths)
+    assert all(c["status"] == "pass" for c in result["checks"].values())
+    assert "synthetic-test-only" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("mutation", [
+    "absent", "null", "false", "truthy", "profile", "source", "session", "tree",
+    "missing_tree", "reference", "missing_reference", "late", "invalid_time", "naive_time",
+])
+def test_extended_window_requires_bound_pre_apply_approval(evidence, approved_ninety, mutation):
+    obs, paths = approved_ninety
+    approval = obs["timing_approval"]
+    if mutation == "absent": del obs["timing_approval"]
+    if mutation == "null": obs["timing_approval"] = None
+    if mutation == "false": approval["approved"] = False
+    if mutation == "truthy": approval["approved"] = "yes"
+    if mutation == "profile": approval["profile"] = "owner-approved-120"
+    if mutation == "source": approval["source"] = "d" * 40
+    if mutation == "session": approval["session"] = "other-session"
+    if mutation == "tree": approval["reviewed_tree"] = "e" * 40
+    if mutation == "missing_tree": del obs["source_tree"]
+    if mutation == "reference": approval["owner_approval_reference"] = " "
+    if mutation == "missing_reference": del approval["owner_approval_reference"]
+    if mutation == "late": approval["recorded_at"] = "2026-10-14T23:59:01Z"
+    if mutation == "invalid_time": approval["recorded_at"] = "unknown"
+    if mutation == "naive_time": approval["recorded_at"] = "2026-10-14T23:58:00"
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("queue_cutoff_at", "2026-10-15T00:44:01Z"),
+    ("cleanup_started_at", "2026-10-15T00:49:01Z"),
+    ("cleanup_deadline_at", "2026-10-15T01:29:01Z"),
+    ("closeout_at", "2026-10-15T01:29:01Z"),
+])
+def test_approved_window_still_enforces_each_fixed_bound(evidence, approved_ninety, field, value):
+    obs, paths = approved_ninety
+    obs["window"][field] = value
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "fail"
+
+
+def test_old_late_cleanup_is_not_regraded_by_new_profile(evidence, observed):
+    obs, paths = observed
+    obs["window"].update(cleanup_started_at="2026-10-15T00:45:45Z",
+                         closeout_at="2026-10-15T01:12:00Z")
+    obs["closeout"]["pat_revocation_confirmed_at"] = "2026-10-15T00:46:00Z"
+    assert evidence.grade(obs, paths)["checks"]["A6"]["status"] == "fail"
+
+
 @pytest.mark.parametrize("cleanup,queued", [
     ("2026-10-15T00:24:00Z", "2026-10-15T00:24:01Z"),
     ("2026-10-15T00:30:00Z", "2026-10-15T00:29:01Z"),

@@ -125,6 +125,28 @@ def grade_run(run: dict, observations: dict, allowed_paths: set[Path], index: in
     return {"flags": flags, "stats": stats}
 
 
+def timing_limits(obs: dict, started: datetime) -> tuple[int, int, int]:
+    """Validate an operator-retained approval receipt, not its human authenticity.
+
+    The operator/reviewer must compare the private reference with the actual owner
+    reply before apply. An observation document cannot authenticate that reply.
+    Legacy sessions keep their original limits; no retrospective extension exists.
+    """
+    if "timing_approval" not in obs:
+        return 1800, 2700, 3600
+    approval = obs["timing_approval"]
+    tree = obs["source_tree"]
+    reference = approval["owner_approval_reference"]
+    if (approval["profile"] != "owner-approved-90" or approval["approved"] is not True
+            or approval["source"] != obs["source"] or approval["session"] != obs["session"]
+            or not isinstance(tree, str) or not re.fullmatch(r"[0-9a-f]{40}", tree)
+            or approval["reviewed_tree"] != tree
+            or not isinstance(reference, str) or not reference.strip()
+            or timestamp(approval["recorded_at"]) > started):
+        raise ValueError("invalid prospective timing approval")
+    return 2700, 3000, 5400
+
+
 def closeout_valid(obs: dict) -> bool:
     try:
         close = obs["closeout"]
@@ -133,10 +155,11 @@ def closeout_valid(obs: dict) -> bool:
         window = {k: timestamp(v) for k, v in obs["window"].items()}
         start, cutoff = window["apply_started_at"], window["queue_cutoff_at"]
         cleanup, deadline, end = (window[k] for k in ("cleanup_started_at", "cleanup_deadline_at", "closeout_at"))
+        queue_limit, cleanup_limit, closeout_limit = timing_limits(obs, start)
         timing = (start <= cleanup <= end <= deadline and start <= cutoff <= deadline
-                  and (cutoff - start).total_seconds() <= 1800
-                  and (cleanup - start).total_seconds() <= 2700
-                  and (deadline - start).total_seconds() <= 3600
+                  and (cutoff - start).total_seconds() <= queue_limit
+                  and (cleanup - start).total_seconds() <= cleanup_limit
+                  and (deadline - start).total_seconds() <= closeout_limit
                   and all(start <= timestamp(r["build"]["queueTime"]) <= min(cutoff, cleanup)
                           for r in obs["runs"])
                   and cleanup <= timestamp(close["pat_revocation_confirmed_at"]) <= end)
