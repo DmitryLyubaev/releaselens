@@ -70,6 +70,10 @@ jobs:
       - name: Install infra test requirements
         run: pip install -r tests/infra/requirements.txt
 
+      # Delivery controller tests import the eval runtime during collection.
+      - name: Install eval requirements
+        run: pip install -r eval/requirements.txt
+
       - name: Infra tests
         run: python -m pytest tests/infra -q
 
@@ -86,9 +90,6 @@ jobs:
           "$VENV/bin/pip" install --require-hashes --only-binary=:all: --no-deps -r eval/requirements-gateway-check.txt
           cd eval
           "$VENV/bin/python" -c "import app.gateway.ci_check, app.webapp.release, app.webapp.release_cli, azure.identity"
-
-      - name: Install eval requirements
-        run: pip install -r eval/requirements.txt
 
       # From eval/, because the tests import the harness as the top-level package `app`.
       - name: Eval tests

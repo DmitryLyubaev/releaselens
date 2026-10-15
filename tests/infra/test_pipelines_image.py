@@ -58,6 +58,14 @@ def test_new_terraform_roots_are_in_credential_free_ci(repo_root):
         assert "-backend=false" in step["run"] and "terraform test" in step["run"]
 
 
+def test_ci_installs_delivery_imports_before_infra_collection(repo_root):
+    workflow=yaml.safe_load((repo_root/".github/workflows/ci.yml").read_bytes())
+    steps=workflow["jobs"]["build-and-test"]["steps"]
+    install=next(i for i,step in enumerate(steps) if step.get("name")=="Install eval requirements")
+    infra=next(i for i,step in enumerate(steps) if step.get("name")=="Infra tests")
+    assert install<infra
+
+
 def test_installer_rejects_changed_lock_before_download(repo_root,tmp_path):
     spec = importlib.util.spec_from_file_location("p8_install",repo_root / "build/delivery-agents/install.py")
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
