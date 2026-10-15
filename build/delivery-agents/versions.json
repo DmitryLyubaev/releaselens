@@ -1,0 +1,12 @@
+{
+  "base": "ghcr.io/dmitrylyubaev/releaselens-agent@sha256:3167931608ce2390fdc565d737074c9aaa57098f2099aabffe9f2fc431d94c82",
+  "platform": "linux/amd64",
+  "python_minor": "3.12",
+  "agent_version": "5.280.0",
+  "terraform_version": "1.15.8",
+  "terraform_sha256": "d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d",
+  "terraform_checksums": "https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_SHA256SUMS",
+  "azure_cli_version": "2.81.0",
+  "requirements_sha256": "b656ecb4cc3b70981afc486050427145bd4da01c88bd2e602f35a4022e945844",
+  "cli-requirements_sha256": "91c6f5a369d502fea4579a1a717b8b1ba6893b9e645af3c5cafc08c1272ef0af"
+}

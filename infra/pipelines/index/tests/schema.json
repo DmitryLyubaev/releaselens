@@ -1,0 +1,1 @@
+{"name":"fixture","fields":[{"name":"chunk_id","type":"Edm.String","key":true},{"name":"vector","type":"Collection(Edm.Single)","dimensions":1536,"searchable":true,"vectorSearchProfile":"hnsw-cosine"}],"vectorSearch":{"algorithms":[{"name":"hnsw","kind":"hnsw","hnswParameters":{"metric":"cosine"}}],"profiles":[{"name":"hnsw-cosine","algorithm":"hnsw"}]}}

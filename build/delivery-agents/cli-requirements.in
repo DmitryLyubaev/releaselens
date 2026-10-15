@@ -1,0 +1,36 @@
+# Isolated Azure CLI. Explicit prereleases below are dependencies of this official CLI/core release.
+azure-cli==2.81.0
+azure-batch==15.0.0b1
+azure-keyvault-securitydomain==1.0.0b1
+azure-mgmt-authorization==5.0.0b1
+azure-mgmt-batchai==7.0.0b1
+azure-mgmt-botservice~=2.0.0b3
+azure-mgmt-containerinstance==10.2.0b1
+azure-mgmt-containerregistry==14.1.0b1
+azure-mgmt-datalake-store~=1.1.0b1
+azure-mgmt-eventgrid==10.2.0b2
+azure-mgmt-eventhub~=12.0.0b1
+azure-mgmt-extendedlocation==1.0.0b2
+azure-mgmt-hdinsight==9.1.0b2
+azure-mgmt-iotcentral~=10.0.0b1
+azure-mgmt-iothub==5.0.0b1
+azure-mgmt-loganalytics==13.0.0b4
+azure-mgmt-monitor~=7.0.0b1
+azure-mgmt-mysqlflexibleservers==1.0.0b3
+azure-mgmt-policyinsights==1.1.0b4
+azure-mgmt-postgresqlflexibleservers==1.1.0b2
+azure-mgmt-rdbms==10.2.0b17
+azure-mgmt-resource-deployments==1.0.0b1
+azure-mgmt-resource-deploymentscripts==1.0.0b1
+azure-mgmt-resource-deploymentstacks==1.0.0b1
+azure-mgmt-resource-templatespecs==1.0.0b1
+azure-mgmt-servicebus~=10.0.0b1
+azure-mgmt-servicefabricmanagedclusters==2.1.0b1
+azure-mgmt-servicelinker==1.2.0b3
+azure-mgmt-signalr==2.0.0b2
+azure-mgmt-sql==4.0.0b22
+azure-mgmt-sqlvirtualmachine==1.0.0b5
+azure-mgmt-synapse==2.1.0b5
+microsoft-security-utilities-secret-masker~=1.0.0b4
+msal==1.34.0b1; sys_platform != "win32"
+msal[broker]==1.34.0b1; sys_platform == "win32"
