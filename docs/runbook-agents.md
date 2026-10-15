@@ -52,6 +52,13 @@ not an Azure failure or evidence of a working agent.
    dedicated pool, fresh session and reviewed merged main commit. The YAML checks the ref
    and SHA before checkout/workload and demands `P7Agent -equals ReleaseLens`.
 
+Before starting a billable session, prove the existing personal Chrome session can
+download the original `p7-results` ZIP from a completed run and that the local
+evidence reader can find its workload manifest and TRX files. Use existing history
+for this readiness check; do not queue a new build or treat old artifacts as new
+acceptance. Establish the download destination and any owner handoff beforehand.
+Each new run still needs its own original artifact before the next run is queued.
+
 See Microsoft's [organisation setup](https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/create-organization)
 and [parallel-job rules](https://learn.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs).
 The build uses self-hosted capacity, not Microsoft-hosted Azure Pipelines minutes.
@@ -265,6 +272,14 @@ originals, not hand-entered pass labels. Its schema is exercised by
 Times use explicit UTC offsets. Runs are sequential and source-bound. The grader reports
 queue-to-agent, original pipeline duration, actual build/test task duration, executed test
 counts and return-to-idle time. Count samples do not prove a global concurrency mutex.
+
+A6 compares owned ARM identities case-insensitively, including group containment,
+identity uniqueness and the destroyed set. Azure APIs can return different casing
+for the same name, as documented in Microsoft's
+[resource naming guidance](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-name-rules).
+Original IDs remain unchanged in retained evidence. Case-only duplicates, sibling
+groups and genuinely different resource IDs still fail. Retained inventory and
+timing checks remain unchanged.
 
 For the optional profile, `source_tree` is the actual merged Git tree. The private
 `timing_approval` object requires `profile: "owner-approved-90"`, `approved: true`,

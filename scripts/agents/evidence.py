@@ -150,8 +150,11 @@ def timing_limits(obs: dict, started: datetime) -> tuple[int, int, int]:
 def closeout_valid(obs: dict) -> bool:
     try:
         close = obs["closeout"]
-        owned = obs["owned_ids"]
-        group = obs["owned_group_id"]
+        # ARM can return different casing for the same identity. Normalize only
+        # comparison copies, including before uniqueness and scope checks.
+        owned = [value.lower() for value in obs["owned_ids"]]
+        group = obs["owned_group_id"].lower()
+        destroyed = [value.lower() for value in close["destroyed_ids"]]
         window = {k: timestamp(v) for k, v in obs["window"].items()}
         start, cutoff = window["apply_started_at"], window["queue_cutoff_at"]
         cleanup, deadline, end = (window[k] for k in ("cleanup_started_at", "cleanup_deadline_at", "closeout_at"))
@@ -164,7 +167,7 @@ def closeout_valid(obs: dict) -> bool:
                           for r in obs["runs"])
                   and cleanup <= timestamp(close["pat_revocation_confirmed_at"]) <= end)
         return (len(owned) == len(set(owned)) == 9 and all(i == group or i.startswith(group + "/") for i in owned)
-                and len(close["destroyed_ids"]) == 9 and set(close["destroyed_ids"]) == set(owned)
+                and len(destroyed) == 9 and set(destroyed) == set(owned)
                 and close["group_exists"] is False and close["state_read_ok"] is True
                 and close["terraform_addresses"] == [] and close["operations_active"] == []
                 and close["cleanup_lock_exclusive"] is True and close["queue_disabled"] is True
