@@ -27,7 +27,6 @@ resource "azurerm_search_service" "delivery" {
   replica_count                = 1
   partition_count              = 1
   local_authentication_enabled = false
-  authentication_failure_mode  = "http401WithBearerChallenge"
   semantic_search_sku          = "free"
   tags                         = local.tags
 }
