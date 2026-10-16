@@ -64,16 +64,21 @@ def request(directory,a,raw,now,*,early=False):
         return value
 
 
+def require_restored_definition(before,after,pipeline_id):
+    if (before["id"]!=pipeline_id or after["id"]!=pipeline_id or after["queueStatus"]!="disabled"
+        or before.get("variables",{})!=after.get("variables",{})):
+        raise DeliveryRefused("gate")
+    for key in ("repository","process","queue","triggers","options","properties","jobAuthorizationScope"):
+        if canonical(before.get(key))!=canonical(after.get(key)): raise DeliveryRefused("gate")
+
+
 def _verified(directory,a,raw,requested):
     from .evidence import Originals
     originals=Originals(directory,a,raw)
     keys=["definition-original","definition-disabled","queue-after"]
     before=originals.json(keys[0]); after=originals.json(keys[1]); queue=originals.json(keys[2])
-    if (before["id"]!=raw["pipeline_id"] or after["id"]!=raw["pipeline_id"] or after["queueStatus"]!="disabled"
-        or queue["count"]!=0 or queue["value"]!=[] or before["variables"]!=after["variables"]):
-        raise DeliveryRefused("gate")
-    for key in ("repository","process","queue","triggers","options","properties","jobAuthorizationScope"):
-        if canonical(before.get(key))!=canonical(after.get(key)): raise DeliveryRefused("gate")
+    require_restored_definition(before,after,raw["pipeline_id"])
+    if queue["count"]!=0 or queue["value"]!=[]: raise DeliveryRefused("gate")
     for row in requested["builds"]:
         path=directory/"owned-builds"/(row["mode"]+".json")
         if sha256_file(path)!=row["sha256"] or read(path)["id"]!=row["id"]: raise DeliveryRefused("authority")

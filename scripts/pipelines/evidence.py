@@ -277,17 +277,15 @@ def grade(directory: Path) -> dict[str,dict]:
                 or not retained_unchanged(baseline["retained"],retained)
                 or revoked.get("kind")!="human-pat-revoked" or not revoked.get("message_ref")
                 or revoked["session"]!=a.session or instant(revoked["at"])<instant(actual["cleanup_started_at"])
-                or exited["active_owned"]!=[] or exited["session"]!=a.session
-                or original["variables"]!=restored["variables"]
-                or original["id"]!=restored["id"] or restored["queueStatus"]!="disabled"):
+                or exited["active_owned"]!=[] or exited["session"]!=a.session):
                 raise DeliveryRefused("gate")
             from .watchdog import process_present
             if not {"watchdog-owned.json","cleanup-native.json"}.issubset({row["name"] for row in exited["helpers"]}):
                 raise DeliveryRefused("gate")
             if any(process_present(row["expected"],row["actual"]) for row in exited["helpers"]):
                 raise DeliveryRefused("gate")
-            for key in ("repository","process","queue","triggers","options","properties","jobAuthorizationScope"):
-                if canonical(original.get(key))!=canonical(restored.get(key)): raise DeliveryRefused("gate")
+            from .quiescence import require_restored_definition
+            require_restored_definition(original,restored,raw["pipeline_id"])
         perform(8,closeout)
     return results
 

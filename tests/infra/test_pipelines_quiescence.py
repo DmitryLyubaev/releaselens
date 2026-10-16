@@ -89,3 +89,45 @@ def test_watchdog_requests_owner_browser_at_queue_cutoff(handoff,monkeypatch):
     assert not (path/"quiescence/request.json").exists()
     watchdog.cutoff_handoff(path,a,raw,before+timedelta(seconds=1))
     assert (path/"quiescence/request.json").exists()
+
+
+def test_verified_ack_accepts_actual_api_omission_of_empty_variables(handoff):
+    module,path,a,raw,build=handoff
+    module.request(path,a,raw,datetime.now(timezone.utc))
+    # Real BuildDefinition responses omit variables when the dictionary is empty.
+    definition={"id":2,"queueStatus":"disabled","process":{"yamlFilename":"pipelines/search-delivery.yml"}}
+    values={"definition-original":definition,"definition-disabled":dict(definition),"queue-after":{"count":0,"value":[]}}
+    files={}
+    for key,value in values.items():
+        original=path/(key+".json");original.write_text(json.dumps(value))
+        files[key]={"kind":"actual","session":a.session,"source_sha":a.source_sha,"channel":"owner-browser",
+            "path":original.name,"sha256":module.sha256_file(original),"captured_at":datetime.now(timezone.utc).isoformat()}
+    (path/"originals.json").write_text(json.dumps({"kind":"actual","session":a.session,"source_sha":a.source_sha,"files":files}))
+    module.acknowledge(path,module.sha256_file(path/"quiescence/request.json"),"verified")
+    assert module.status(path,a,raw)["verified"] is True
+
+
+@pytest.mark.parametrize("before,after",[({},{}),({},{"variables":{}}),({"variables":{}},{})])
+def test_restoration_treats_only_an_omitted_empty_variable_dictionary_as_empty(handoff,before,after):
+    module,*_=handoff
+    definition={"id":2,"queueStatus":"disabled"}
+    module.require_restored_definition(definition|before,definition|after,2)
+
+
+@pytest.mark.parametrize("change",[
+    {"variables":{"unexpected":{"value":"test-only"}}},
+    {"variables":None},
+    {"id":1},
+    {"queueStatus":"enabled"},
+    {"repository":{"changed":True}},
+    {"process":{"yamlFilename":"other.yml"}},
+    {"queue":{"id":99}},
+    {"triggers":[{"changed":True}]},
+    {"options":[{"enabled":True}]},
+    {"properties":{"changed":True}},
+    {"jobAuthorizationScope":"projectCollection"},
+])
+def test_restoration_still_rejects_changed_variables_or_protected_configuration(handoff,change):
+    module,*_=handoff
+    definition={"id":2,"queueStatus":"disabled"}
+    with pytest.raises(Exception):module.require_restored_definition(definition,definition|change,2)
