@@ -48,6 +48,10 @@ run "bounded_private_service" {
     error_message = "Only the approved single-unit keyless Basic search service is allowed."
   }
   assert {
+    condition     = azurerm_search_service.delivery.authentication_failure_mode == null
+    error_message = "Keyless Search cannot combine disabled local authentication with a key/RBAC failure mode."
+  }
+  assert {
     condition     = !azurerm_storage_account.delivery.shared_access_key_enabled && !azurerm_storage_account.delivery.allow_nested_items_to_be_public && length(azurerm_storage_container.private) == 4
     error_message = "Input, two states and evidence must remain private and keyless."
   }
