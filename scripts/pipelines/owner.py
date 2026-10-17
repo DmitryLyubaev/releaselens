@@ -129,6 +129,7 @@ class OwnerDriver:
 
     def state(self,component):
         if component["name"].startswith("index-") and self.index_state_absence(component): return []
+        if component["name"]=="agents" and self.local_state_absence(component): return []
         cwd=self.component_dir(component)
         shown=json.loads(self.process(["terraform","show","-json"],cwd))
         if any(r.get("resolve") for r in component["resources"]):
@@ -138,6 +139,36 @@ class OwnerDriver:
         listed=self.process(["terraform","state","list"],cwd).splitlines()
         if set(listed)!={r["address"] for r in rows}: raise DeliveryRefused("plan")
         return rows
+
+    def local_state_absence(self,component):
+        """Never turn a failed state-list command into an empty Terraform state."""
+        if component.get("backend",{}).get("type")!="local": return False
+        cwd=self.component_dir(component)
+        state=bound_file(cwd,component["backend"]["path"])
+        paths=(state,Path(str(state)+".backup"),state.with_name("."+state.name+".lock.info"),
+            self.directory/"apply-intents/agents.json")
+        if any(p.exists() for p in paths): return False
+        if getattr(self,"_absent_local_agents",False): return True
+        if self.tokens is None: raise DeliveryRefused("identity")
+        from .ownership import local_agent_group,require_local_state_absence
+        group=local_agent_group(component,self.a)
+        shown=json.loads(self.process(["terraform","show","-json"],cwd))
+        root=shown.get("values",{}).get("root_module",{})
+        if root.get("resources") or root.get("child_modules"): raise DeliveryRefused("plan")
+        resource=next(r for r in component["resources"] if r.get("id")==group)
+        with httpx.Client(timeout=20,follow_redirects=False) as client:
+            response=client.get("https://management.azure.com"+group,
+                params={"api-version":resource["api_version"]},headers={"Authorization":"Bearer "+self.tokens.token()})
+        if response.status_code!=404: raise DeliveryRefused("plan")
+        proof={"kind":"never-applied-local-agents","component":"agents",
+            **{k:self.a[k] for k in ("session","source_sha","manifest_sha256")},
+            "at":datetime.now(timezone.utc).isoformat(),"directory":str(cwd),"state_path":str(state),
+            "state_absent":True,"backup_absent":True,"lock_absent":True,"apply_intent_absent":True,
+            "terraform_show":shown,"group":{"id":group,"status":response.status_code,"body":response.text}}
+        require_local_state_absence(proof,component,self.a)
+        self.record("local-state-absence",proof)
+        self._absent_local_agents=True
+        return True
 
     def index_state_absence(self,component):
         """A nonexistent backend is empty only with an authenticated absent-index proof."""

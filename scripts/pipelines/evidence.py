@@ -17,6 +17,7 @@ from .cleanup import retained_unchanged
 from .identity import ROLE_IDS,role_matrix
 from .checks import verify_checks
 from .plans import PlanBinding,verify_plan,validate_index_plan
+from .ownership import require_local_state_absence
 
 
 def timing_pass(cleanup: dict,authority: dict) -> bool:
@@ -264,7 +265,15 @@ def grade(directory: Path) -> dict[str,dict]:
                 try:
                     command=o.json("empty-state-command-"+component["name"])
                 except MissingOriginal:
-                    require_index_absence(o.json("empty-state-absence-"+component["name"]),component,raw,manifest)
+                    proof=o.json("empty-state-absence-"+component["name"])
+                    if component["name"]=="agents":
+                        require_local_state_absence(proof,component,raw)
+                        cwd_local=bound_file(directory,component["directory"])
+                        state=bound_file(cwd_local,component["backend"]["path"])
+                        if any(p.exists() for p in (state,Path(str(state)+".backup"),
+                            state.with_name("."+state.name+".lock.info"),directory/"apply-intents/agents.json")):
+                            raise DeliveryRefused("gate")
+                    else: require_index_absence(proof,component,raw,manifest)
                 else: require_empty_state(command,o.json("empty-state-result-"+component["name"]),cwd)
             baseline=read(directory/"baseline.json")
             retained=read(directory/f"retained-after-{cleanup['attempt']}.json")

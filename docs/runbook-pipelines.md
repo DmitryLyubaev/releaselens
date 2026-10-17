@@ -42,6 +42,33 @@ terraform test
 
 ## Review the real Azure DevOps configuration before billing
 
+Before starting the billing clock, include `owner_ado_id` from the sole actual
+approver in the pinned demo-prod approval check. Use
+`scripts.pipelines.readiness.require_owner_binding` with the actual checks
+snapshot. The owner ID and timing profile are part of the human-approved scope.
+Missing or malformed IDs refuse before login; a mismatched owner, changed checks
+snapshot or insufficient complete execution budget refuses an owner create
+reservation. A successful packed-variable Save alone does not prove these fields
+are complete.
+
+The `standard` timing profile remains 75/78/80/120 minutes from the original
+clock for queue cutoff, cleanup due, latest cleanup start and physical closeout.
+It cannot fit the conservative complete provisioning path. The separately
+approved `provisioning` profile uses 180/183/185/240 minutes. It is an option for a
+new reviewed attempt, never an extension of an existing attempt. Reprice it and
+obtain the concrete identity/resource/timing approvals before use.
+
+The complete budget is 169 minutes: five for the final platform Save, 30 for the
+foundation parent, 20 for its postcheck, 55 for the agent parent, 49 for all live
+jobs and ten for owner/cron/artifact handoffs. Keep another ten minutes before
+queue cutoff. `readiness.require_execution_window` checks the whole or remaining
+phase budget at `clock`, `foundation`, `foundation-apply`, `agents` and
+`agents-apply`. Use these checks in both the reviewed parent launchers and the
+owner create reservations. Do not reduce provider timeouts to pass a preflight.
+For a future provisioning packet, select one genuine read-only Schedule at the
+earliest feasible minute after release and negative checks, inside its approved
+cutoff. An early all-pass cleanup need not wait for the maximum window.
+
 Use the personal organisation and private project. Create a new disabled pipeline
 using `pipelines/search-delivery.yml` on protected GitHub main. Never modify or
 enable Project 7 pipeline 1. The source uses a literal required `extends` template,
@@ -286,7 +313,8 @@ before requesting native cleanup; this command independently checks early author
 
 If the browser is unavailable or an action fails, record `--acknowledge unavailable`
 or `failed` against that same request. Missing/unverified acknowledgements are recorded
-at cleanup, never an unbounded wait past +78/+80. Physical cleanup still proceeds within
+at cleanup, never an unbounded wait past the approved profile's cleanup due/start bounds.
+Physical cleanup still proceeds within
 its scope; P8-8 cannot pass without actual pre-delete disabled/empty/restored evidence.
 The concrete monitor must preserve these instructions and adopt the existing watchdog
 and native helper rather than launching duplicates. No monitor is created by this runbook.
@@ -309,6 +337,12 @@ Require both authenticated canonical backend absence/empty placeholder and an ac
 index 404, or original exact parent ARM 404 observations. A failed state command never
 becomes absence. The typed observation is retained as `empty-state-absence-<name>`;
 ordinary existing states still require successful empty `terraform state list` originals.
+For agents that were never applied, `empty-state-absence-agents` may instead retain
+the exact authenticated agents-group 404, an empty Terraform JSON view and absence
+of the local state, backup, lock and owner apply reservation. It must bind the
+source/session/manifest and exact local backend paths. This exception cannot be
+used for a denied/existing group, an applied component or a remote backend. It never
+writes an empty state or converts a failed state-list command into success.
 Preserve the original error, intent, plan, state and every attempt. No automatic replay
 or extra deployment is available. Continue safe physical cleanup after a missed bound.
 
@@ -351,8 +385,9 @@ The grader consumes these original keys, with no fallback to older sessions:
   `empty-state-command-<name>` / `empty-state-result-<name>`. Retain the original owner
   command/result records: matching PID, exact `terraform state list`, expected directory,
   successful exit and truly empty output. Group observations require all three exact 404s.
-  Only never-created index states may instead use the authenticated typed
-  `empty-state-absence-<name>` original described above.
+  Never-created index states and never-applied local agents may instead use their
+  respective authenticated typed `empty-state-absence-<name>` originals described
+  above. Their different validators must not be interchanged.
 - `pat-revocation`, `helper-exit`; real owner message after cleanup starts and actual
   native/WSL exit observations, including the supervisor and cleanup helper.
 

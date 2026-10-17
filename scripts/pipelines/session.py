@@ -11,6 +11,7 @@ import shutil
 import subprocess
 
 from app.delivery_search.contracts import DeliveryRefused,canonical,exclusive_json,sha256_file
+from .readiness import TIMING_PROFILES,require_owner_id
 
 
 def instant(value: str) -> datetime:
@@ -31,16 +32,18 @@ class SessionAuthority:
     cleanup_start_by: str
     closeout_by: str
     manifest_sha256: str
+    timing_profile: str = "standard"
 
     def validate(self):
         try:
+            if self.timing_profile not in TIMING_PROFILES: raise ValueError()
             if not re.fullmatch(r"[a-z][a-z0-9-]{3,11}",self.session): raise ValueError()
             for value,n in ((self.source_sha,40),(self.tree_sha,40),(self.release_digest,64),(self.manifest_sha256,64)):
                 if not re.fullmatch("[0-9a-f]{"+str(n)+"}",value): raise ValueError()
             times = [instant(getattr(self,key)) for key in ("queue_cutoff_at","cleanup_due_at","cleanup_start_by","closeout_by")]
             if self.apply_started_at is not None:
                 start = instant(self.apply_started_at)
-                if times != [start+timedelta(minutes=n) for n in (75,78,80,120)]: raise ValueError()
+                if times != [start+timedelta(minutes=n) for n in TIMING_PROFILES[self.timing_profile]]: raise ValueError()
             elif times != sorted(times): raise ValueError()
         except (ValueError,TypeError,OverflowError): raise DeliveryRefused("authority") from None
 
@@ -65,14 +68,19 @@ def bound_file(directory: Path,relative: str) -> Path:
 
 
 def scope_digest(raw: dict) -> str:
-    return hashlib.sha256(canonical({key:raw[key] for key in ("owner","owned_group_ids","principals","scopes",
-        "pipeline_id","storage_host","search_host","manifest_sha256","baseline_sha256")})).hexdigest()
+    owner=require_owner_id(raw)
+    profile=raw.get("timing_profile","standard")
+    if profile not in TIMING_PROFILES: raise DeliveryRefused("authority")
+    value={key:raw[key] for key in ("owner","owned_group_ids","principals","scopes",
+        "pipeline_id","storage_host","search_host","manifest_sha256","baseline_sha256")}
+    return hashlib.sha256(canonical(value|{"owner_ado_id":owner,"timing_profile":profile})).hexdigest()
 
 
 def load(directory: Path) -> tuple[SessionAuthority,dict,dict]:
     raw = read(directory/"authority.json")
     try:
-        a = SessionAuthority(**{f.name:raw[f.name] for f in fields(SessionAuthority)})
+        a = SessionAuthority(**{f.name:raw[f.name] for f in fields(SessionAuthority) if f.name!="timing_profile"},
+            timing_profile=raw.get("timing_profile","standard"))
         a.validate()
         receipt = read(directory/"owner-approval-receipt.json")
         if (not receipt.get("message_ref") or receipt.get("kind") != "human-live-approval"
