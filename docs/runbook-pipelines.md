@@ -391,9 +391,15 @@ The grader consumes these original keys, with no fallback to older sessions:
 - For stages `test`, `prod`, `negative`, `verify`, `gate-<stage>-json`, `-xml`, `-receipt`.
 - `checks-snapshot`, `checks-evaluations`, `prod-approval`, `prod-approval-map`, `offline-boundaries`;
   real resource checks/suites/approval and retained source-labelled offline refusal tests.
-  Suites must carry the actual release build's orchestration PlanId. Preserve the real
+  Release suites must carry the actual release build's orchestration PlanId and prove
+  its six Test/Prod connection and demo-prod environment checks. Preserve the real
   browser association of that build ID, approval ID and approval check-run ID in the map;
   a successful approval from an earlier run does not satisfy this attempt.
+- `scheduled-checks-evaluations`; original suites for the actual Schedule build's
+  orchestration PlanId, proving both Verify connection checks. The Schedule branch
+  uses only Verify; the Manual branch uses only Test and Prod. The complete pinned
+  snapshot still contains all eight checks. Never substitute checks from one run's
+  PlanId for another, or count an unused connection's checks as a release prerequisite.
 - `prod-before-negative`, `prod-after-negative`; identical full schema/state/document
   digests, not unchanged document count alone.
 - `definition-original`, `definition-disabled`, `queue-after`; original variables and
