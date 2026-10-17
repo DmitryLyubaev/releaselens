@@ -21,6 +21,7 @@ IDENTITY_CHECKS = frozenset({
     "access-object", "access-client", "access-expiry", "assertion-missing",
     "jwt-format", "access-format", "secret-present", "cli-account", "cli-access-token",
     "refresh-fields", "refresh-endpoint", "refresh-connection", "refresh-job-token",
+    "refresh-request", "refresh-result",
 })
 
 

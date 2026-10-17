@@ -38,11 +38,11 @@
 - Consumes: DeliveryRefused, existing verify_principal/terraform_environment and Runtime construction.
 - Produces: IdentityRefused with a fixed check identifier and p8-publish/failure.json containing only fixed codes and stage. The original pipeline run/artifact supplies source/run binding; unvalidated context is never echoed.
 
-- [ ] Write tests for principal and refresh rejection diagnostics, early constructor failure publication, secret canaries, guard-only behavior and the real synthetic constructor boundary.
-- [ ] Run the new tests; require assertion failures demonstrating missing behavior.
-- [ ] Add minimal fixed-code diagnostics and safe failure publication without changing successful behavior.
-- [ ] Run targeted and complete infrastructure/eval checks, workflow checks and an independent review.
-- [ ] Commit the reviewed change locally; publication requires the separate concrete decision in the runbook.
+- [x] Write tests for principal and refresh rejection diagnostics, early constructor failure publication, secret canaries, guard-only behavior and the real synthetic constructor boundary.
+- [x] Run the new tests; require assertion failures demonstrating missing behavior.
+- [x] Add minimal fixed-code diagnostics and safe failure publication without changing successful behavior.
+- [x] Run targeted and complete infrastructure/eval checks, workflow checks and an independent review.
+- [x] Commit the reviewed change locally; publication requires the separate concrete decision in the runbook.
 
 ### Task 2: Obtain the missing actual authentication evidence before billing
 
@@ -53,10 +53,13 @@
 - Consumes: Reviewed safe diagnostics and a source-bound actual Azure DevOps job context.
 - Produces: Original, token-free authentication check results for all three exact identities, with no Search/Container Apps deployment or model call.
 
-- [ ] Determine available personal hosted/local execution without starting an agent or queueing a job.
+- [x] Determine available personal hosted/local execution without starting an agent or queueing a job.
+- [x] Implement and regression-test the fixed hosted diagnostic mode, shared runtime authentication boundary, actual refresh request and safe source/run-bound receipts.
 - [ ] Prepare the smallest exact identity and diagnostic-only plan, including any zero-cost roles or local agent lifecycle; preserve separate approval boundaries.
 - [ ] Review and execute only the concrete authorized non-billable diagnostic.
 - [ ] Reproduce and fix the actual rejected predicate with a failing regression test. Do not guess from a generic identity refusal.
 - [ ] Only after actual authentication passes, prepare and review the complete fresh paid execution and unattended closeout packet.
 
 **Current evidence gap:** Original build 7 authenticated successfully in AzureCLI@2, then returned generic identity refusal before identity.json. The original ZIP is empty. Neither a guessed URL mismatch nor credential-free passing tests prove the historical predicate.
+
+**Local verification, 18 October:** The combined candidate passes 693 infrastructure tests and 205 delivery/retrieval tests. Workflow checks and the Python 3.12 Linux import pass. Task 1 received an independent review with no important findings. The final combined review could not complete because the reviewer reported exhausted workspace credits; direct review and local tests do not substitute for that missing independent review or an actual hosted run.

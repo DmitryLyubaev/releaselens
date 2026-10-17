@@ -22,6 +22,35 @@ Azure DevOps configuration, identity creation, paid input preparation or resourc
 Obtain separate concrete approval for each. Final dated evidence publication also
 needs approval. A failure never authorizes a replay or corrective apply.
 
+## Authentication diagnostic before paid infrastructure
+
+After build 7's identity refusal on 17 October, its published artifact was empty:
+the private traceback had been written outside the published directory. Failed
+stages now publish a fixed-code `failure.json`, never raw exception text, claims,
+tokens or cloud response bodies. This repairs observability; it does not establish
+the original rejected predicate or turn that failed run into passing evidence.
+
+The separate `identity-preflight` mode uses one Microsoft-hosted Ubuntu job with
+Python 3.12 and the same pinned CLI/workload dependencies. It runs the delivery
+runtime's authentication boundary for each of the three exact connections, then
+actually requests and verifies a fresh job assertion. It performs no Terraform,
+storage, Search, model or embedding operation. Its three source/run-bound receipts
+are diagnostic evidence, not P8 release, negative or Schedule acceptance.
+
+Require a fresh, human-approved diagnostic packet with a maximum 30-minute validity,
+exact main source/tree, pipeline 2, first job/stage attempt and Manual reason. Check
+hosted quota before queueing. The ordinary pipeline stays Disabled until the exact
+diagnostic queue window is approved, then returns to its original Disabled settings.
+
+Fresh identities and any temporary Reader assignments needed for AzureCLI
+subscription discovery require their own exact plan and approval. Restrict each
+temporary Reader assignment to that identity's own ARM resource, never the
+subscription. Remove those assignments after diagnosis and before any paid attempt.
+No agent PAT, Search service or paid Container Apps agents are needed for this mode.
+Actual authentication and refresh must pass for all three roles before pricing and
+reviewing the next paid execution packet. Synthetic unit tests cannot replace this
+actual job evidence.
+
 Before live preparation require green original PR/main CI and the image workflow's
 real pinned-parent container smoke, a source-labelled immutable image digest and
 anonymous GHCR pull proof. Windows provider mTLS validation failed locally;

@@ -5,7 +5,7 @@ parameters:
   - name: mode
     type: string
     default: release
-    values: [release, negative]
+    values: [release, negative, identity-preflight]
 variables:
   - group: ReleaseLens-P8
 schedules:

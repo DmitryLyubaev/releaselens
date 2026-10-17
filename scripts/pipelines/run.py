@@ -142,6 +142,22 @@ def identity_receipt(account: dict,claims: dict) -> dict:
             ("access",claims["access"],("tid","oid","appid","azp","exp")))}}
 
 
+def authenticate(principal: dict) -> tuple[dict,dict,dict]:
+    """The same authentication boundary for diagnostic and delivery jobs."""
+    assertion = os.environ.get("idToken")
+    if not assertion: raise IdentityRefused("assertion-missing")
+    if os.environ.get("servicePrincipalKey"): raise IdentityRefused("secret-present")
+    account = Runtime.az_json(["account","show","--output","json"])
+    access = Runtime.az_json(["account","get-access-token","--resource","https://management.azure.com/","--output","json"])
+    try:
+        access_token = access["accessToken"]
+    except (KeyError,TypeError):
+        raise IdentityRefused("cli-access-token") from None
+    claims = {"federation":jwt_claims(assertion),"access":jwt_claims(access_token,"access-format")}
+    verify_principal(account,claims,principal)
+    return account,claims,terraform_environment(principal,assertion)
+
+
 class Runtime:
     def __init__(self,a: dict,principal: dict,stage: str,receipt_dir: Path,client: httpx.Client):
         self.a,self.principal,self.stage,self.client = a,principal,stage,client
@@ -155,13 +171,7 @@ class Runtime:
         self.publish = receipt_dir
         self.publish.mkdir(parents=True,exist_ok=True)
         self.proof = {"source_sha":a["source_sha"],"release_digest":a["release_digest"],"run_id":self.run_id}
-        assertion = os.environ["idToken"]
-        if os.environ.get("servicePrincipalKey"): raise IdentityRefused("secret-present")
-        account = self.az_json(["account","show","--output","json"])
-        access = self.az_json(["account","get-access-token","--resource","https://management.azure.com/","--output","json"])
-        claims = {"federation":jwt_claims(assertion),"access":jwt_claims(access["accessToken"],"access-format")}
-        verify_principal(account,claims,principal)
-        self.tf_env = terraform_environment(principal,assertion)
+        account,claims,self.tf_env = authenticate(principal)
         # Only a digest/provenance-safe projection is retained; never the assertion/access token.
         exclusive_json(self.publish/"identity.json",self.proof | identity_receipt(account,claims) | {
             "role":connection_role(stage,os.environ["BUILD_REASON"]),"verified":True,"scheme":"WorkloadIdentityFederation"})
