@@ -83,8 +83,28 @@ against the actual service. Local YAML tests are not a compiled platform result.
 
 Use a private `ReleaseLens-P8` variable group authorized only to the new pipeline.
 Set `P8_AUTHORITY_JSON`, canonical `P8_AUTHORITY_SHA256` and `P8_SOURCE_SHA` from the
-reviewed owner authority, with no queue override permission. Keep the whole
-authority secret. Also mark the individual tenant, subscription, client and object
+reviewed owner authority, with no queue override permission. Azure DevOps limits
+a variable value to 4,096 characters. Before billing, pack the complete approved
+authority into a private file using the reviewed full-authority digest:
+
+```text
+python -m scripts.pipelines.authority_transport --input PRIVATE_AUTHORITY.json --output PRIVATE_TRANSPORT.json --sha256 REVIEWED_CANONICAL_SHA256
+```
+
+Use the complete contents of `PRIVATE_TRANSPORT.json` as the secret
+`P8_AUTHORITY_JSON` value. This versioned gzip/base64 envelope preserves every
+authority field; `P8_AUTHORITY_SHA256` still hashes the decoded canonical full
+authority, not the envelope. Packing refuses values above the platform limit,
+decoded authorities above 32 KiB and existing output files. The runtime accepts
+legacy plain JSON as well, bounds decompression and rejects corrupt, concatenated
+or unknown transport formats before login. Compression does not encrypt anything.
+Keep both files and the whole variable secret. Before any billable operation,
+derive the final full authority with its reviewed timing and check bindings,
+pack it, save it to the real variable group, retain actual readback, and verify
+the effective value and full hash through the runtime guard. Repeat this gate if
+the final authority changes. A local pack test is not proof that a platform Save
+succeeded. Do not publish either authority file in artifacts or public reports.
+Also mark the individual tenant, subscription, client and object
 GUID values as separate secret variables: masking the whole JSON does not mask
 its substrings in the built-in AzureCLI login command. Never export job tokens or
 browser cookies. `visibleAzLogin: false` suppresses login response, not all task

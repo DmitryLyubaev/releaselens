@@ -28,6 +28,7 @@ from .checks import verify_checks
 from .identity import verify_principal,terraform_environment
 from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_plan
 from .storage import BlobStore
+from .authority_transport import decode_authority,read_authority
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGES = ("build","test","plan-prod","prod","negative","verify")
@@ -96,8 +97,7 @@ def require_result_files(directory: Path) -> None:
 
 def context(path: Path,stage: str) -> tuple[dict,dict]:
     """Runs before AzureCLI@2 login as well as inside the authenticated task."""
-    raw = path.read_bytes() if path.exists() else os.environ["P8_AUTHORITY_JSON"].encode()
-    a = json.loads(raw)
+    a = read_authority(path) if path.exists() else decode_authority(os.environ["P8_AUTHORITY_JSON"].encode())
     if hashlib.sha256(canonical(a)).hexdigest() != os.environ["P8_AUTHORITY_SHA256"]:
         raise DeliveryRefused("authority")
     role = connection_role(stage,os.environ["BUILD_REASON"])
