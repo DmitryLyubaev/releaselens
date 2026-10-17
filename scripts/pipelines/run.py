@@ -25,7 +25,7 @@ from app.delivery_search.gate import grade_rows,run_gate,write_gate
 from app.retrieval.arms import ArmResult,Hit
 from app.retrieval.azure_auth import TokenSource
 from .checks import verify_checks
-from .identity import verify_principal,terraform_environment
+from .identity import IDENTITY_CHECKS,IdentityRefused,verify_principal,terraform_environment
 from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_plan
 from .storage import BlobStore
 from .authority_transport import decode_authority,read_authority
@@ -126,12 +126,12 @@ def context(path: Path,stage: str) -> tuple[dict,dict]:
     return a,principal
 
 
-def jwt_claims(token: str) -> dict:
+def jwt_claims(token: str,check: str = "jwt-format") -> dict:
     try:
         parts = token.split(".")
-        if len(parts) != 3: raise DeliveryRefused("identity")
+        if len(parts) != 3: raise IdentityRefused(check)
         return json.loads(base64.urlsafe_b64decode(parts[1]+"="*(-len(parts[1])%4)))
-    except (ValueError,KeyError,TypeError): raise DeliveryRefused("identity") from None
+    except (ValueError,KeyError,TypeError): raise IdentityRefused(check) from None
 
 
 def identity_receipt(account: dict,claims: dict) -> dict:
@@ -156,10 +156,10 @@ class Runtime:
         self.publish.mkdir(parents=True,exist_ok=True)
         self.proof = {"source_sha":a["source_sha"],"release_digest":a["release_digest"],"run_id":self.run_id}
         assertion = os.environ["idToken"]
-        if os.environ.get("servicePrincipalKey"): raise DeliveryRefused("identity")
+        if os.environ.get("servicePrincipalKey"): raise IdentityRefused("secret-present")
         account = self.az_json(["account","show","--output","json"])
         access = self.az_json(["account","get-access-token","--resource","https://management.azure.com/","--output","json"])
-        claims = {"federation":jwt_claims(assertion),"access":jwt_claims(access["accessToken"])}
+        claims = {"federation":jwt_claims(assertion),"access":jwt_claims(access["accessToken"],"access-format")}
         verify_principal(account,claims,principal)
         self.tf_env = terraform_environment(principal,assertion)
         # Only a digest/provenance-safe projection is retained; never the assertion/access token.
@@ -187,9 +187,15 @@ class Runtime:
 
     @staticmethod
     def az_json(args: list[str]) -> dict:
-        result = subprocess.run(["az",*args],capture_output=True,text=True,timeout=30)
-        if result.returncode != 0: raise DeliveryRefused("identity")
-        return json.loads(result.stdout)
+        check = "cli-account" if args[:2] == ["account","show"] else "cli-access-token"
+        try:
+            result = subprocess.run(["az",*args],capture_output=True,text=True,timeout=30)
+            if result.returncode != 0: raise IdentityRefused(check)
+            value = json.loads(result.stdout)
+            if not isinstance(value,dict): raise IdentityRefused(check)
+            return value
+        except (OSError,subprocess.TimeoutExpired,ValueError):
+            raise IdentityRefused(check) from None
 
     def claim_release(self):
         if self.stage == "build":
@@ -389,11 +395,19 @@ def main(argv=None) -> int:
         print("status=pass code=stage" if passed else "status=expected-failure code=quality")
         return 0 if passed else 17
     except Exception as exc:
+        code = DeliveryRefused(exc.code).code if isinstance(exc,DeliveryRefused) else "internal"
+        check = exc.check if isinstance(exc,IdentityRefused) and exc.check in IDENTITY_CHECKS else "unclassified"
+        # The directory published by every stage must contain the early refusal.
+        # Exception text and raw tracebacks remain outside this artifact.
+        with suppress(OSError):
+            args.receipt_dir.mkdir(parents=True,exist_ok=True)
+            exclusive_json(args.receipt_dir/"failure.json",{
+                "kind":"stage-failure","stage":args.stage,"code":code,"check":check})
         with suppress(OSError):
             args.receipt_dir.parent.mkdir(parents=True,exist_ok=True)
             with (args.receipt_dir.parent/"failure-private.txt").open("x",encoding="utf-8") as out:
                 out.write(traceback.format_exc())
-        print("status=refused code="+(exc.code if isinstance(exc,DeliveryRefused) else "internal"))
+        print("status=refused code="+code)
         return 2
 
 
