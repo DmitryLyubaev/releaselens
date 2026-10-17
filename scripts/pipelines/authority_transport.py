@@ -6,7 +6,11 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import sys
 import zlib
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval"))
 
 from app.delivery_search.contracts import DeliveryRefused, canonical
 
@@ -32,6 +36,7 @@ def _object(raw):
     value = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
     if not isinstance(value, dict):
         raise DeliveryRefused("authority")
+    canonical(value)
     return value
 
 

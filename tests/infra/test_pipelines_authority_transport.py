@@ -5,7 +5,10 @@ import gzip
 import hashlib
 import importlib
 import json
+import os
 import random
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -173,3 +176,32 @@ def test_authority_file_read_is_bounded(transport, run, tmp_path):
     path.write_bytes(b' ' * 32769)
     with pytest.raises(run.DeliveryRefused, match="^authority$"):
         transport.read_authority(path)
+
+
+def test_documented_module_command_works_in_fresh_process_without_pythonpath(repo_root, run, tmp_path):
+    source = tmp_path / "reviewed.private.json"
+    output = tmp_path / "packed.private.json"
+    original = authority()
+    source.write_bytes(run.canonical(original))
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run([sys.executable, "-B", "-m", "scripts.pipelines.authority_transport",
+        "--input", str(source), "--output", str(output), "--sha256",
+        hashlib.sha256(run.canonical(original)).hexdigest()], cwd=repo_root, env=env,
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert output.exists() and "status=pass" in result.stdout
+    assert "actual-owner-approval" not in result.stdout
+
+
+@pytest.mark.parametrize("raw", [b'{"x":1e999}', b'{"x":"\\ud800"}'])
+@pytest.mark.parametrize("compressed", [False, True])
+def test_noncanonicalizable_values_refuse_cleanly(transport, run, raw, compressed, tmp_path, capsys):
+    value = packed(raw) if compressed else raw
+    with pytest.raises(run.DeliveryRefused, match="^authority$"):
+        transport.decode_authority(value)
+    source = tmp_path / "invalid.private.json"
+    output = tmp_path / "output.private.json"
+    source.write_bytes(value)
+    assert transport.main(["--input", str(source), "--output", str(output), "--sha256", "0" * 64]) == 2
+    assert not output.exists()
+    assert capsys.readouterr().out == "status=refused code=authority\n"
