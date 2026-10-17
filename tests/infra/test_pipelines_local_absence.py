@@ -7,17 +7,18 @@ from datetime import datetime,timedelta,timezone
 import httpx
 import pytest
 
-@pytest.fixture
-def case(repo_root,monkeypatch,tmp_path):
+@pytest.fixture(params=['agents','foundation'])
+def case(repo_root,monkeypatch,tmp_path,request):
     monkeypatch.syspath_prepend(str(repo_root/'eval'))
     owner=importlib.import_module('scripts.pipelines.owner')
-    cwd=tmp_path/'tf/agents';(cwd/'.terraform').mkdir(parents=True)
+    name=request.param
+    cwd=tmp_path/'tf'/name;(cwd/'.terraform').mkdir(parents=True)
     (cwd/'main.tf').write_text('# reviewed local configuration\n')
     (cwd/'.terraform/terraform.tfstate').write_text(json.dumps({'backend':{'type':'local','config':{'path':'terraform.tfstate'}}}))
-    group='/subscriptions/sub/resourceGroups/rg-p7-p8-example'
+    group='/subscriptions/sub/resourceGroups/'+('rg-p7-p8-example' if name=='agents' else 'rg-p8-search-p8-example')
     raw={'session':'p8-example','source_sha':'a'*40,'manifest_sha256':'b'*64,
         'owner_session_path':tmp_path.as_posix(),'owned_group_ids':[group]}
-    component={'name':'agents','directory':'tf/agents','backend':{'type':'local','path':'terraform.tfstate'},
+    component={'name':name,'directory':'tf/'+name,'backend':{'type':'local','path':'terraform.tfstate'},
         'config_sha256':owner.config_digest(cwd),'resources':[{'address':'azurerm_resource_group.agent',
             'kind':'arm','id':group,'api_version':'2021-04-01'}]}
     driver=object.__new__(owner.OwnerDriver);driver.directory=tmp_path;driver.a=raw
@@ -38,12 +39,12 @@ def case(repo_root,monkeypatch,tmp_path):
     driver.process=terraform
     return driver,component,raw,cwd,status,calls
 
-def test_never_applied_agents_accept_actual_group_absence_without_manufacturing_state(case):
+def test_never_applied_local_component_accepts_actual_group_absence_without_manufacturing_state(case):
     driver,component,raw,cwd,status,calls=case
     assert driver.state(component)==[]
     files=list(driver.logs.glob('*-local-state-absence.json'));assert len(files)==1
     proof=json.loads(files[0].read_bytes())
-    assert proof['group']['id']=='/subscriptions/sub/resourceGroups/rg-p7-p8-example'
+    assert proof['group']['id']==raw['owned_group_ids'][0]
     assert proof['group']['status']==404 and calls==['GET']
     assert not (cwd/'terraform.tfstate').exists() and not (cwd/'terraform.tfstate.backup').exists()
     evidence=importlib.import_module('scripts.pipelines.evidence')
@@ -82,7 +83,7 @@ def test_capture_refuses_malformed_or_non_show_schema_before_arm(case,shown):
 def test_prior_state_backup_lock_or_apply_intent_never_uses_absence_shortcut(case,existing):
     driver,component,raw,cwd,status,calls=case
     target={'state':cwd/'terraform.tfstate','backup':cwd/'terraform.tfstate.backup',
-        'lock':cwd/'.terraform.tfstate.lock.info','apply-intent':driver.directory/'apply-intents/agents.json'}[existing]
+        'lock':cwd/'.terraform.tfstate.lock.info','apply-intent':driver.directory/'apply-intents'/(component['name']+'.json')}[existing]
     target.parent.mkdir(exist_ok=True);target.write_text('{}')
     with pytest.raises(Exception):driver.state(component)
     assert not calls and not list(driver.logs.glob('*-local-state-absence.json'))
@@ -140,7 +141,7 @@ def test_closeout_grader_consumes_absence_and_preserves_prior_quiescence(case,mo
     (root/'cleanup-result.json').write_text(json.dumps(cleanup))
     definition={'id':2,'queueStatus':'disabled','variables':{}}
     original={'cleanup-first-delete':{'session':a.session,'source_sha':a.source_sha,'at':now.isoformat(),'attempt':first_attempt},
-        'group-absence-0':{'id':raw['owned_group_ids'][0],'status':404},'empty-state-absence-agents':proof,
+        'group-absence-0':{'id':raw['owned_group_ids'][0],'status':404},'empty-state-absence-'+component['name']:proof,
         'pat-revocation':{'kind':'human-pat-revoked','session':a.session,'message_ref':'unit-test-only','at':now.isoformat()},
         'helper-exit':{'session':a.session,'active_owned':[],'helpers':[
             {'name':name,'expected':{'pid':123,'created':'unit-test-only','command_line':'unit-test-only','sha256':'f'*64},'actual':None}
@@ -154,5 +155,41 @@ def test_closeout_grader_consumes_absence_and_preserves_prior_quiescence(case,mo
     (root/'originals.json').write_text(json.dumps(registry))
     if change=='backup':(cwd/'terraform.tfstate.backup').write_text('{}')
     if change=='apply-intent':
-        (root/'apply-intents').mkdir();(root/'apply-intents/agents.json').write_text('{}')
+        (root/'apply-intents').mkdir();(root/'apply-intents'/(component['name']+'.json')).write_text('{}')
     assert evidence.grade(root)['P8-8']['status']==('PASS' if change in ('none','retry-after-no-delete') else 'FAIL')
+
+
+def test_absence_cache_cannot_waive_another_component_group_observation(case,monkeypatch):
+    driver,component,raw,cwd,status,calls=case
+    assert driver.state(component)==[]
+    other=copy.deepcopy(component);other['name']='foundation' if component['name']=='agents' else 'agents'
+    other['directory']='tf/'+other['name']
+    other_cwd=driver.directory/other['directory'];(other_cwd/'.terraform').mkdir(parents=True)
+    (other_cwd/'main.tf').write_text('# reviewed other configuration\n')
+    (other_cwd/'.terraform/terraform.tfstate').write_text(json.dumps({'backend':{'type':'local','config':{'path':'terraform.tfstate'}}}))
+    owner=importlib.import_module('scripts.pipelines.owner');other['config_sha256']=owner.config_digest(other_cwd)
+    group='/subscriptions/sub/resourceGroups/rg-other-exact-owned';raw['owned_group_ids'].append(group)
+    other['resources'][0]['id']=group;driver.manifest['components'].append(other)
+    probe=httpx.Client();client=type(probe);probe.close();observed=[]
+    def server(request):
+        observed.append(request.url.path)
+        return httpx.Response(200,json={'id':group})
+    monkeypatch.setattr(owner.httpx,'Client',lambda **kw:client(transport=httpx.MockTransport(server)))
+    with pytest.raises(Exception):driver.state(other)
+    assert observed==[group]
+
+@pytest.mark.parametrize('existing',['backup','lock','apply-intent'])
+def test_cached_absence_rechecks_local_files_and_intent(case,existing):
+    driver,component,raw,cwd,status,calls=case
+    assert driver.state(component)==[]
+    path={'backup':cwd/'terraform.tfstate.backup','lock':cwd/'.terraform.tfstate.lock.info',
+        'apply-intent':driver.directory/'apply-intents'/(component['name']+'.json')}[existing]
+    path.parent.mkdir(exist_ok=True);path.write_text('{}')
+    with pytest.raises(Exception):driver.state(component)
+    assert calls==['GET']
+
+def test_identity_component_cannot_use_never_applied_local_exception(case):
+    driver,component,raw,cwd,status,calls=case
+    component['name']='identity'
+    with pytest.raises(Exception):driver.local_state_absence(component)
+    assert calls==[]

@@ -14,7 +14,7 @@ parent/setup/exit allowances. Reject a complete execution budget that cannot fit
 before the queue cutoff and shutdown margin. The old 75/78/80/120-minute profile
 remains supported, but it cannot accommodate this conservative complete budget.
 A separate provisioning profile permits queues/cleanup/start/closeout at
-180/183/185/240 minutes. A new concrete human approval must bind that profile;
+210/213/215/270 minutes. A new concrete human approval must bind that profile;
 implementing it does not extend a prior attempt. Before billing, a future live
 packet must bind an actual start/Schedule pair that fits the full budget. Its
 concrete approval may permit one earlier replacement of that unfired temporary

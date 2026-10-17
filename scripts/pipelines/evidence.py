@@ -277,12 +277,12 @@ def grade(directory: Path) -> dict[str,dict]:
                     command=o.json("empty-state-command-"+component["name"])
                 except MissingOriginal:
                     proof=o.json("empty-state-absence-"+component["name"])
-                    if component["name"]=="agents":
+                    if component["name"] in ("foundation","agents"):
                         require_local_state_absence(proof,component,raw)
                         cwd_local=bound_file(directory,component["directory"])
                         state=bound_file(cwd_local,component["backend"]["path"])
                         if any(p.exists() for p in (state,Path(str(state)+".backup"),
-                            state.with_name("."+state.name+".lock.info"),directory/"apply-intents/agents.json")):
+                            state.with_name("."+state.name+".lock.info"),directory/"apply-intents"/(component["name"]+".json"))):
                             raise DeliveryRefused("gate")
                     else: require_index_absence(proof,component,raw,manifest)
                 else: require_empty_state(command,o.json("empty-state-result-"+component["name"]),cwd)

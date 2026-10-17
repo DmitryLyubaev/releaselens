@@ -5,11 +5,13 @@ import re
 from app.delivery_search.contracts import DeliveryRefused
 from .checks import verify_checks
 
-TIMING_PROFILES={"standard":(75,78,80,120),"provisioning":(180,183,185,240)}
-# Full existing parent lifecycles, not reduced provider timeouts. The live jobs
-# total 6+13+6+12+6+6 minutes; owner/cron/artifact handoffs have ten more minutes.
-REMAINING_SECONDS={"clock":10140,"foundation":9840,"foundation-apply":9480,
-    "agents":6840,"agents-apply":6480}
+TIMING_PROFILES={"standard":(75,78,80,120),"provisioning":(210,213,215,270)}
+# Sequential parent lifecycles, without assumed overlap or reduced timeouts:
+# final Save 5 + foundation 30 + postcheck 20 + agents 55 + placeholder 15
+# + uploads 8+4 + live jobs 6+13+6+12+6+6 + human/cron/artifact handoffs 10.
+# Placeholder and uploads occur after the agent apply. Cutoff retains ten minutes.
+REMAINING_SECONDS={"clock":11760,"foundation":11460,"foundation-apply":11100,
+    "agents":8460,"agents-apply":8100}
 
 def require_owner_id(authority: dict) -> str:
     value=authority.get("owner_ado_id")
