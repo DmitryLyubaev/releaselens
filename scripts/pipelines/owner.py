@@ -129,7 +129,7 @@ class OwnerDriver:
 
     def state(self,component):
         if component["name"].startswith("index-") and self.index_state_absence(component): return []
-        if component["name"]=="agents" and self.local_state_absence(component): return []
+        if component["name"] in ("foundation","agents") and self.local_state_absence(component): return []
         cwd=self.component_dir(component)
         shown=json.loads(self.process(["terraform","show","-json"],cwd))
         if any(r.get("resolve") for r in component["resources"]):
@@ -146,12 +146,12 @@ class OwnerDriver:
         cwd=self.component_dir(component)
         state=bound_file(cwd,component["backend"]["path"])
         paths=(state,Path(str(state)+".backup"),state.with_name("."+state.name+".lock.info"),
-            self.directory/"apply-intents/agents.json")
+            self.directory/"apply-intents"/(component["name"]+".json"))
         if any(p.exists() for p in paths): return False
-        if getattr(self,"_absent_local_agents",False): return True
+        from .ownership import local_component_group,require_local_state_absence,require_empty_show_json
+        group=local_component_group(component,self.a)
+        if component["name"] in getattr(self,"_absent_local_components",set()): return True
         if self.tokens is None: raise DeliveryRefused("identity")
-        from .ownership import local_agent_group,require_local_state_absence,require_empty_show_json
-        group=local_agent_group(component,self.a)
         shown=json.loads(self.process(["terraform","show","-json"],cwd))
         require_empty_show_json(shown)
         resource=next(r for r in component["resources"] if r.get("id")==group)
@@ -161,14 +161,15 @@ class OwnerDriver:
         observation={"id":group,"status":response.status_code,"body":response.text}
         self.record("local-state-group-observation",observation)
         if response.status_code!=404: raise DeliveryRefused("plan")
-        proof={"kind":"never-applied-local-agents","component":"agents",
+        proof={"kind":"never-applied-local-"+component["name"],"component":component["name"],
             **{k:self.a[k] for k in ("session","source_sha","manifest_sha256")},
             "at":datetime.now(timezone.utc).isoformat(),"directory":str(cwd),"state_path":str(state),
             "state_absent":True,"backup_absent":True,"lock_absent":True,"apply_intent_absent":True,
             "terraform_show":shown,"group":observation}
         require_local_state_absence(proof,component,self.a)
         self.record("local-state-absence",proof)
-        self._absent_local_agents=True
+        if not hasattr(self,"_absent_local_components"): self._absent_local_components=set()
+        self._absent_local_components.add(component["name"])
         return True
 
     def index_state_absence(self,component):

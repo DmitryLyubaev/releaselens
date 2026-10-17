@@ -17,7 +17,7 @@ def modules(repo_root,monkeypatch):
 
 def authority(profile='standard'):
     start=datetime(2026,10,17,4,tzinfo=timezone.utc)
-    offsets=(75,78,80,120) if profile=='standard' else (180,183,185,240)
+    offsets=(75,78,80,120) if profile=='standard' else (210,213,215,270)
     return {'session':'p8-example','source_sha':'a'*40,'tree_sha':'b'*40,'release_digest':'c'*64,
         'manifest_sha256':'d'*64,'apply_started_at':start.isoformat(),'timing_profile':profile,
         **{key:(start+timedelta(minutes=n)).isoformat() for key,n in zip(
@@ -50,13 +50,13 @@ def test_old_window_refuses_the_complete_budget_before_any_paid_launch(modules):
 
 def test_full_budget_boundary_and_remaining_phase_checks(modules):
     readiness=importlib.import_module('scripts.pipelines.readiness');raw=authority('provisioning')
-    # 169 minutes of setup/launch/checks plus the 10-minute shutdown reserve.
-    readiness.require_execution_window(raw,datetime(2026,10,17,4,1,tzinfo=timezone.utc),'clock')
+    # 196 minutes includes the separate15-minute placeholder and12-minute uploads.
+    readiness.require_execution_window(raw,datetime(2026,10,17,4,4,tzinfo=timezone.utc),'clock')
     with pytest.raises(Exception,match='deadline'):
-        readiness.require_execution_window(raw,datetime(2026,10,17,4,1,1,tzinfo=timezone.utc),'clock')
-    readiness.require_execution_window(raw,datetime(2026,10,17,4,6,tzinfo=timezone.utc),'foundation')
+        readiness.require_execution_window(raw,datetime(2026,10,17,4,4,1,tzinfo=timezone.utc),'clock')
+    readiness.require_execution_window(raw,datetime(2026,10,17,4,9,tzinfo=timezone.utc),'foundation')
     with pytest.raises(Exception,match='deadline'):
-        readiness.require_execution_window(raw,datetime(2026,10,17,4,6,1,tzinfo=timezone.utc),'foundation')
+        readiness.require_execution_window(raw,datetime(2026,10,17,4,9,1,tzinfo=timezone.utc),'foundation')
 
 def test_owner_id_must_match_the_actual_pinned_approval(modules):
     readiness=importlib.import_module('scripts.pipelines.readiness')
@@ -92,7 +92,7 @@ def test_owner_reservation_cannot_precede_readiness_checks(modules,monkeypatch,t
     profile='standard' if mode=='insufficient-window' else 'provisioning'
     raw=authority(profile);start=datetime.now(timezone.utc)-timedelta(minutes=1)
     raw.update(owner_ado_id=OWNER,checks_expected={'approval_ref':'actual-owner-approval','checks':expected},apply_started_at=start.isoformat())
-    offsets=(75,78,80,120) if profile=='standard' else (180,183,185,240)
+    offsets=(75,78,80,120) if profile=='standard' else (210,213,215,270)
     for key,n in zip(('queue_cutoff_at','cleanup_due_at','cleanup_start_by','closeout_by'),offsets):raw[key]=(start+timedelta(minutes=n)).isoformat()
     if mode=='missing-owner':raw.pop('owner_ado_id')
     if mode=='wrong-owner':raw['owner_ado_id']=OTHER

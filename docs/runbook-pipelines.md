@@ -54,13 +54,16 @@ are complete.
 The `standard` timing profile remains 75/78/80/120 minutes from the original
 clock for queue cutoff, cleanup due, latest cleanup start and physical closeout.
 It cannot fit the conservative complete provisioning path. The separately
-approved `provisioning` profile uses 180/183/185/240 minutes. It is an option for a
+approved `provisioning` profile uses 210/213/215/270 minutes. It is an option for a
 new reviewed attempt, never an extension of an existing attempt. Reprice it and
 obtain the concrete identity/resource/timing approvals before use.
 
-The complete budget is 169 minutes: five for the final platform Save, 30 for the
-foundation parent, 20 for its postcheck, 55 for the agent parent, 49 for all live
-jobs and ten for owner/cron/artifact handoffs. Keep another ten minutes before
+The complete sequential budget is 196 minutes: five for the final platform Save,
+30 for the foundation parent, 20 for its postcheck, 55 for the agent parent,
+15 for the separate placeholder setup, 12 for the two upload parents (eight and
+four), 49 for all live jobs and ten for owner/cron/artifact handoffs. Run the
+placeholder and uploads after the agent apply; no concurrency is assumed. Keep
+another ten minutes before
 queue cutoff. `readiness.require_execution_window` checks the whole or remaining
 phase budget at `clock`, `foundation`, `foundation-apply`, `agents` and
 `agents-apply`. Use these checks in both the reviewed parent launchers and the
@@ -218,7 +221,7 @@ finite Windows watchdog run outside ACA through the existing WSL owner Python.
 Test the actual Windows-to-WSL path, process identity and exit before billing.
 
 The concrete dated proposal binds either the standard +75/+78/+80/+120 profile
-or the separately approved provisioning +180/+183/+185/+240 profile, with offsets
+or the separately approved provisioning +210/+213/+215/+270 profile, with offsets
 for queue cutoff, cleanup trigger, actual cleanup start and verified closeout.
 The actual start/Schedule pair must fit the complete execution budget and shutdown
 reserve; 18:00/19:00 is not a mandatory pairing. Apply start is the first billable
@@ -348,11 +351,14 @@ Require both authenticated canonical backend absence/empty placeholder and an ac
 index 404, or original exact parent ARM 404 observations. A failed state command never
 becomes absence. The typed observation is retained as `empty-state-absence-<name>`;
 ordinary existing states still require successful empty `terraform state list` originals.
-For agents that were never applied, `empty-state-absence-agents` may instead retain
-the exact authenticated agents-group 404, an empty Terraform JSON view and absence
+For foundation or agents that were never applied, the corresponding
+`empty-state-absence-foundation` or `empty-state-absence-agents` may instead retain
+the exact authenticated component-group 404, an empty Terraform JSON view and absence
 of the local state, backup, lock and owner apply reservation. It must bind the
 source/session/manifest and exact local backend paths. This exception cannot be
-used for a denied/existing group, an applied component or a remote backend. It never
+used for an identity/index component, a denied/existing group, an applied component
+or a remote backend. Cached absence is separate per component and rechecks local
+state/backup/lock/reservation absence before reuse. It never
 writes an empty state or converts a failed state-list command into success.
 Preserve the original error, intent, plan, state and every attempt. No automatic replay
 or extra deployment is available. Continue safe physical cleanup after a missed bound.

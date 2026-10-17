@@ -133,10 +133,10 @@ def reserve_owner_apply(directory,component_name):
     return intent
 
 
-def local_agent_group(component,authority):
-    """Only the agents' exact bound local group can prove this never-applied case."""
+def local_component_group(component,authority):
+    """Only a foundation or agents exact bound local group can prove this case."""
     try:
-        if component["name"]!="agents" or component["backend"]["type"]!="local": raise DeliveryRefused("plan")
+        if component["name"] not in ("foundation","agents") or component["backend"]["type"]!="local": raise DeliveryRefused("plan")
         roots=[r["id"] for r in component["resources"] if r.get("kind")=="arm"
             and r.get("id") in authority["owned_group_ids"]]
         if len(roots)!=1: raise DeliveryRefused("plan")
@@ -170,12 +170,12 @@ def require_empty_show_json(shown):
 def require_local_state_absence(proof,component,authority):
     from pathlib import PurePosixPath
     try:
-        group=local_agent_group(component,authority)
+        group=local_component_group(component,authority)
         relative=PurePosixPath(component["backend"]["path"])
         if relative.is_absolute() or ".." in relative.parts or str(relative)==".": raise DeliveryRefused("gate")
         cwd=str(PurePosixPath(authority["owner_session_path"])/component["directory"])
         path=str(PurePosixPath(cwd)/relative)
-        if (proof["kind"]!="never-applied-local-agents" or proof["component"]!="agents"
+        if (proof["kind"]!="never-applied-local-"+component["name"] or proof["component"]!=component["name"]
             or any(proof[k]!=authority[k] for k in ("session","source_sha","manifest_sha256"))
             or proof["directory"].replace("\\","/")!=cwd or proof["state_path"].replace("\\","/")!=path
             or any(proof[k] is not True for k in ("state_absent","backup_absent","lock_absent","apply_intent_absent"))
