@@ -1,5 +1,6 @@
 """Release and Schedule originals must prove the checks for their own run."""
 from datetime import datetime, timezone
+from dataclasses import asdict
 from copy import deepcopy
 from hashlib import sha256
 import importlib
@@ -42,17 +43,19 @@ def run_originals(repo_root, tmp_path, monkeypatch):
            "checks_expected": {"approval_ref": "unit-owner-approval", "checks": expected}}
     monkeypatch.setattr(evidence, "load", lambda directory: (authority, raw, {}))
     # Corpus/scorer and authority parsing have their own tests. Keep the original
-    # registry, hashes, build provenance, snapshots, check suites and approval real.
+    # registry, hashes, gate receipts/XML, build provenance and checks real.
     monkeypatch.setattr(evidence, "verify_bundle", lambda *args:
                         SimpleNamespace(manifest=SimpleNamespace(source_sha=source)))
-    monkeypatch.setattr(evidence.Originals, "gate", lambda *args, **kwargs:
-                        {"evaluated": 229, "correct": 120, "errors": 0, "missing": 0, "skipped": 0})
+    from app.delivery_search.contracts import GateCase, GateResult
+    result = GateResult(229, 229, 120, 0, 0, 0, True,
+                        tuple(GateCase("qid-" + str(i), int(i < 120), None) for i in range(229)))
+    monkeypatch.setattr(evidence, "grade_rows", lambda *args: result)
     (tmp_path / "authority.json").write_text("{}")
     registry = {"kind": "actual", "session": authority.session, "source_sha": source, "files": {}}
 
     def save(name, value):
         path = tmp_path / (name + ".json")
-        path.write_text(json.dumps(value))
+        path.write_text(value if isinstance(value, str) else json.dumps(value))
         registry["files"][name] = {
             "kind": "actual", "session": authority.session, "source_sha": source,
             "path": path.name, "sha256": sha256(path.read_bytes()).hexdigest(),
@@ -75,6 +78,19 @@ def run_originals(repo_root, tmp_path, monkeypatch):
         save(name + "-build", {"id": ident, "definition": {"id": 2}, "sourceVersion": source,
              "sourceBranch": "refs/heads/main", "status": "completed", "result": "succeeded",
              "reason": reason, "orchestrationPlan": {"planId": plan}})
+    for stage, run_id in (("test", 11), ("prod", 11), ("verify", 12)):
+        data = {"gate": asdict(result), "rows": [
+            {"qid": "qid-" + str(i), "arm": "S2", "hits": [], "ms": 1, "error": None}
+            for i in range(229)]}
+        save("gate-" + stage + "-json", data)
+        xml = '<testsuite tests="230" failures="0" errors="0" skipped="0">' + ''.join(
+            '<testcase name="qid-' + str(i) + '"/>' for i in range(229)) + '<testcase name="aggregate"/></testsuite>'
+        save("gate-" + stage + "-xml", xml)
+        save("gate-" + stage + "-receipt", {"source_sha": source,
+             "release_digest": authority.release_digest, "run_id": run_id, "stage": stage,
+             "expected_negative": False, "gate": asdict(result),
+             "results.json_sha256": registry["files"]["gate-" + stage + "-json"]["sha256"],
+             "results.xml_sha256": registry["files"]["gate-" + stage + "-xml"]["sha256"]})
     save("checks-snapshot", {"checks": actual, "pipeline_authorized": True, "pool_authorized": True,
                             "private_project": True, "main_protected": True, "secrets_masked": True})
     save("checks-evaluations", suites("release-plan", [101, 102, 201, 202, 401, 402]))
@@ -111,6 +127,20 @@ def test_schedule_accepts_its_two_current_verify_checks(run_originals):
     assert evidence.grade(directory)["P8-7"]["status"] == "PASS"
 
 
+@pytest.mark.parametrize("change", ["receipt-run", "receipt-hash", "incomplete-xml"])
+def test_schedule_check_grading_keeps_real_gate_provenance_validation(run_originals, change):
+    evidence, directory, _, registry, save, _ = run_originals
+    receipt = json.loads((directory / "gate-verify-receipt.json").read_bytes())
+    if change == "receipt-run": receipt["run_id"] = 11
+    if change == "receipt-hash": receipt["results.json_sha256"] = "0" * 64
+    if change == "incomplete-xml":
+        xml = (directory / "gate-verify-xml.json").read_text().replace('<testcase name="qid-0"/>', '')
+        save("gate-verify-xml", xml)
+        receipt["results.xml_sha256"] = registry["files"]["gate-verify-xml"]["sha256"]
+    save("gate-verify-receipt", receipt)
+    assert evidence.grade(directory)["P8-7"] == {"status": "FAIL", "code": "gate"}
+
+
 def test_schedule_cannot_borrow_verify_checks_from_another_plan(run_originals):
     evidence, directory, _, _, save, suites = run_originals
     save("scheduled-checks-evaluations", suites("foreign-plan", [301, 302]))
@@ -132,6 +162,13 @@ def test_cleanup_without_an_actual_result_is_not_run(run_originals):
 def test_failed_cleanup_attempt_without_result_stays_failed(run_originals):
     evidence, directory, *_ = run_originals
     (directory / "cleanup-attempt-1.json").write_text(json.dumps({"status": "failed", "physical_pass": False}))
+    assert evidence.grade(directory)["P8-8"]["status"] == "FAIL"
+
+
+def test_interrupted_cleanup_with_only_durable_intent_stays_failed(run_originals):
+    evidence, directory, *_ = run_originals
+    (directory / "intents").mkdir()
+    (directory / "intents/cleanup-1.json").write_text(json.dumps({"identity_sha256": "c" * 64}))
     assert evidence.grade(directory)["P8-8"]["status"] == "FAIL"
 
 

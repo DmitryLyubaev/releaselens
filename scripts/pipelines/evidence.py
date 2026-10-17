@@ -289,7 +289,8 @@ def grade(directory: Path) -> dict[str,dict]:
         perform(7,scheduled)
         def closeout():
             if not (directory/"cleanup-result.json").exists():
-                if any(directory.glob("cleanup-attempt-*.json")):
+                if (any(directory.glob("cleanup-attempt-*.json"))
+                    or any((directory/"intents").glob("cleanup-*.json"))):
                     raise DeliveryRefused("gate")
                 raise MissingOriginal()
             cleanup=read(directory/"cleanup-result.json")
