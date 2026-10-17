@@ -91,6 +91,36 @@ def require_evaluations(suites,expected,plan_id):
     return runs
 
 
+def checks_for_run(expected,principals,*,scheduled=False):
+    """Partition the pinned eight checks by the resources compiled into each run."""
+    try:
+        endpoints={role:principals[role]["service_connection_id"] for role in ("test","prod","verify")}
+        if (len(set(endpoints.values()))!=3 or any(not isinstance(v,str) or not v for v in endpoints.values())
+            or len(expected)!=8 or len({v["id"] for v in expected})!=8):
+            raise DeliveryRefused("checks")
+        groups={value:[] for value in endpoints.values()}
+        environment=[]
+        for check in expected:
+            resource=check["resource"]
+            if (resource["type"]=="endpoint" and resource["id"] in groups
+                and check["kind"] in ("branch","required-template")):
+                groups[resource["id"]].append(check)
+            elif resource["type"]=="environment" and check["kind"] in ("approval","exclusive-lock"):
+                environment.append(check)
+            else:
+                raise DeliveryRefused("checks")
+        if (any(len(rows)!=2 or {v["kind"] for v in rows}!={"branch","required-template"}
+                for rows in groups.values())
+            or len(environment)!=2 or {v["kind"] for v in environment}!={"approval","exclusive-lock"}
+            or len({v["resource"]["id"] for v in environment})!=1):
+            raise DeliveryRefused("checks")
+        if scheduled:
+            return groups[endpoints["verify"]]
+        return groups[endpoints["test"]]+groups[endpoints["prod"]]+environment
+    except (KeyError,TypeError,ValueError):
+        raise DeliveryRefused("checks") from None
+
+
 class Originals:
     def __init__(self,directory,a,raw):
         self.directory,self.a,self.raw=directory,a,raw
@@ -223,7 +253,8 @@ def grade(directory: Path) -> dict[str,dict]:
             verify_checks(o.json("checks-snapshot"),raw["checks_expected"])
             suites=o.json("checks-evaluations")
             build=o.build("release")
-            evaluations=require_evaluations(suites,raw["checks_expected"]["checks"],build["orchestrationPlan"]["planId"])
+            expected=checks_for_run(raw["checks_expected"]["checks"],raw["principals"])
+            evaluations=require_evaluations(suites,expected,build["orchestrationPlan"]["planId"])
             approval=o.json("prod-approval")
             association=o.json("prod-approval-map")
             approval_checks={check["id"] for check in raw["checks_expected"]["checks"] if check["kind"]=="approval"}
@@ -245,6 +276,10 @@ def grade(directory: Path) -> dict[str,dict]:
         perform(6,negative)
         def scheduled():
             metrics=o.gate("verify",inputs())
+            verify_checks(o.json("checks-snapshot"),raw["checks_expected"])
+            build=o.build("scheduled",reason="schedule")
+            expected=checks_for_run(raw["checks_expected"]["checks"],raw["principals"],scheduled=True)
+            require_evaluations(o.json("scheduled-checks-evaluations"),expected,build["orchestrationPlan"]["planId"])
             definition=o.json("definition-disabled")
             queue=o.json("queue-after")
             if definition["id"]!=raw["pipeline_id"] or definition["queueStatus"]!="disabled" or any(
@@ -253,6 +288,10 @@ def grade(directory: Path) -> dict[str,dict]:
             return metrics
         perform(7,scheduled)
         def closeout():
+            if not (directory/"cleanup-result.json").exists():
+                if any(directory.glob("cleanup-attempt-*.json")):
+                    raise DeliveryRefused("gate")
+                raise MissingOriginal()
             cleanup=read(directory/"cleanup-result.json")
             attempts=[read(p) for p in sorted(directory.glob("cleanup-attempt-*.json"))]
             if not attempts: raise MissingOriginal()
