@@ -15,9 +15,12 @@ before the queue cutoff and shutdown margin. The old 75/78/80/120-minute profile
 remains supported, but it cannot accommodate this conservative complete budget.
 A separate provisioning profile permits queues/cleanup/start/closeout at
 180/183/185/240 minutes. A new concrete human approval must bind that profile;
-implementing it does not extend a prior attempt. A future live packet should choose
-one genuine read-only Schedule after successful release/negative gates, leaving
-time for it inside the approved cutoff. It must not replay or relabel diagnostics.
+implementing it does not extend a prior attempt. Before billing, a future live
+packet must bind an actual start/Schedule pair that fits the full budget. Its
+concrete approval may permit one earlier replacement of that unfired temporary
+Schedule after successful release/negative gates, with a Disabled save/readback.
+It cannot move later, reset the clock, run a second Schedule build, or replay or
+relabel diagnostics. This optional advance requires explicit new approval.
 
 If agents were never applied, their absent local state is not a successful empty
 state-list command. Accept only a source/session-bound read-only proof with no

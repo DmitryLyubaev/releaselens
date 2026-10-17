@@ -65,9 +65,13 @@ queue cutoff. `readiness.require_execution_window` checks the whole or remaining
 phase budget at `clock`, `foundation`, `foundation-apply`, `agents` and
 `agents-apply`. Use these checks in both the reviewed parent launchers and the
 owner create reservations. Do not reduce provider timeouts to pass a preflight.
-For a future provisioning packet, select one genuine read-only Schedule at the
-earliest feasible minute after release and negative checks, inside its approved
-cutoff. An early all-pass cleanup need not wait for the maximum window.
+Before billing, the future provisioning packet must freeze a start/Schedule pair
+that fits the complete budget. To permit faster completion, its concrete approval
+may also permit one earlier replacement of that unfired temporary Schedule after
+the release and negative checks pass. Save and read back that exact earlier cron
+while Disabled. Never move it later, reset the clock, or queue a second Schedule
+build. Without that explicit permission, retain the approved pairing. An early
+all-pass cleanup need not wait for the maximum window.
 
 Use the personal organisation and private project. Create a new disabled pipeline
 using `pipelines/search-delivery.yml` on protected GitHub main. Never modify or
@@ -193,7 +197,12 @@ the frozen no-match filter to real test requests, and must fail the actual quali
 gate with 229 valid zero-match results. Preserve prod schema/state/document digests
 before and after. Never approve a promotion under that failed gate.
 
-The daily `0 9 * * *` UTC cron is 19:00 Brisbane, main only, `always: true`.
+The committed default `0 9 * * *` UTC cron is 19:00 Brisbane, main only,
+`always: true`. A dated live packet must bind its actual start minute and one
+genuine Schedule minute before billing, using the approved timing profile and
+complete remaining budget. Keep the pipeline Disabled while saving and reading
+back any approved temporary main-only override; retain the original configuration
+for restoration. Do not leave an additional default cron active.
 An actual `Build.Reason=Schedule` compiles only the Verify connection path,
 regardless of the manual mode parameter. Verify reuses the original release and
 successful prod gate, checks the original negative receipt, performs one 229-query
@@ -208,9 +217,11 @@ inventories. Never borrow earlier session ownership. The owner controller and
 finite Windows watchdog run outside ACA through the existing WSL owner Python.
 Test the actual Windows-to-WSL path, process identity and exit before billing.
 
-The concrete dated proposal must fit first billable apply at 18:00 Brisbane and
-the 19:00 schedule: queue cutoff +75 minutes, cleanup trigger +78, actual cleanup
-start by +80 and verified closeout by +120. Apply start is the first billable
+The concrete dated proposal binds either the standard +75/+78/+80/+120 profile
+or the separately approved provisioning +180/+183/+185/+240 profile, with offsets
+for queue cutoff, cleanup trigger, actual cleanup start and verified closeout.
+The actual start/Schedule pair must fit the complete execution budget and shutdown
+reserve; 18:00/19:00 is not a mandatory pairing. Apply start is the first billable
 operation, not apply completion. Late preparation stops downstream work, preserving
 the deletion reserve. Failures retain resources until the scheduled cleanup or a
 genuine explicit owner stop; successful original acceptance may clean up early.

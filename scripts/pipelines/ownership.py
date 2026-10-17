@@ -115,12 +115,12 @@ def reserve_owner_apply(directory,component_name):
     """Called by the separately approved owner launcher immediately before its one apply."""
     from .session import load,operation_lock,verify_source
     a,raw,manifest=load(directory); verify_source(a)
+    from .readiness import require_owner_binding,require_execution_window
+    if sha256_file(directory/"checks-snapshot.json")!=raw["checks_snapshot_sha256"]:
+        raise DeliveryRefused("authority")
+    require_owner_binding(raw,read(directory/"checks-snapshot.json"))
     if component_name in ("foundation","agents"):
         from datetime import datetime,timezone
-        from .readiness import require_owner_binding,require_execution_window
-        if sha256_file(directory/"checks-snapshot.json")!=raw["checks_snapshot_sha256"]:
-            raise DeliveryRefused("authority")
-        require_owner_binding(raw,read(directory/"checks-snapshot.json"))
         require_execution_window(raw,datetime.now(timezone.utc),component_name+"-apply")
     component=next(c for c in manifest["components"] if c["name"]==component_name)
     if component["create_plan"]["kind"]!="owner": raise DeliveryRefused("authority")
@@ -150,6 +150,23 @@ def local_agent_group(component,authority):
     except (KeyError,TypeError,AttributeError): raise DeliveryRefused("plan") from None
 
 
+def require_empty_show_json(shown):
+    """Recognize the pinned Terraform show schema, never raw state or plan JSON."""
+    if (not isinstance(shown,dict) or shown.get("format_version")!="1.0"
+        or not set(shown).issubset({"format_version","terraform_version","values","checks"})
+        or ("terraform_version" in shown and not isinstance(shown["terraform_version"],str))
+        or ("checks" in shown and shown["checks"]!=[])):
+        raise DeliveryRefused("gate")
+    values=shown.get("values",{})
+    if (not isinstance(values,dict) or not set(values).issubset({"root_module","outputs"})
+        or ("outputs" in values and values["outputs"]!={})):
+        raise DeliveryRefused("gate")
+    root=values.get("root_module",{})
+    if (not isinstance(root,dict) or not set(root).issubset({"resources","child_modules"})
+        or any(root[key]!=[] for key in root)):
+        raise DeliveryRefused("gate")
+
+
 def require_local_state_absence(proof,component,authority):
     from pathlib import PurePosixPath
     try:
@@ -164,8 +181,7 @@ def require_local_state_absence(proof,component,authority):
             or any(proof[k] is not True for k in ("state_absent","backup_absent","lock_absent","apply_intent_absent"))
             or proof["group"]["id"]!=group or proof["group"]["status"]!=404):
             raise DeliveryRefused("gate")
-        root=proof["terraform_show"].get("values",{}).get("root_module",{})
-        if root.get("resources") or root.get("child_modules"): raise DeliveryRefused("gate")
+        require_empty_show_json(proof["terraform_show"])
     except (KeyError,TypeError,AttributeError): raise DeliveryRefused("gate") from None
 
 

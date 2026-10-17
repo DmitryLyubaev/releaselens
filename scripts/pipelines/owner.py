@@ -150,21 +150,22 @@ class OwnerDriver:
         if any(p.exists() for p in paths): return False
         if getattr(self,"_absent_local_agents",False): return True
         if self.tokens is None: raise DeliveryRefused("identity")
-        from .ownership import local_agent_group,require_local_state_absence
+        from .ownership import local_agent_group,require_local_state_absence,require_empty_show_json
         group=local_agent_group(component,self.a)
         shown=json.loads(self.process(["terraform","show","-json"],cwd))
-        root=shown.get("values",{}).get("root_module",{})
-        if root.get("resources") or root.get("child_modules"): raise DeliveryRefused("plan")
+        require_empty_show_json(shown)
         resource=next(r for r in component["resources"] if r.get("id")==group)
         with httpx.Client(timeout=20,follow_redirects=False) as client:
             response=client.get("https://management.azure.com"+group,
                 params={"api-version":resource["api_version"]},headers={"Authorization":"Bearer "+self.tokens.token()})
+        observation={"id":group,"status":response.status_code,"body":response.text}
+        self.record("local-state-group-observation",observation)
         if response.status_code!=404: raise DeliveryRefused("plan")
         proof={"kind":"never-applied-local-agents","component":"agents",
             **{k:self.a[k] for k in ("session","source_sha","manifest_sha256")},
             "at":datetime.now(timezone.utc).isoformat(),"directory":str(cwd),"state_path":str(state),
             "state_absent":True,"backup_absent":True,"lock_absent":True,"apply_intent_absent":True,
-            "terraform_show":shown,"group":{"id":group,"status":response.status_code,"body":response.text}}
+            "terraform_show":shown,"group":observation}
         require_local_state_absence(proof,component,self.a)
         self.record("local-state-absence",proof)
         self._absent_local_agents=True

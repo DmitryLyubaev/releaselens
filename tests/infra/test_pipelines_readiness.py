@@ -77,7 +77,8 @@ def test_owner_id_must_match_the_actual_pinned_approval(modules):
 
 
 @pytest.mark.parametrize('mode',['valid','missing-owner','wrong-owner','insufficient-window','changed-snapshot'])
-def test_owner_reservation_cannot_precede_readiness_checks(modules,monkeypatch,tmp_path,mode):
+@pytest.mark.parametrize('component_name',['foundation','identity'])
+def test_owner_reservation_cannot_precede_readiness_checks(modules,monkeypatch,tmp_path,mode,component_name):
     from types import SimpleNamespace
     ownership=importlib.import_module('scripts.pipelines.ownership')
     rows=[];expected=[]
@@ -100,15 +101,15 @@ def test_owner_reservation_cannot_precede_readiness_checks(modules,monkeypatch,t
     binary=tmp_path/'create.tfplan';binary.write_bytes(b'unit-test-only saved plan')
     shown=tmp_path/'create.json';shown.write_text(json.dumps({'resource_changes':[{'mode':'managed',
         'address':'azurerm_resource_group.delivery','change':{'actions':['create']}}]}))
-    component={'name':'foundation','resources':[{'address':'azurerm_resource_group.delivery'}],
+    component={'name':component_name,'resources':[{'address':'azurerm_resource_group.delivery'}],
         'create_plan':{'kind':'owner','binary':binary.name,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
             'shown':shown.name,'shown_sha256':hashlib.sha256(shown.read_bytes()).hexdigest()}}
     a=SimpleNamespace(session=raw['session'],source_sha=raw['source_sha'],manifest_sha256=raw['manifest_sha256'])
     monkeypatch.setattr(modules,'load',lambda directory:(a,raw,{'components':[component]}))
     monkeypatch.setattr(modules,'verify_source',lambda authority:None)
-    if mode=='valid':
-        ownership.reserve_owner_apply(tmp_path,'foundation')
-        assert (tmp_path/'apply-intents/foundation.json').exists()
+    if mode=='valid' or (mode=='insufficient-window' and component_name=='identity'):
+        ownership.reserve_owner_apply(tmp_path,component_name)
+        assert (tmp_path/'apply-intents'/f'{component_name}.json').exists()
     else:
-        with pytest.raises(Exception):ownership.reserve_owner_apply(tmp_path,'foundation')
-        assert not (tmp_path/'apply-intents/foundation.json').exists()
+        with pytest.raises(Exception):ownership.reserve_owner_apply(tmp_path,component_name)
+        assert not (tmp_path/'apply-intents'/f'{component_name}.json').exists()

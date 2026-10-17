@@ -54,6 +54,29 @@ def test_existing_denied_or_failed_group_is_not_local_state_absence(case,status_
     driver,component,raw,cwd,status,calls=case;status[0]=status_code
     with pytest.raises(Exception):driver.state(component)
     assert not list(driver.logs.glob('*-local-state-absence.json'))
+    observation=json.loads(next(driver.logs.glob('*-local-state-group-observation.json')).read_bytes())
+    assert observation['id']==raw['owned_group_ids'][0] and observation['status']==status_code
+    assert json.loads(observation['body'])=={'error':{'code':'ResourceGroupNotFound'}}
+
+INVALID_SHOW=[{}, {'version':4,'resources':[{'type':'azurerm_resource_group'}]},
+    {'format_version':'1.0','planned_values':{}}, [], {'format_version':'2.0'},
+    {'format_version':'1.0','values':[]}, {'format_version':'1.0','values':{'root_module':{'resources':{}}}},
+    {'format_version':'1.0','values':{'root_module':{'child_modules':{}}}}]
+
+@pytest.mark.parametrize('shown',INVALID_SHOW)
+def test_malformed_or_non_show_schema_cannot_prove_local_absence(case,shown):
+    driver,component,raw,cwd,status,calls=case
+    assert driver.state(component)==[]
+    proof=json.loads(next(driver.logs.glob('*-local-state-absence.json')).read_bytes())
+    evidence=importlib.import_module('scripts.pipelines.evidence')
+    with pytest.raises(Exception):evidence.require_local_state_absence(proof|{'terraform_show':shown},component,raw)
+
+@pytest.mark.parametrize('shown',INVALID_SHOW)
+def test_capture_refuses_malformed_or_non_show_schema_before_arm(case,shown):
+    driver,component,raw,cwd,status,calls=case
+    driver.process=lambda *args,**kwargs:json.dumps(shown)
+    with pytest.raises(Exception):driver.state(component)
+    assert not calls and not list(driver.logs.glob('*-local-state-absence.json'))
 
 @pytest.mark.parametrize('existing',['state','backup','lock','apply-intent'])
 def test_prior_state_backup_lock_or_apply_intent_never_uses_absence_shortcut(case,existing):
@@ -78,7 +101,9 @@ def test_wrong_group_or_existing_resources_cannot_be_regraded_as_absence(case):
     with pytest.raises(Exception):evidence.require_local_state_absence(proof,remote,raw)
 
 
-@pytest.mark.parametrize('change',['none','backup','apply-intent','late-browser-ack'])
+@pytest.mark.parametrize('change',['none','backup','apply-intent','late-browser-ack',
+    'retry-after-unquiesced-delete','retry-after-no-delete','missing-first-attempt',
+    'duplicate-first-attempt','foreign-first-attempt'])
 def test_closeout_grader_consumes_absence_and_preserves_prior_quiescence(case,monkeypatch,change):
     driver,component,raw,cwd,status,calls=case
     assert driver.state(component)==[]
@@ -92,17 +117,29 @@ def test_closeout_grader_consumes_absence_and_preserves_prior_quiescence(case,mo
     manifest={'components':[component]}
     monkeypatch.setattr(evidence,'load',lambda directory:(a,raw,manifest))
     retained={'resources':[],'roleAssignments':[],'deletedVaults':[]}
-    cleanup={'attempt':1,'source_sha':a.source_sha,'manifest_sha256':a.manifest_sha256,
+    cleanup={'attempt':1,'session':a.session,'source_sha':a.source_sha,'manifest_sha256':a.manifest_sha256,
         'physical_pass':True,'canonical_absence':True,'empty_states':True,'quiescence_before':True,
         'cleanup_started_at':now.isoformat(),'verified_at':now.isoformat()}
     (root/'authority.json').write_text('{}')
     (root/'baseline.json').write_text(json.dumps({'retained':retained}))
     (root/'retained-after-1.json').write_text(json.dumps(retained))
     if change=='late-browser-ack':cleanup['quiescence_before']=False
-    (root/'cleanup-result.json').write_text(json.dumps(cleanup))
     (root/'cleanup-attempt-1.json').write_text(json.dumps(cleanup))
+    first_attempt=1
+    if change.startswith('retry-') or change=='missing-first-attempt':
+        earlier=dict(cleanup,physical_pass=False,quiescence_before=False)
+        (root/'cleanup-attempt-1.json').write_text(json.dumps(earlier))
+        cleanup=dict(cleanup,attempt=2)
+        (root/'cleanup-attempt-2.json').write_text(json.dumps(cleanup))
+        (root/'retained-after-2.json').write_text(json.dumps(retained))
+        if change=='retry-after-no-delete':first_attempt=2
+    if change=='missing-first-attempt':(root/'cleanup-attempt-1.json').unlink()
+    if change=='duplicate-first-attempt':(root/'cleanup-attempt-2.json').write_text(json.dumps(cleanup))
+    if change=='foreign-first-attempt':
+        (root/'cleanup-attempt-1.json').write_text(json.dumps(dict(cleanup,session='p8-foreign')))
+    (root/'cleanup-result.json').write_text(json.dumps(cleanup))
     definition={'id':2,'queueStatus':'disabled','variables':{}}
-    original={'cleanup-first-delete':{'session':a.session,'source_sha':a.source_sha,'at':now.isoformat()},
+    original={'cleanup-first-delete':{'session':a.session,'source_sha':a.source_sha,'at':now.isoformat(),'attempt':first_attempt},
         'group-absence-0':{'id':raw['owned_group_ids'][0],'status':404},'empty-state-absence-agents':proof,
         'pat-revocation':{'kind':'human-pat-revoked','session':a.session,'message_ref':'unit-test-only','at':now.isoformat()},
         'helper-exit':{'session':a.session,'active_owned':[],'helpers':[
@@ -118,4 +155,4 @@ def test_closeout_grader_consumes_absence_and_preserves_prior_quiescence(case,mo
     if change=='backup':(cwd/'terraform.tfstate.backup').write_text('{}')
     if change=='apply-intent':
         (root/'apply-intents').mkdir();(root/'apply-intents/agents.json').write_text('{}')
-    assert evidence.grade(root)['P8-8']['status']==('PASS' if change=='none' else 'FAIL')
+    assert evidence.grade(root)['P8-8']['status']==('PASS' if change in ('none','retry-after-no-delete') else 'FAIL')

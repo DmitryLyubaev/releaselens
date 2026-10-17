@@ -258,6 +258,17 @@ def grade(directory: Path) -> dict[str,dict]:
             if not attempts: raise MissingOriginal()
             first_delete=o.json("cleanup-first-delete")
             if first_delete["session"]!=a.session or first_delete["source_sha"]!=a.source_sha: raise DeliveryRefused("authority")
+            first_number=first_delete.get("attempt")
+            if type(first_number) is not int or not 1<=first_number<=cleanup["attempt"]:
+                raise DeliveryRefused("gate")
+            first_attempts=[row for row in attempts if row.get("attempt")==first_number]
+            if len(first_attempts)!=1: raise DeliveryRefused("gate")
+            first_attempt=first_attempts[0]
+            if (first_attempt.get("session")!=a.session or first_attempt.get("source_sha")!=a.source_sha
+                or first_attempt.get("manifest_sha256")!=a.manifest_sha256
+                or first_attempt.get("quiescence_before") is not True
+                or not instant(first_attempt["cleanup_started_at"])<=instant(first_delete["at"])<=instant(first_attempt["verified_at"])):
+                raise DeliveryRefused("gate")
             actual=dict(cleanup,cleanup_started_at=first_delete["at"])
             require_group_absence([o.json("group-absence-"+str(i)) for i in range(len(raw["owned_group_ids"]))],raw["owned_group_ids"])
             for component in manifest["components"]:
