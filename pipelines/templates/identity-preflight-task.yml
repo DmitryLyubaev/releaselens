@@ -1,0 +1,31 @@
+# Fixed authentication-only task; no deployment, storage or query commands.
+parameters:
+- name: role
+  type: string
+  values: [test, prod, verify]
+steps:
+- task: AzureCLI@2
+  displayName: Check actual ${{ parameters.role }} identity and OIDC refresh
+  condition: and(succeededOrFailed(), eq(variables['P8IdentityPreflightReady'], 'true'))
+  inputs:
+    ${{ if eq(parameters.role, 'test') }}:
+      azureSubscription: ReleaseLens-P8-Test
+    ${{ if eq(parameters.role, 'prod') }}:
+      azureSubscription: ReleaseLens-P8-Prod
+    ${{ if eq(parameters.role, 'verify') }}:
+      azureSubscription: ReleaseLens-P8-Verify
+    scriptType: bash
+    scriptLocation: inlineScript
+    addSpnToEnvironment: true
+    visibleAzLogin: false
+    inlineScript: |
+      set -euo pipefail
+      "$(Agent.TempDirectory)/p8-preflight-workload/bin/python" -m scripts.pipelines.identity_preflight ${{ parameters.role }} --receipt-dir "$(Agent.TempDirectory)/p8-identity-preflight"
+    workingDirectory: $(Build.SourcesDirectory)
+  env:
+    PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+    P8_PREFLIGHT_JSON: $(P8_PREFLIGHT_JSON)
+    P8_PREFLIGHT_SHA256: $(P8_PREFLIGHT_SHA256)
+    P8_PREFLIGHT_SOURCE_SHA: $(P8_PREFLIGHT_SOURCE_SHA)
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)

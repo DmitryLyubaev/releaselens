@@ -20,7 +20,7 @@ def test_main_extends_and_authorizations(repo_root):
     source = yaml.safe_load((repo_root / "pipelines/search-delivery.yml").read_bytes())
     assert source["trigger"] == "none" and source["pr"] == "none"
     assert source["extends"]["template"] == "templates/search-delivery.yml"
-    assert source["parameters"] == [{"name":"mode","type":"string","default":"release","values":["release","negative"]}]
+    assert source["parameters"] == [{"name":"mode","type":"string","default":"release","values":["release","negative","identity-preflight"]}]
     assert source["schedules"][0]["cron"] == "0 9 * * *" and source["schedules"][0]["always"] is True
     template = yaml.safe_load((repo_root / "pipelines/templates/search-delivery.yml").read_bytes())
     text = json.dumps(template)

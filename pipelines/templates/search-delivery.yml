@@ -5,6 +5,7 @@ parameters:
   values:
   - release
   - negative
+  - identity-preflight
 stages:
 - ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
   - stage: ScheduledReadOnly
@@ -68,6 +69,65 @@ stages:
           targetPath: $(Agent.TempDirectory)/p8-publish
           artifact: p8-verify
 - ${{ if ne(variables['Build.Reason'], 'Schedule') }}:
+  - ${{ if eq(parameters.mode, 'identity-preflight') }}:
+    - stage: IdentityPreflight
+      jobs:
+      - job: IdentityPreflight
+        timeoutInMinutes: 20
+        cancelTimeoutInMinutes: 1
+        pool:
+          vmImage: ubuntu-24.04
+        steps:
+        - checkout: self
+          clean: true
+          persistCredentials: false
+        - task: UsePythonVersion@0
+          inputs:
+            versionSpec: '3.12'
+            addToPath: true
+        - bash: |
+            set -euo pipefail
+            test "$BUILD_SOURCEBRANCH" = refs/heads/main
+            test "$BUILD_SOURCEVERSION" = "$P8_PREFLIGHT_SOURCE_SHA"
+            python -m venv "$(Agent.TempDirectory)/p8-preflight-cli"
+            "$(Agent.TempDirectory)/p8-preflight-cli/bin/pip" install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r build/delivery-agents/cli-requirements.lock
+            python -m venv "$(Agent.TempDirectory)/p8-preflight-workload"
+            "$(Agent.TempDirectory)/p8-preflight-workload/bin/pip" install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r build/delivery-agents/requirements.lock
+            mkdir -p "$(Agent.TempDirectory)/p8-identity-preflight"
+            "$(Agent.TempDirectory)/p8-preflight-workload/bin/python" -m scripts.pipelines.identity_preflight all --guard-only --receipt-dir "$(Agent.TempDirectory)/p8-identity-preflight"
+            echo "##vso[task.prependpath]$(Agent.TempDirectory)/p8-preflight-cli/bin"
+            echo "##vso[task.setvariable variable=P8IdentityPreflightReady]true"
+          displayName: Install pinned tools and guard diagnostic source before login
+          workingDirectory: $(Build.SourcesDirectory)
+          env:
+            PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+            P8_PREFLIGHT_JSON: $(P8_PREFLIGHT_JSON)
+            P8_PREFLIGHT_SHA256: $(P8_PREFLIGHT_SHA256)
+            P8_PREFLIGHT_SOURCE_SHA: $(P8_PREFLIGHT_SOURCE_SHA)
+        - template: identity-preflight-task.yml
+          parameters:
+            role: test
+        - template: identity-preflight-task.yml
+          parameters:
+            role: prod
+        - template: identity-preflight-task.yml
+          parameters:
+            role: verify
+        - bash: |
+            set -euo pipefail
+            "$(Agent.TempDirectory)/p8-preflight-workload/bin/python" -m scripts.pipelines.identity_preflight all --receipt-dir "$(Agent.TempDirectory)/p8-identity-preflight"
+          displayName: Require three actual successful identity and refresh proofs
+          condition: and(succeededOrFailed(), eq(variables['P8IdentityPreflightReady'], 'true'))
+          env:
+            PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+            P8_PREFLIGHT_JSON: $(P8_PREFLIGHT_JSON)
+            P8_PREFLIGHT_SHA256: $(P8_PREFLIGHT_SHA256)
+            P8_PREFLIGHT_SOURCE_SHA: $(P8_PREFLIGHT_SOURCE_SHA)
+        - task: PublishPipelineArtifact@1
+          condition: always()
+          inputs:
+            targetPath: $(Agent.TempDirectory)/p8-identity-preflight
+            artifact: p8-identity-preflight
   - ${{ if eq(parameters.mode, 'release') }}:
     - stage: BuildAndTestPlan
       jobs:
