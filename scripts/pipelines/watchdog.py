@@ -76,7 +76,7 @@ def probe(directory: Path):
 
 def adopt_authority(previous,current):
     current.validate()
-    if (any(getattr(previous,k)!=getattr(current,k) for k in ("session","source_sha","tree_sha","release_digest","manifest_sha256"))
+    if (any(getattr(previous,k)!=getattr(current,k) for k in ("session","source_sha","tree_sha","release_digest","manifest_sha256","timing_profile"))
         or previous.apply_started_at is not None and previous.apply_started_at!=current.apply_started_at):
         raise DeliveryRefused("authority")
     return current

@@ -17,6 +17,7 @@ from .cleanup import retained_unchanged
 from .identity import ROLE_IDS,role_matrix
 from .checks import verify_checks
 from .plans import PlanBinding,verify_plan,validate_index_plan
+from .ownership import require_local_state_absence
 
 
 def timing_pass(cleanup: dict,authority: dict) -> bool:
@@ -257,6 +258,17 @@ def grade(directory: Path) -> dict[str,dict]:
             if not attempts: raise MissingOriginal()
             first_delete=o.json("cleanup-first-delete")
             if first_delete["session"]!=a.session or first_delete["source_sha"]!=a.source_sha: raise DeliveryRefused("authority")
+            first_number=first_delete.get("attempt")
+            if type(first_number) is not int or not 1<=first_number<=cleanup["attempt"]:
+                raise DeliveryRefused("gate")
+            first_attempts=[row for row in attempts if row.get("attempt")==first_number]
+            if len(first_attempts)!=1: raise DeliveryRefused("gate")
+            first_attempt=first_attempts[0]
+            if (first_attempt.get("session")!=a.session or first_attempt.get("source_sha")!=a.source_sha
+                or first_attempt.get("manifest_sha256")!=a.manifest_sha256
+                or first_attempt.get("quiescence_before") is not True
+                or not instant(first_attempt["cleanup_started_at"])<=instant(first_delete["at"])<=instant(first_attempt["verified_at"])):
+                raise DeliveryRefused("gate")
             actual=dict(cleanup,cleanup_started_at=first_delete["at"])
             require_group_absence([o.json("group-absence-"+str(i)) for i in range(len(raw["owned_group_ids"]))],raw["owned_group_ids"])
             for component in manifest["components"]:
@@ -264,7 +276,15 @@ def grade(directory: Path) -> dict[str,dict]:
                 try:
                     command=o.json("empty-state-command-"+component["name"])
                 except MissingOriginal:
-                    require_index_absence(o.json("empty-state-absence-"+component["name"]),component,raw,manifest)
+                    proof=o.json("empty-state-absence-"+component["name"])
+                    if component["name"]=="agents":
+                        require_local_state_absence(proof,component,raw)
+                        cwd_local=bound_file(directory,component["directory"])
+                        state=bound_file(cwd_local,component["backend"]["path"])
+                        if any(p.exists() for p in (state,Path(str(state)+".backup"),
+                            state.with_name("."+state.name+".lock.info"),directory/"apply-intents/agents.json")):
+                            raise DeliveryRefused("gate")
+                    else: require_index_absence(proof,component,raw,manifest)
                 else: require_empty_state(command,o.json("empty-state-result-"+component["name"]),cwd)
             baseline=read(directory/"baseline.json")
             retained=read(directory/f"retained-after-{cleanup['attempt']}.json")

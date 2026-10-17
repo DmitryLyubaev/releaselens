@@ -42,6 +42,37 @@ terraform test
 
 ## Review the real Azure DevOps configuration before billing
 
+Before starting the billing clock, include `owner_ado_id` from the sole actual
+approver in the pinned demo-prod approval check. Use
+`scripts.pipelines.readiness.require_owner_binding` with the actual checks
+snapshot. The owner ID and timing profile are part of the human-approved scope.
+Missing or malformed IDs refuse before login; a mismatched owner, changed checks
+snapshot or insufficient complete execution budget refuses an owner create
+reservation. A successful packed-variable Save alone does not prove these fields
+are complete.
+
+The `standard` timing profile remains 75/78/80/120 minutes from the original
+clock for queue cutoff, cleanup due, latest cleanup start and physical closeout.
+It cannot fit the conservative complete provisioning path. The separately
+approved `provisioning` profile uses 180/183/185/240 minutes. It is an option for a
+new reviewed attempt, never an extension of an existing attempt. Reprice it and
+obtain the concrete identity/resource/timing approvals before use.
+
+The complete budget is 169 minutes: five for the final platform Save, 30 for the
+foundation parent, 20 for its postcheck, 55 for the agent parent, 49 for all live
+jobs and ten for owner/cron/artifact handoffs. Keep another ten minutes before
+queue cutoff. `readiness.require_execution_window` checks the whole or remaining
+phase budget at `clock`, `foundation`, `foundation-apply`, `agents` and
+`agents-apply`. Use these checks in both the reviewed parent launchers and the
+owner create reservations. Do not reduce provider timeouts to pass a preflight.
+Before billing, the future provisioning packet must freeze a start/Schedule pair
+that fits the complete budget. To permit faster completion, its concrete approval
+may also permit one earlier replacement of that unfired temporary Schedule after
+the release and negative checks pass. Save and read back that exact earlier cron
+while Disabled. Never move it later, reset the clock, or queue a second Schedule
+build. Without that explicit permission, retain the approved pairing. An early
+all-pass cleanup need not wait for the maximum window.
+
 Use the personal organisation and private project. Create a new disabled pipeline
 using `pipelines/search-delivery.yml` on protected GitHub main. Never modify or
 enable Project 7 pipeline 1. The source uses a literal required `extends` template,
@@ -166,7 +197,12 @@ the frozen no-match filter to real test requests, and must fail the actual quali
 gate with 229 valid zero-match results. Preserve prod schema/state/document digests
 before and after. Never approve a promotion under that failed gate.
 
-The daily `0 9 * * *` UTC cron is 19:00 Brisbane, main only, `always: true`.
+The committed default `0 9 * * *` UTC cron is 19:00 Brisbane, main only,
+`always: true`. A dated live packet must bind its actual start minute and one
+genuine Schedule minute before billing, using the approved timing profile and
+complete remaining budget. Keep the pipeline Disabled while saving and reading
+back any approved temporary main-only override; retain the original configuration
+for restoration. Do not leave an additional default cron active.
 An actual `Build.Reason=Schedule` compiles only the Verify connection path,
 regardless of the manual mode parameter. Verify reuses the original release and
 successful prod gate, checks the original negative receipt, performs one 229-query
@@ -181,9 +217,11 @@ inventories. Never borrow earlier session ownership. The owner controller and
 finite Windows watchdog run outside ACA through the existing WSL owner Python.
 Test the actual Windows-to-WSL path, process identity and exit before billing.
 
-The concrete dated proposal must fit first billable apply at 18:00 Brisbane and
-the 19:00 schedule: queue cutoff +75 minutes, cleanup trigger +78, actual cleanup
-start by +80 and verified closeout by +120. Apply start is the first billable
+The concrete dated proposal binds either the standard +75/+78/+80/+120 profile
+or the separately approved provisioning +180/+183/+185/+240 profile, with offsets
+for queue cutoff, cleanup trigger, actual cleanup start and verified closeout.
+The actual start/Schedule pair must fit the complete execution budget and shutdown
+reserve; 18:00/19:00 is not a mandatory pairing. Apply start is the first billable
 operation, not apply completion. Late preparation stops downstream work, preserving
 the deletion reserve. Failures retain resources until the scheduled cleanup or a
 genuine explicit owner stop; successful original acceptance may clean up early.
@@ -286,7 +324,8 @@ before requesting native cleanup; this command independently checks early author
 
 If the browser is unavailable or an action fails, record `--acknowledge unavailable`
 or `failed` against that same request. Missing/unverified acknowledgements are recorded
-at cleanup, never an unbounded wait past +78/+80. Physical cleanup still proceeds within
+at cleanup, never an unbounded wait past the approved profile's cleanup due/start bounds.
+Physical cleanup still proceeds within
 its scope; P8-8 cannot pass without actual pre-delete disabled/empty/restored evidence.
 The concrete monitor must preserve these instructions and adopt the existing watchdog
 and native helper rather than launching duplicates. No monitor is created by this runbook.
@@ -309,6 +348,12 @@ Require both authenticated canonical backend absence/empty placeholder and an ac
 index 404, or original exact parent ARM 404 observations. A failed state command never
 becomes absence. The typed observation is retained as `empty-state-absence-<name>`;
 ordinary existing states still require successful empty `terraform state list` originals.
+For agents that were never applied, `empty-state-absence-agents` may instead retain
+the exact authenticated agents-group 404, an empty Terraform JSON view and absence
+of the local state, backup, lock and owner apply reservation. It must bind the
+source/session/manifest and exact local backend paths. This exception cannot be
+used for a denied/existing group, an applied component or a remote backend. It never
+writes an empty state or converts a failed state-list command into success.
 Preserve the original error, intent, plan, state and every attempt. No automatic replay
 or extra deployment is available. Continue safe physical cleanup after a missed bound.
 
@@ -351,8 +396,9 @@ The grader consumes these original keys, with no fallback to older sessions:
   `empty-state-command-<name>` / `empty-state-result-<name>`. Retain the original owner
   command/result records: matching PID, exact `terraform state list`, expected directory,
   successful exit and truly empty output. Group observations require all three exact 404s.
-  Only never-created index states may instead use the authenticated typed
-  `empty-state-absence-<name>` original described above.
+  Never-created index states and never-applied local agents may instead use their
+  respective authenticated typed `empty-state-absence-<name>` originals described
+  above. Their different validators must not be interchanged.
 - `pat-revocation`, `helper-exit`; real owner message after cleanup starts and actual
   native/WSL exit observations, including the supervisor and cleanup helper.
 

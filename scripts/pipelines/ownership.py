@@ -115,6 +115,13 @@ def reserve_owner_apply(directory,component_name):
     """Called by the separately approved owner launcher immediately before its one apply."""
     from .session import load,operation_lock,verify_source
     a,raw,manifest=load(directory); verify_source(a)
+    from .readiness import require_owner_binding,require_execution_window
+    if sha256_file(directory/"checks-snapshot.json")!=raw["checks_snapshot_sha256"]:
+        raise DeliveryRefused("authority")
+    require_owner_binding(raw,read(directory/"checks-snapshot.json"))
+    if component_name in ("foundation","agents"):
+        from datetime import datetime,timezone
+        require_execution_window(raw,datetime.now(timezone.utc),component_name+"-apply")
     component=next(c for c in manifest["components"] if c["name"]==component_name)
     if component["create_plan"]["kind"]!="owner": raise DeliveryRefused("authority")
     intent={"session":a.session,"source_sha":a.source_sha,"component":component_name,
@@ -124,6 +131,58 @@ def reserve_owner_apply(directory,component_name):
         folder=directory/"apply-intents"; folder.mkdir(exist_ok=True)
         exclusive_json(folder/(component_name+".json"),intent)
     return intent
+
+
+def local_agent_group(component,authority):
+    """Only the agents' exact bound local group can prove this never-applied case."""
+    try:
+        if component["name"]!="agents" or component["backend"]["type"]!="local": raise DeliveryRefused("plan")
+        roots=[r["id"] for r in component["resources"] if r.get("kind")=="arm"
+            and r.get("id") in authority["owned_group_ids"]]
+        if len(roots)!=1: raise DeliveryRefused("plan")
+        group=roots[0]
+        for row in component["resources"]:
+            if row.get("kind")!="arm": continue
+            value=row.get("id") or row["resolve"]["scope"]
+            if value.lower()!=group.lower() and not value.lower().startswith(group.lower()+"/"):
+                raise DeliveryRefused("plan")
+        return group
+    except (KeyError,TypeError,AttributeError): raise DeliveryRefused("plan") from None
+
+
+def require_empty_show_json(shown):
+    """Recognize the pinned Terraform show schema, never raw state or plan JSON."""
+    if (not isinstance(shown,dict) or shown.get("format_version")!="1.0"
+        or not set(shown).issubset({"format_version","terraform_version","values","checks"})
+        or ("terraform_version" in shown and not isinstance(shown["terraform_version"],str))
+        or ("checks" in shown and shown["checks"]!=[])):
+        raise DeliveryRefused("gate")
+    values=shown.get("values",{})
+    if (not isinstance(values,dict) or not set(values).issubset({"root_module","outputs"})
+        or ("outputs" in values and values["outputs"]!={})):
+        raise DeliveryRefused("gate")
+    root=values.get("root_module",{})
+    if (not isinstance(root,dict) or not set(root).issubset({"resources","child_modules"})
+        or any(root[key]!=[] for key in root)):
+        raise DeliveryRefused("gate")
+
+
+def require_local_state_absence(proof,component,authority):
+    from pathlib import PurePosixPath
+    try:
+        group=local_agent_group(component,authority)
+        relative=PurePosixPath(component["backend"]["path"])
+        if relative.is_absolute() or ".." in relative.parts or str(relative)==".": raise DeliveryRefused("gate")
+        cwd=str(PurePosixPath(authority["owner_session_path"])/component["directory"])
+        path=str(PurePosixPath(cwd)/relative)
+        if (proof["kind"]!="never-applied-local-agents" or proof["component"]!="agents"
+            or any(proof[k]!=authority[k] for k in ("session","source_sha","manifest_sha256"))
+            or proof["directory"].replace("\\","/")!=cwd or proof["state_path"].replace("\\","/")!=path
+            or any(proof[k] is not True for k in ("state_absent","backup_absent","lock_absent","apply_intent_absent"))
+            or proof["group"]["id"]!=group or proof["group"]["status"]!=404):
+            raise DeliveryRefused("gate")
+        require_empty_show_json(proof["terraform_show"])
+    except (KeyError,TypeError,AttributeError): raise DeliveryRefused("gate") from None
 
 
 def _original(directory,raw,name):

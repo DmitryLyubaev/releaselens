@@ -29,6 +29,7 @@ from .identity import verify_principal,terraform_environment
 from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_plan
 from .storage import BlobStore
 from .authority_transport import decode_authority,read_authority
+from .readiness import require_owner_id
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGES = ("build","test","plan-prod","prod","negative","verify")
@@ -100,6 +101,7 @@ def context(path: Path,stage: str) -> tuple[dict,dict]:
     a = read_authority(path) if path.exists() else decode_authority(os.environ["P8_AUTHORITY_JSON"].encode())
     if hashlib.sha256(canonical(a)).hexdigest() != os.environ["P8_AUTHORITY_SHA256"]:
         raise DeliveryRefused("authority")
+    require_owner_id(a)
     role = connection_role(stage,os.environ["BUILD_REASON"])
     now = datetime.now(timezone.utc)
     if (not a.get("approval_ref") or not re.fullmatch(r"[a-z][a-z0-9-]{3,11}",a["session"])

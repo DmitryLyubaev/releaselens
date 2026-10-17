@@ -98,6 +98,7 @@ def test_human_receipt_binds_actual_scope_and_absence_inventory(session_module,t
     raw=authority()
     prefix="/subscriptions/sub/resourceGroups/rg-p8-1016x-"
     raw.update({"owner":{"subscription_id":"sub","tenant_id":"tenant","object_id":"owner"},
+        "owner_ado_id":"11111111-2222-4333-8444-555555555555",
         "owned_group_ids":[prefix+name for name in ("search","identity","agents")],
         "principals":{},"scopes":{},"pipeline_id":2,"search_host":"owned.search.windows.net",
         "storage_host":"owned.blob.core.windows.net"})

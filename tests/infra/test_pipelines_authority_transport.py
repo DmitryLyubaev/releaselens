@@ -23,6 +23,7 @@ def run(repo_root, monkeypatch):
 def authority():
     return {
         "approval_ref": "actual-owner-approval",
+        "owner_ado_id": "11111111-2222-4333-8444-555555555555",
         "session": "p8-example",
         "source_sha": "a" * 40,
         "tree_sha": "b" * 40,
@@ -77,6 +78,19 @@ def test_context_accepts_complete_packed_authority_before_login(run, monkeypatch
     actual, principal = run.context(tmp_path / "absent.json", "build")
     assert actual == original and principal == original["principals"]["test"]
     assert len(commands) == 3
+
+
+@pytest.mark.parametrize("owner", [None, "", "not-an-owner-id", "00000000-0000-0000-0000-000000000000"])
+def test_missing_or_invalid_owner_id_refuses_before_git_or_login(run, monkeypatch, tmp_path, owner):
+    original = authority()
+    if owner is None:
+        original.pop("owner_ado_id")
+    else:
+        original["owner_ado_id"] = owner
+    commands = context_env(run, monkeypatch, packed(run.canonical(original)), original)
+    with pytest.raises(run.DeliveryRefused, match="^authority$"):
+        run.context(tmp_path / "absent.json", "build")
+    assert commands == []
 
 
 @pytest.fixture
