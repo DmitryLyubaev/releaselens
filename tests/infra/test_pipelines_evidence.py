@@ -1,6 +1,7 @@
 """Public projection rejects missing provenance and preserves late physical cleanup."""
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,29 @@ import pytest
 def evidence(repo_root,monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root/"eval"))
     return importlib.import_module("scripts.pipelines.evidence")
+
+
+@pytest.mark.parametrize("audience,accepted",[
+    ("fb60f99c-7a34-4190-8149-302f77469936",True),
+    ("api://AzureADTokenExchange",False),
+    ("499b84ac-1321-427f-aa17-267ca6975798",False),
+])
+def test_regrade_uses_entra_token_audience_at_receipt_time(evidence,audience,accepted):
+    # This original is intentionally historical: expiry is checked at collection time.
+    expected={"subscription_id":"sub","tenant_id":"tenant","client_id":"client","object_id":"object",
+              "issuer":"https://login.microsoftonline.com/tenant/v2.0","subject":"exact-subject"}
+    receipt={"source_sha":"a"*40,"release_digest":"b"*64,"at":"2026-01-01T00:00:00+00:00",
+             "scheme":"WorkloadIdentityFederation","role":"test",
+             "account":{"id":"sub","tenantId":"tenant","user":{"type":"servicePrincipal","name":"client"}},
+             "claims":{"federation":{"iss":expected["issuer"],"sub":"exact-subject","aud":audience,"exp":1767229200},
+                       "access":{"oid":"object","tid":"tenant","appid":"client","exp":1767229200}}}
+    originals=SimpleNamespace(a=SimpleNamespace(source_sha="a"*40,release_digest="b"*64),
+                              raw={"principals":{"test":expected}},json=lambda name: receipt)
+    if accepted:
+        assert evidence._check_identity(originals,"test","test") is None
+    else:
+        with pytest.raises(evidence.DeliveryRefused,match="identity"):
+            evidence._check_identity(originals,"test","test")
 
 
 def test_provenance_and_timing_grades(evidence,tmp_path):

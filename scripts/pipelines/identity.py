@@ -37,6 +37,13 @@ def _require(condition, check):
         raise IdentityRefused(check)
 
 
+def federation_audience(expected: dict) -> str:
+    # Entra v2 emits the token-exchange application ID, while the FIC keeps its URI.
+    if expected["issuer"] == f'https://login.microsoftonline.com/{expected["tenant_id"]}/v2.0':
+        return "fb60f99c-7a34-4190-8149-302f77469936"
+    return "api://AzureADTokenExchange"
+
+
 def verify_principal(account: dict, claims: dict, expected: dict) -> None:
     try:
         federation, access = claims["federation"], claims["access"]
@@ -47,7 +54,7 @@ def verify_principal(account: dict, claims: dict, expected: dict) -> None:
         _require(account["user"]["name"].lower() == expected["client_id"].lower(), "account-client")
         _require(federation["iss"] == expected["issuer"], "federation-issuer")
         _require(federation["sub"] == expected["subject"], "federation-subject")
-        _require(federation["aud"] == "api://AzureADTokenExchange", "federation-audience")
+        _require(federation["aud"] == federation_audience(expected), "federation-audience")
         _require(federation["exp"] > time.time()+30, "federation-expiry")
         _require(access["tid"] == expected["tenant_id"], "access-tenant")
         _require(access["oid"] == expected["object_id"], "access-object")

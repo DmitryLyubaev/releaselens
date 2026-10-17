@@ -14,7 +14,7 @@ from app.delivery_search.gate import grade_rows
 from app.retrieval.arms import ArmResult,Hit
 from .session import load,read,bound_file,instant
 from .cleanup import retained_unchanged
-from .identity import ROLE_IDS,role_matrix
+from .identity import ROLE_IDS,role_matrix,federation_audience
 from .checks import verify_checks
 from .plans import PlanBinding,verify_plan,validate_index_plan
 from .ownership import require_local_state_absence
@@ -185,7 +185,7 @@ def _check_identity(o,stage,role):
         or account["id"]!=expected["subscription_id"] or account["tenantId"]!=expected["tenant_id"]
         or account["user"]["type"].lower()!="serviceprincipal" or account["user"]["name"].lower()!=expected["client_id"].lower()
         or federation["iss"]!=expected["issuer"] or federation["sub"]!=expected["subject"]
-        or federation["aud"]!="api://AzureADTokenExchange" or federation["exp"]<=at+30
+        or federation["aud"]!=federation_audience(expected) or federation["exp"]<=at+30
         or access["oid"]!=expected["object_id"] or access["tid"]!=expected["tenant_id"]
         or access.get("appid",access.get("azp"))!=expected["client_id"] or access["exp"]<=at+30):
         raise DeliveryRefused("identity")
