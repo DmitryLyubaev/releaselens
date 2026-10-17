@@ -38,6 +38,27 @@ def test_principal_not_owner_email(identity,principal,change):
         assert identity.verify_principal(account,claims,expected) is None
 
 
+@pytest.mark.parametrize("issuer,audience,accepted",[
+    ("https://login.microsoftonline.com/tenant/v2.0","fb60f99c-7a34-4190-8149-302f77469936",True),
+    ("https://login.microsoftonline.com/tenant/v2.0","api://AzureADTokenExchange",False),
+    ("https://vstoken.dev.azure.com/organization","api://AzureADTokenExchange",True),
+    ("https://vstoken.dev.azure.com/organization","fb60f99c-7a34-4190-8149-302f77469936",False),
+    ("https://login.microsoftonline.com/tenant/v2.0","499b84ac-1321-427f-aa17-267ca6975798",False),
+])
+def test_federation_audience_matches_the_approved_issuer(identity,principal,issuer,audience,accepted):
+    # The FIC audience URI is unchanged, but Entra v2 tokens carry its application ID.
+    # https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+    account,claims,expected = principal
+    expected["issuer"] = claims["federation"]["iss"] = issuer
+    claims["federation"]["aud"] = audience
+    if accepted:
+        assert identity.verify_principal(account,claims,expected) is None
+    else:
+        with pytest.raises(identity.IdentityRefused) as caught:
+            identity.verify_principal(account,claims,expected)
+        assert caught.value.check == "federation-audience"
+
+
 def test_role_matrix(identity):
     scopes = {"service":"/s/fresh-search","inputs":"/s/fresh-store/containers/inputs",
               "test-state":"/s/fresh-store/containers/test-state","prod-state":"/s/fresh-store/containers/prod-state",
