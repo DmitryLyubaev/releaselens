@@ -183,7 +183,8 @@ class Runtime:
         self.store.put_once("evidence",f"identities/{stage}.json",(self.publish/"identity.json").read_bytes())
         def metadata_budget(request):
             if request.url.host==a["search_host"] and request.method=="GET":
-                self.store.reserve_budget("metadata",120)
+                from .storage import METADATA_OPERATIONS
+                self.store.reserve_budget("metadata",METADATA_OPERATIONS)
         client.event_hooks["request"].append(metadata_budget)
         checks = self.store.get("inputs","checks/snapshot.json")
         if hashlib.sha256(checks).hexdigest() != a["checks_snapshot_sha256"]: raise DeliveryRefused("checks")

@@ -220,7 +220,9 @@ class OwnerDriver:
                     # consumed metadata slots. Never use this fallback after dispatch.
                     if (self.directory/"intents/dispatch-release.json").exists(): raise DeliveryRefused("plan")
                     reserve_budget(self.directory,"metadata",120)
-                else: store.reserve_budget("metadata",120)
+                else:
+                    from .storage import METADATA_OPERATIONS
+                    store.reserve_budget("metadata",METADATA_OPERATIONS)
                 response=client.get(f"{checked.endpoint}/indexes/{checked.index}",params={"api-version":"2024-07-01"},
                     headers={"Authorization":"Bearer "+TokenSource("https://search.azure.com/.default",self.a["owner"]["tenant_id"]).token()})
                 index={"kind":"index","host":checked.allowed_host,"name":checked.index,"status":response.status_code}

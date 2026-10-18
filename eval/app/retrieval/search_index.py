@@ -31,12 +31,13 @@ SEMANTIC_CONFIGURATION = "default"
 _TIMEOUT_SECONDS = 120.0
 
 # Every attribute is stated, because the service's defaults make a string field filterable,
-# sortable and facetable, which nothing here uses.
+# sortable and facetable. Only the unique key is sortable, so complete acceptance
+# fingerprints can page in a total order without changing hybrid query ranking.
 SCHEMA = {
     "name": INDEX_NAME,
     "fields": [
         {"name": "chunk_id", "type": "Edm.String", "key": True, "searchable": False,
-         "filterable": False, "sortable": False, "facetable": False, "retrievable": True},
+         "filterable": False, "sortable": True, "facetable": False, "retrievable": True},
         {"name": "artefact", "type": "Edm.String", "searchable": False,
          "filterable": True, "sortable": False, "facetable": False, "retrievable": True},
         # Retrievable, because the semantic ranker reads only retrievable fields.

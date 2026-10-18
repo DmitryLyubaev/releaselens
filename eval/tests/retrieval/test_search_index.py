@@ -172,7 +172,7 @@ def test_create_index_schema():
         "name": "releaselens-chunks",
         "fields": [
             {"name": "chunk_id", "type": "Edm.String", "key": True, "searchable": False,
-             "filterable": False, "sortable": False, "facetable": False, "retrievable": True},
+             "filterable": False, "sortable": True, "facetable": False, "retrievable": True},
             {"name": "artefact", "type": "Edm.String", "searchable": False,
              "filterable": True, "sortable": False, "facetable": False, "retrievable": True},
             {"name": "content", "type": "Edm.String", "searchable": True, "analyzer": "en.lucene",
