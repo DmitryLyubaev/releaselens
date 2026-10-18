@@ -10,6 +10,7 @@ dependencies = [
     "anthropic>=0.40",
     "pydantic-settings>=2.6",
     "numpy>=2.3",
+    "orjson>=3.13,<4",
     "azure-identity>=1.19",
 ]
 

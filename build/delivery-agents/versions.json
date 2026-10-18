@@ -7,6 +7,6 @@
   "terraform_sha256": "d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d",
   "terraform_checksums": "https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_SHA256SUMS",
   "azure_cli_version": "2.81.0",
-  "requirements_sha256": "b656ecb4cc3b70981afc486050427145bd4da01c88bd2e602f35a4022e945844",
+  "requirements_sha256": "23e1c33f3377b96f0540f09f91f40e29afe3b9942cb521f0dc9fa624bfdc0e3d",
   "cli-requirements_sha256": "91c6f5a369d502fea4579a1a717b8b1ba6893b9e645af3c5cafc08c1272ef0af"
 }

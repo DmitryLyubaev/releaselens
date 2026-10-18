@@ -325,7 +325,17 @@ class Runtime:
                 data=original.read_bytes()
                 with (published/"result.json").open("xb") as out: out.write(data)
                 self.store.put_once("evidence",f"applies/{target}/result.json",data)
-        upload_bundle(self.bundle,validated,self.search_tokens,self.client,reservation=self.work/("upload-"+target+".json"))
+        upload_reservation=self.work/("upload-"+target+".json")
+        try:
+            upload_bundle(self.bundle,validated,self.search_tokens,self.client,reservation=upload_reservation)
+        finally:
+            metrics=upload_reservation.with_suffix(".metrics.json")
+            if metrics.exists():
+                # Published even on refusal; numeric diagnostics contain no corpus,
+                # response text or credentials. Preserve any original upload error.
+                with suppress(OSError):
+                    with (self.publish/metrics.name).open("xb") as out:
+                        out.write(metrics.read_bytes())
 
     def measure(self,target: str,*,negative=False) -> bool:
         result,rows = run_gate(self.bundle,self.target(target),read_json(self.bundle.root/(
