@@ -344,6 +344,19 @@ This validates the new pipeline, exact main source, dispatch reservation and que
 At cutoff the Windows watchdog writes one `quiescence/request.json` with only those
 original build IDs and their hashes. It never acquires a Build PAT or exports cookies.
 
+Ten minutes before cutoff it also writes `quiescence-preparation.json`. This advisory
+file does not wake the operator by itself and authorizes no early restoration,
+cancellation or deletion. Before billing, arrange an active operator to inspect it,
+avoid long work after preparation, and prioritize the actual cutoff request. Its
+`acknowledge_by` leaves 45 seconds before the unchanged cleanup due time. Failure to
+write this notice cannot suppress the original cutoff or independent cleanup fallback.
+
+Each authenticated runtime stage also copies the exact token-free `identity.json`
+artifact bytes to `evidence/identities/<stage>.json`, after its create-only stage
+reservation. Collect these originals through the existing owner Blob read channel;
+verify source, release digest, role and actual build ID before promotion. The artifact
+copy remains available, but its download permissions are no longer a prerequisite.
+
 Before billing, prepare the owner-browser monitor to inspect this request at least once
 per minute: disable only its exact new pipeline, cancel only its listed session-owned
 unfinished builds, restore the exact original variables/settings, and retain actual

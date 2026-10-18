@@ -132,6 +132,57 @@ def token(claims):
     return "synthetic." + payload + ".signature"
 
 
+@pytest.mark.parametrize("stage", ["build", "test", "plan-prod", "prod", "negative", "verify"])
+def test_runtime_identity_is_published_as_identical_create_only_blob(modules, principal, monkeypatch, tmp_path, stage):
+    identity, run = modules
+    account, claims, expected = principal
+    authority = {"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
+                 "storage_host":"owned.blob.core.windows.net",
+                 "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
+    monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("BUILD_BUILDID", "17")
+    monkeypatch.setenv("BUILD_REASON", "Schedule" if stage == "verify" else "Manual")
+    monkeypatch.setattr(run, "authenticate", lambda principal:(account, claims, {}))
+    writes = []
+    class ReachedInputs(Exception): pass
+    class Store:
+        def __init__(self, *args): pass
+        def put_json(self, key, value): writes.append((key, run.canonical(value)))
+        def put_once(self, container, key, data):
+            assert container == "evidence"
+            writes.append((key, data))
+        def get(self, *args): raise ReachedInputs()
+    monkeypatch.setattr(run, "BlobStore", Store)
+    public = tmp_path / "published"
+    with httpx.Client() as client:
+        with pytest.raises(ReachedInputs): run.Runtime(authority, expected, stage, public, client)
+    assert [key for key, data in writes] == [f"operations/{stage}.json", f"identities/{stage}.json"]
+    assert writes[1][1] == (public / "identity.json").read_bytes()
+    receipt = json.loads(writes[1][1])
+    assert receipt["run_id"] == 17 and receipt["source_sha"] == "a"*40
+    assert receipt["scheme"] == "WorkloadIdentityFederation" and receipt["verified"] is True
+
+
+def test_replayed_stage_cannot_publish_an_identity_blob(modules, principal, monkeypatch, tmp_path):
+    identity, run = modules
+    account, claims, expected = principal
+    monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("BUILD_BUILDID", "17")
+    monkeypatch.setenv("BUILD_REASON", "Manual")
+    monkeypatch.setattr(run, "authenticate", lambda principal:(account, claims, {}))
+    class Store:
+        def __init__(self, *args): pass
+        def put_json(self, *args): raise run.DeliveryRefused("reserved")
+        def put_once(self, *args): pytest.fail("replay wrote receipt")
+    monkeypatch.setattr(run, "BlobStore", Store)
+    authority = {"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
+                 "storage_host":"owned.blob.core.windows.net",
+                 "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
+    with httpx.Client() as client:
+        with pytest.raises(run.DeliveryRefused, match="reserved"):
+            run.Runtime(authority, expected, "test", tmp_path/"published", client)
+
+
 @pytest.mark.parametrize("wrong_uri", [False, True])
 def test_actual_constructor_authenticates_before_storage(modules, principal, monkeypatch, tmp_path, wrong_uri):
     identity, run = modules

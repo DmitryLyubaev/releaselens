@@ -82,7 +82,34 @@ def adopt_authority(previous,current):
     return current
 
 
+def prepare_handoff(directory,a,raw,now):
+    """Wake the browser operator without authorizing early restoration or cleanup."""
+    a.validate()
+    if a.apply_started_at is None or now<instant(a.queue_cutoff_at)-timedelta(minutes=10):
+        return
+    if type(raw["pipeline_id"]) is not int or raw["pipeline_id"]<=1:
+        raise DeliveryRefused("authority")
+    path=directory/"quiescence-preparation.json"
+    value={"kind":"owner-browser-quiescence-preparation","session":a.session,"source_sha":a.source_sha,
+        "manifest_sha256":a.manifest_sha256,"pipeline_id":raw["pipeline_id"],
+        "queue_cutoff_at":a.queue_cutoff_at,"cleanup_due_at":a.cleanup_due_at,
+        "acknowledge_by":(instant(a.cleanup_due_at)-timedelta(seconds=45)).isoformat(),
+        "actions":["prepare-owner-browser-restoration"]}
+    if path.exists():
+        previous=read(path)
+        if any(previous.get(key)!=item for key,item in value.items()):
+            raise DeliveryRefused("authority")
+        return previous
+    exclusive_json(path,value|{"at":now.isoformat()})
+
+
 def cutoff_handoff(directory,a,raw,now):
+    try:
+        prepare_handoff(directory,a,raw,now)
+    except Exception:
+        # Readiness is advisory. It cannot suppress the original cutoff request
+        # or the independent due-time deletion fallback.
+        pass
     if now>=instant(a.queue_cutoff_at):
         from .quiescence import request
         try: request(directory,a,raw,now)
