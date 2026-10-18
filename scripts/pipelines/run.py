@@ -19,7 +19,7 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from app.delivery_search.bundle import fetch_bundle,read_json
-from app.delivery_search.client import upload_bundle
+from app.delivery_search.client import UPLOAD_CHECKS,UploadRefused,upload_bundle
 from app.delivery_search.contracts import DeliveryRefused,SearchTarget,canonical,exclusive_json,sha256_file
 from app.delivery_search.gate import grade_rows,run_gate,write_gate
 from app.retrieval.arms import ArmResult,Hit
@@ -407,6 +407,8 @@ def main(argv=None) -> int:
     except Exception as exc:
         code = DeliveryRefused(exc.code).code if isinstance(exc,DeliveryRefused) else "internal"
         check = exc.check if isinstance(exc,IdentityRefused) and exc.check in IDENTITY_CHECKS else "unclassified"
+        if isinstance(exc,UploadRefused) and exc.check in UPLOAD_CHECKS:
+            check = exc.check
         # The directory published by every stage must contain the early refusal.
         # Exception text and raw tracebacks remain outside this artifact.
         with suppress(OSError):

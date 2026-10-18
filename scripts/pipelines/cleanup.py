@@ -45,25 +45,47 @@ def retained_unchanged(before: dict,after: dict) -> bool:
             and canonical(ordered(before)) == canonical(ordered(after)))
 
 
+def same_resource_id(actual, pinned):
+    """Tolerate ARM grammar casing, keeping resource names and subscription exact.
+
+    The retained identity manifest was built with lowercase grammar segments.
+    Terraform returns their conventional mixed case. Other ID formats stay exact.
+    """
+    if actual == pinned:
+        return isinstance(actual, str)
+    if not isinstance(actual, str) or not isinstance(pinned, str):
+        return False
+    left, right = actual.split('/'), pinned.split('/')
+    if len(left) != len(right) or len(left) not in (5, 9, 11) or left[0] != '' or right[0] != '':
+        return False
+    grammar = {1: 'subscriptions', 3: 'resourcegroups'}
+    if len(left) > 5:
+        grammar.update({5: 'providers', 6: 'microsoft.managedidentity', 7: 'userassignedidentities'})
+    if len(left) > 9:
+        grammar[9] = 'federatedidentitycredentials'
+    return all(a.lower() == b.lower() == grammar[i] if i in grammar else a == b
+               for i, (a, b) in enumerate(zip(left, right)))
+
+
 def validate_remaining_delete(plan: dict,original: list[dict],remaining: list[dict]):
     try:
         bound = {row["address"]:row["id"] for row in original}
         current = {row["address"]:row["id"] for row in remaining}
-        if len(bound)!=len(original) or len(current)!=len(remaining) or any(bound.get(k)!=v for k,v in current.items()):
+        if len(bound)!=len(original) or len(current)!=len(remaining) or any(not same_resource_id(v,bound.get(k)) for k,v in current.items()):
             raise DeliveryRefused("plan")
         rows=list(plan.get("resource_changes",[]))
         for drift in plan.get("resource_drift",[]):
             if drift["mode"]!="managed" or drift["address"] not in current: raise DeliveryRefused("plan")
             change=drift["change"]
-            if change["before"]["id"]!=current[drift["address"]]: raise DeliveryRefused("plan")
+            if not same_resource_id(change["before"]["id"],current[drift["address"]]): raise DeliveryRefused("plan")
             if change["actions"]==["delete"]: rows.append(drift)
-            elif (change["actions"]!=["update"] or change["after"]["id"]!=current[drift["address"]]):
+            elif (change["actions"]!=["update"] or not same_resource_id(change["after"]["id"],current[drift["address"]])):
                 raise DeliveryRefused("plan")
         if len(rows)!=len(current) or {r["address"] for r in rows}!=set(current): raise DeliveryRefused("plan")
         for row in rows:
             change=row["change"]
             if (row["mode"]!="managed" or change["actions"]!=["delete"] or change.get("after") is not None
-                or change["before"]["id"]!=current[row["address"]]): raise DeliveryRefused("plan")
+                or not same_resource_id(change["before"]["id"],current[row["address"]])): raise DeliveryRefused("plan")
     except (KeyError,TypeError,ValueError): raise DeliveryRefused("plan") from None
 
 
@@ -109,8 +131,8 @@ def execute(directory: Path,now: datetime,*,driver=None) -> dict:
                 # Validate ownership even for an empty plan. No extra state can be silently removed.
                 if any(row not in component["resources"] for row in remaining):
                     # Drivers may return the minimal address/id projection only.
-                    bound={(r["address"],r["id"]) for r in component["resources"]}
-                    if any((r["address"],r["id"]) not in bound for r in remaining): raise DeliveryRefused("plan")
+                    bound={r["address"]:r["id"] for r in component["resources"]}
+                    if any(not same_resource_id(r["id"],bound.get(r["address"])) for r in remaining): raise DeliveryRefused("plan")
                 if remaining:
                     plan=driver.plan(component,attempt,remaining)
                     validate_remaining_delete(plan,component["resources"],remaining)

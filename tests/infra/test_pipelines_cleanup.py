@@ -19,6 +19,35 @@ def test_failed_gate_is_not_stop(cleanup):
         "source_sha":"a"*40,"session":"p8-1016x"},"a"*40,"p8-1016x")
 
 
+@pytest.mark.parametrize('suffix', ['',
+    '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/owned-id',
+    '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/owned-id/federatedIdentityCredentials/test'])
+def test_owned_identity_arm_grammar_case_is_not_a_new_resource(cleanup, suffix):
+    actual = '/subscriptions/sub/resourceGroups/owned' + suffix
+    pinned = actual.replace('resourceGroups', 'resourcegroups').replace('Microsoft.ManagedIdentity',
+        'microsoft.managedidentity').replace('userAssignedIdentities', 'userassignedidentities').replace(
+        'federatedIdentityCredentials', 'federatedidentitycredentials')
+    original = [{'address': 'owned.identity', 'id': pinned}]
+    remaining = [{'address': 'owned.identity', 'id': actual}]
+    plan = {'resource_changes': [{'mode': 'managed', 'address': 'owned.identity',
+        'change': {'actions': ['delete'], 'before': {'id': actual}, 'after': None}}]}
+    cleanup.validate_remaining_delete(plan, original, remaining)
+
+
+@pytest.mark.parametrize('old,new', [('sub','other-sub'), ('owned','other'),
+    ('owned-id','OWNED-ID'), ('Microsoft.ManagedIdentity','Microsoft.Search'),
+    ('userAssignedIdentities','searchServices'), ('test','TEST')])
+def test_identity_case_comparison_keeps_names_and_scope_exact(cleanup, old, new):
+    pinned = '/subscriptions/sub/resourceGroups/owned/providers/Microsoft.ManagedIdentity/userAssignedIdentities/owned-id/federatedIdentityCredentials/test'
+    actual = pinned.replace(old, new)
+    row = {'address': 'owned.identity', 'id': pinned}
+    current = dict(row, id=actual)
+    plan = {'resource_changes': [{'mode': 'managed', 'address': row['address'],
+        'change': {'actions': ['delete'], 'before': {'id': actual}, 'after': None}}]}
+    with pytest.raises(Exception, match='plan'):
+        cleanup.validate_remaining_delete(plan, [row], [current])
+
+
 def test_timeout_remaining_identity_only(cleanup):
     original = [{"address":"azurerm_resource_group.owned","id":"/subscriptions/s/resourceGroups/owned"},
         {"address":"azurerm_search_service.owned","id":"/subscriptions/s/resourceGroups/owned/providers/Microsoft.Search/searchServices/owned"}]
@@ -83,6 +112,36 @@ def test_timeout_continuation_uses_a_fresh_remaining_plan(cleanup,tmp_path,monke
     assert second["physical_pass"] is True
     assert driver.plans == [(1,rows),(2,[rows[1]])]
     assert (tmp_path/"cleanup-attempt-1.json").exists()
+
+
+def test_cleanup_executes_owned_identity_with_mixed_grammar_case(cleanup,tmp_path,monkeypatch):
+    from scripts.pipelines.session import SessionAuthority,exclusive_json
+    start = datetime(2026,10,18,8,tzinfo=timezone.utc)
+    a = SessionAuthority('p8-1018c','a'*40,'b'*40,'c'*64,start.isoformat(),
+        *[(start+timedelta(minutes=n)).isoformat() for n in (75,78,80,120)],'d'*64)
+    pinned = '/subscriptions/sub/resourcegroups/owned/providers/microsoft.managedidentity/userassignedidentities/owned-id'
+    actual = '/subscriptions/sub/resourceGroups/owned/providers/Microsoft.ManagedIdentity/userAssignedIdentities/owned-id'
+    component = {'name':'identity','resources':[{'address':'owned.identity','id':pinned}]}
+    retained = {'resources':[],'roleAssignments':[],'deletedVaults':[]}
+    exclusive_json(tmp_path/'baseline.json',{'retained':retained})
+    monkeypatch.setattr(cleanup,'load',lambda directory:(a,{}, {'components':[component]}))
+    class Driver:
+        applied = False
+        def verify_owner(self): pass
+        def active_owned(self): return []
+        def state(self,component):
+            return [] if self.applied else [{'address':'owned.identity','id':actual}]
+        def plan(self,component,attempt,remaining):
+            assert remaining == [{'address':'owned.identity','id':actual}]
+            return {'resource_changes':[{'mode':'managed','address':'owned.identity',
+                'change':{'actions':['delete'],'before':{'id':pinned},'after':None}}]}
+        def apply(self,component,attempt): self.applied = True
+        def retained(self): return retained
+        def canonical_absence(self): return self.applied
+    driver = Driver()
+    assert cleanup.execute(tmp_path,start+timedelta(minutes=78),driver=driver)['physical_pass']
+    assert driver.applied
+    assert component['resources'][0]['id'] == pinned
 
 
 def test_no_apply_cleanup_does_not_touch_driver(cleanup,tmp_path,monkeypatch):

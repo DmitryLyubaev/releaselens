@@ -89,6 +89,25 @@ def test_guard_only_does_not_authenticate_or_publish_failure(modules, monkeypatc
     assert not public.exists()
 
 
+def test_upload_refusal_publishes_fixed_check_not_remote_text(modules, monkeypatch, tmp_path, capsys):
+    from app.delivery_search import client
+    _, run = modules
+    refusal = getattr(client, 'UploadRefused', None)
+    assert refusal is not None, 'upload failure diagnostics are missing'
+    monkeypatch.setattr(run, 'context', lambda *args: ({}, {}))
+    def fail(*args):
+        raise refusal('upload-deadline')
+    monkeypatch.setattr(run, 'Runtime', fail)
+    public = tmp_path / 'publish'
+    assert run.main(['test', '--authority', str(tmp_path / 'authority.json'),
+        '--receipt-dir', str(public)]) == 2
+    assert json.loads((public / 'failure.json').read_bytes()) == {
+        'kind': 'stage-failure', 'stage': 'test', 'code': 'upload', 'check': 'upload-deadline'}
+    assert str(refusal('PRIVATE_RESPONSE_TOKEN')) == 'upload'
+    assert refusal('PRIVATE_RESPONSE_TOKEN').check == 'upload-unclassified'
+    assert 'PRIVATE' not in (public / 'failure.json').read_text() + capsys.readouterr().out
+
+
 @pytest.mark.parametrize("args,check", [
     (["account", "show", "--output", "json"], "cli-account"),
     (["account", "get-access-token", "--output", "json"], "cli-access-token"),
