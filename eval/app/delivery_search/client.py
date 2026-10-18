@@ -1,4 +1,5 @@
 """Bounded Search data-plane operations. Never retries a document or query."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 from pathlib import Path
@@ -14,6 +15,34 @@ from ..retrieval.corpus import load_chunks
 from ..retrieval.search_index import _compact
 
 API_VERSION = "2024-07-01"
+UPLOAD_CHECKS = frozenset({'upload-deadline', 'upload-requests', 'upload-size',
+    'upload-response', 'upload-incomplete', 'upload-unclassified'})
+
+
+class UploadRefused(DeliveryRefused):
+    """An allowlisted diagnostic, never a remote response or corpus fragment."""
+    def __init__(self, check):
+        self.check = check if check in UPLOAD_CHECKS else 'upload-unclassified'
+        super().__init__('upload')
+
+
+def document_batches(documents):
+    """Encode each document once, including UTF-8 and envelope bytes in the cap."""
+    prefix, suffix = b'{"value":[', b']}'
+    encoded, keys, size = [], [], len(prefix) + len(suffix)
+    limit = 12 * 1024 * 1024
+    for document in documents:
+        item = canonical(document)
+        if len(item) + len(prefix) + len(suffix) > limit:
+            raise UploadRefused("upload-size")
+        if encoded and (len(encoded) == 500 or size + 1 + len(item) > limit):
+            yield keys, prefix + b','.join(encoded) + suffix
+            encoded, keys, size = [], [], len(prefix) + len(suffix)
+        size += len(item) + bool(encoded)
+        encoded.append(item)
+        keys.append(document["chunk_id"])
+    if encoded:
+        yield keys, prefix + b','.join(encoded) + suffix
 
 
 def send(target: SearchTarget, tokens, client: httpx.Client, method: str, operation: str,
@@ -77,41 +106,46 @@ def upload_bundle(bundle: VerifiedBundle, target: SearchTarget, tokens, client: 
     vectors = np.load(bundle.root / "corpus.npy", allow_pickle=False, mmap_mode="r")
     started, requests, sent = time.monotonic(), 0, 0
 
-    def submit(documents):
+    def submit(keys_expected, payload):
         nonlocal requests, sent
-        if requests >= 200 or time.monotonic() - started >= 240:
-            raise DeliveryRefused("upload")
-        payload = canonical({"value": documents})
+        if time.monotonic() - started >= 240:
+            raise UploadRefused("upload-deadline")
+        if requests >= 200:
+            raise UploadRefused("upload-requests")
         if len(payload) > 12 * 1024 * 1024:
-            raise DeliveryRefused("upload")
+            raise UploadRefused("upload-size")
         requests += 1
         try:
             rows = send(target, tokens, client, "POST", "docs/index", payload).json()["value"]
+            if time.monotonic() - started >= 240:
+                raise UploadRefused("upload-deadline")
             keys = [row["key"] for row in rows]
-            if (len(keys) != len(documents) or len(set(keys)) != len(keys)
-                or set(keys) != {d["chunk_id"] for d in documents}
+            if (len(keys) != len(keys_expected) or len(set(keys)) != len(keys)
+                or set(keys) != set(keys_expected)
                 or any(row["status"] is not True or row["statusCode"] not in (200, 201) for row in rows)):
-                raise DeliveryRefused("upload")
+                raise UploadRefused("upload-response")
         except (KeyError, ValueError, TypeError):
-            raise DeliveryRefused("upload") from None
-        sent += len(documents)
+            raise UploadRefused("upload-response") from None
+        sent += len(keys_expected)
 
-    batch, size = [], len(b'{"value":[]}')
-    for row, chunk_id in enumerate(ids):
-        chunk = chunks[chunk_id]
-        document = {"@search.action": "upload", "chunk_id": str(chunk_id), "artefact": chunk.artefact,
-                    "content": chunk.content, "vector": _compact(vectors[row])}
-        item_size = len(canonical(document)) + 1
-        if item_size + 12 > 12 * 1024 * 1024:
-            raise DeliveryRefused("upload")
-        if batch and (len(batch) == 500 or size + item_size > 12 * 1024 * 1024):
-            submit(batch)
-            batch, size = [], len(b'{"value":[]}')
-        batch.append(document)
-        size += item_size
-    if batch:
-        submit(batch)
+    def documents():
+        for row, chunk_id in enumerate(ids):
+            chunk = chunks[chunk_id]
+            yield {"@search.action": "upload", "chunk_id": str(chunk_id), "artefact": chunk.artefact,
+                   "content": chunk.content, "vector": _compact(vectors[row])}
+
+    # Encode the next bounded batch while the sole HTTP worker waits. No second
+    # request starts until the previous response passed every check. On failure,
+    # the prepared next batch is discarded and the reservation forbids replay.
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        pending = None
+        for keys, payload in document_batches(documents()):
+            if pending is not None:
+                pending.result()
+            pending = worker.submit(submit, keys, payload)
+        if pending is not None:
+            pending.result()
     if sent != 41825:
-        raise DeliveryRefused("upload")
+        raise UploadRefused("upload-incomplete")
     wait_for_count(target, tokens, client)
     return sent
