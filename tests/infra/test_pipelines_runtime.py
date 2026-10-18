@@ -124,7 +124,8 @@ def flow(run,tmp_path,repo_root,monkeypatch):
         runtime.process=lambda *args,**kw:SimpleNamespace(returncode=0,stdout="private original",stderr="")
         runtime.search_tokens=SimpleNamespace(token=lambda:calls.append("token") or "synthetic")
         runtime.initialize=lambda *args:calls.append("init")
-        runtime.client=httpx.Client(transport=httpx.MockTransport(lambda request:calls.append("request") or httpx.Response(404)))
+        runtime.client=httpx.Client(transport=httpx.MockTransport(lambda request:calls.append("request") or (
+            httpx.Response(200,text="0") if request.url.path.endswith('/docs/$count') else httpx.Response(404))))
         legacy=runtime.work/"legacy"; legacy.mkdir()
         (legacy/".terraform.lock.hcl").write_bytes((repo_root/"infra/pipelines/index/.terraform.lock.hcl").read_bytes())
         runtime.terraform=lambda target:calls.append("init") or legacy
@@ -202,6 +203,40 @@ def test_upload_deadline_metrics_survive_in_published_stage_directory(run,flow,m
         runtime.apply_and_load('test')
     assert caught.value.check == 'upload-deadline'
     assert json.loads((runtime.publish/'upload-test.metrics.json').read_bytes()) == metrics
+
+
+@pytest.mark.parametrize('count', ['0', '\ufeff0'])
+def test_new_index_count_access_is_verified_before_bulk_upload(run,flow,monkeypatch,count):
+    make,calls,records,shown=flow
+    runtime=make('empty-count')
+    events=[]
+    def server(request):
+        if request.url.path.endswith('/docs/$count'):
+            events.append('count')
+            return httpx.Response(200,text=count)
+        return httpx.Response(404)
+    runtime.client.close()
+    runtime.client=httpx.Client(transport=httpx.MockTransport(server))
+    def upload(*args,**kwargs):
+        assert events==['count']
+        events.append('upload')
+    monkeypatch.setattr(run,'upload_bundle',upload)
+    with runtime.client:
+        runtime.apply_and_load('test')
+    assert events==['count','upload']
+
+
+@pytest.mark.parametrize('status,body', [(403,'private response'),(200,'1'),(200,'invalid')])
+def test_failed_count_preflight_preserves_apply_result_and_never_uploads(run,flow,monkeypatch,status,body):
+    make,calls,records,shown=flow
+    runtime=make('bad-count')
+    runtime.client.close()
+    runtime.client=httpx.Client(transport=httpx.MockTransport(lambda request:
+        httpx.Response(status,text=body) if request.url.path.endswith('/docs/$count') else httpx.Response(404)))
+    monkeypatch.setattr(run,'upload_bundle',lambda *a,**kw:pytest.fail('bulk upload started without count readiness'))
+    with runtime.client,pytest.raises(run.DeliveryRefused):
+        runtime.apply_and_load('test')
+    assert json.loads(records['applies/test/result.json'])['returncode']==0
 
 
 def test_expected_negative_requires_no_hits_not_merely_no_correct_answers(run):

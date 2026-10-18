@@ -16,6 +16,20 @@ class DeliveryRefused(Exception):
         super().__init__(self.code)
 
 
+REQUEST_CHECKS = frozenset({
+    "metadata-budget-http", "metadata-budget-transport", "blob-create-http", "blob-create-transport",
+    "search-count-http", "search-count-transport", "search-documents-http", "search-documents-transport",
+})
+
+
+class RequestRefused(DeliveryRefused):
+    """Only a fixed operation label and numeric status cross the stage boundary."""
+    def __init__(self, check, http_status=None):
+        self.check = check if isinstance(check,str) and check in REQUEST_CHECKS else "unclassified"
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        super().__init__("request")
+
+
 @dataclass(frozen=True)
 class FileDigest:
     path: str
