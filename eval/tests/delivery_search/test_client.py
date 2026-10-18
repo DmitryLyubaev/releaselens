@@ -67,3 +67,25 @@ def test_count_exact_success():
     with httpx.Client(transport=httpx.MockTransport(server)) as client:
         assert wait_for_count(target, Tokens(), client) == 41825
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('status',[401,403,404,429,503])
+def test_count_http_failure_reports_only_operation_and_status(status):
+    target=SearchTarget('https://owned.search.windows.net','p8-test','owned.search.windows.net')
+    with httpx.Client(transport=httpx.MockTransport(lambda request:httpx.Response(status,text='private remote response'))) as client:
+        with pytest.raises(DeliveryRefused) as caught:
+            wait_for_count(target,Tokens(),client)
+    assert getattr(caught.value,'check',None)=='search-count-http'
+    assert getattr(caught.value,'http_status',None)==status
+    assert 'private remote response' not in str(caught.value)
+
+
+def test_count_transport_failure_reports_no_endpoint_or_exception_text():
+    target=SearchTarget('https://owned.search.windows.net','p8-test','owned.search.windows.net')
+    def server(request):raise httpx.ReadTimeout('private connection detail',request=request)
+    with httpx.Client(transport=httpx.MockTransport(server)) as client:
+        with pytest.raises(DeliveryRefused) as caught:
+            wait_for_count(target,Tokens(),client)
+    assert getattr(caught.value,'check',None)=='search-count-transport'
+    assert getattr(caught.value,'http_status','missing') is None
+    assert 'private connection detail' not in str(caught.value)

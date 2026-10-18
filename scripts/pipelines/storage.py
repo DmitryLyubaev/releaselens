@@ -4,7 +4,7 @@ import re
 
 import httpx
 
-from app.delivery_search.contracts import DeliveryRefused, canonical
+from app.delivery_search.contracts import DeliveryRefused, RequestRefused, canonical
 
 
 class BlobStore:
@@ -44,14 +44,17 @@ class BlobStore:
     def put_once(self,container: str,key: str,data: bytes) -> None:
         if container != "evidence" or len(data) > 16*1024*1024:
             raise DeliveryRefused("authority")
+        check = "metadata-budget" if key.startswith("budgets/metadata/") else "blob-create"
         try:
             response = self.client.put(self._url(container,key),content=data,headers={
                 "Authorization":f"Bearer {self.tokens.token()}","x-ms-version":"2023-11-03",
                 "x-ms-blob-type":"BlockBlob","If-None-Match":"*"},follow_redirects=False,timeout=30)
-            if response.status_code == 412: raise DeliveryRefused("reserved")
-            if response.status_code != 201: raise DeliveryRefused("request")
+            if response.status_code == 412 or (response.status_code == 409
+                    and response.headers.get("x-ms-error-code") == "BlobAlreadyExists"):
+                raise DeliveryRefused("reserved")
+            if response.status_code != 201: raise RequestRefused(check+"-http",response.status_code)
         except httpx.HTTPError:
-            raise DeliveryRefused("request") from None
+            raise RequestRefused(check+"-transport") from None
 
     def put_json(self,key: str,value: dict) -> None:
         self.put_once("evidence",key,canonical(value))

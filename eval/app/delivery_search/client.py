@@ -11,7 +11,7 @@ import numpy as np
 import orjson
 
 from .bundle import read_json, validate_inputs
-from .contracts import DeliveryRefused, SearchTarget, VerifiedBundle, canonical, exclusive_json
+from .contracts import DeliveryRefused, RequestRefused, SearchTarget, VerifiedBundle, canonical, exclusive_json
 from ..retrieval.arms import Hit
 from ..retrieval.corpus import load_chunks
 
@@ -61,15 +61,16 @@ def document_batches(documents):
 def send(target: SearchTarget, tokens, client: httpx.Client, method: str, operation: str,
          body: bytes | None = None) -> httpx.Response:
     # SearchTarget is immutable and validates both exact authority hostname and logical index.
+    check = "search-count" if method == "GET" and operation == "docs/$count" else "search-documents"
     try:
         response = client.request(method, f"{target.endpoint.rstrip('/')}/indexes/{target.index}/{operation}",
             params={"api-version": API_VERSION}, headers={"Authorization": f"Bearer {tokens.token()}",
             "Content-Type": "application/json"}, content=body, follow_redirects=False, timeout=20)
         if response.status_code not in (200, 201, 207):
-            raise DeliveryRefused("request")
+            raise RequestRefused(check+"-http",response.status_code)
         return response
     except httpx.HTTPError:
-        raise DeliveryRefused("request") from None
+        raise RequestRefused(check+"-transport") from None
 
 
 def search_once(target: SearchTarget, question: str, vector: np.ndarray, config: dict,
@@ -93,14 +94,18 @@ def search_once(target: SearchTarget, question: str, vector: np.ndarray, config:
         raise DeliveryRefused("request") from None
 
 
+def document_count(target: SearchTarget, tokens, client: httpx.Client) -> int:
+    try:
+        return int(send(target,tokens,client,"GET","docs/$count").text.lstrip("\ufeff").strip())
+    except ValueError:
+        raise DeliveryRefused("count") from None
+
+
 def wait_for_count(target: SearchTarget, tokens, client: httpx.Client, *, sleep=None) -> int:
     sleep = time.sleep if sleep is None else sleep
     started = time.monotonic()
     for attempt in range(24):
-        try:
-            count = int(send(target, tokens, client, "GET", "docs/$count").text.lstrip("\ufeff").strip())
-        except ValueError:
-            raise DeliveryRefused("count") from None
+        count = document_count(target,tokens,client)
         if count == 41825:
             return count
         if count > 41825 or time.monotonic() - started >= 115:

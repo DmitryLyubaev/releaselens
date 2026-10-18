@@ -19,8 +19,8 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from app.delivery_search.bundle import fetch_bundle,read_json
-from app.delivery_search.client import UPLOAD_CHECKS,UploadRefused,upload_bundle
-from app.delivery_search.contracts import DeliveryRefused,SearchTarget,canonical,exclusive_json,sha256_file
+from app.delivery_search.client import UPLOAD_CHECKS,UploadRefused,document_count,upload_bundle
+from app.delivery_search.contracts import REQUEST_CHECKS,DeliveryRefused,RequestRefused,SearchTarget,canonical,exclusive_json,sha256_file
 from app.delivery_search.gate import grade_rows,run_gate,write_gate
 from app.retrieval.arms import ArmResult,Hit
 from app.retrieval.azure_auth import TokenSource
@@ -326,6 +326,9 @@ class Runtime:
                 with (published/"result.json").open("xb") as out: out.write(data)
                 self.store.put_once("evidence",f"applies/{target}/result.json",data)
         upload_reservation=self.work/("upload-"+target+".json")
+        # Verify count access and the reused metadata-budget slot before bulk work.
+        if document_count(validated,self.search_tokens,self.client) != 0:
+            raise DeliveryRefused("plan")
         try:
             upload_bundle(self.bundle,validated,self.search_tokens,self.client,reservation=upload_reservation)
         finally:
@@ -419,12 +422,16 @@ def main(argv=None) -> int:
         check = exc.check if isinstance(exc,IdentityRefused) and exc.check in IDENTITY_CHECKS else "unclassified"
         if isinstance(exc,UploadRefused) and exc.check in UPLOAD_CHECKS:
             check = exc.check
+        details={}
+        if isinstance(exc,RequestRefused):
+            check=exc.check if isinstance(exc.check,str) and exc.check in REQUEST_CHECKS else "unclassified"
+            details['http_status']=exc.http_status if type(exc.http_status) is int and 100<=exc.http_status<=599 else None
         # The directory published by every stage must contain the early refusal.
         # Exception text and raw tracebacks remain outside this artifact.
         with suppress(OSError):
             args.receipt_dir.mkdir(parents=True,exist_ok=True)
             exclusive_json(args.receipt_dir/"failure.json",{
-                "kind":"stage-failure","stage":args.stage,"code":code,"check":check})
+                "kind":"stage-failure","stage":args.stage,"code":code,"check":check,**details})
         with suppress(OSError):
             args.receipt_dir.parent.mkdir(parents=True,exist_ok=True)
             with (args.receipt_dir.parent/"failure-private.txt").open("x",encoding="utf-8") as out:
