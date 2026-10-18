@@ -188,6 +188,22 @@ def test_apply_timeout_original_publishes_before_agent_exit(run,flow):
     assert (runtime.publish/"test-apply/result.json").exists()
 
 
+def test_upload_deadline_metrics_survive_in_published_stage_directory(run,flow,monkeypatch):
+    make,calls,records,shown=flow
+    runtime=make('upload-deadline')
+    metrics={'kind':'upload-metrics','documents_confirmed':500,'requests_started':2,
+        'bytes_started':1234,'encoding_seconds':2.0,'http_seconds':238.0,
+        'elapsed_seconds':240.0,'outcome':'failed','check':'upload-deadline'}
+    def refused(*args,reservation,**kw):
+        run.exclusive_json(reservation.with_suffix('.metrics.json'),metrics)
+        raise run.UploadRefused('upload-deadline')
+    monkeypatch.setattr(run,'upload_bundle',refused)
+    with pytest.raises(run.UploadRefused) as caught:
+        runtime.apply_and_load('test')
+    assert caught.value.check == 'upload-deadline'
+    assert json.loads((runtime.publish/'upload-test.metrics.json').read_bytes()) == metrics
+
+
 def test_expected_negative_requires_no_hits_not_merely_no_correct_answers(run):
     result=SimpleNamespace(passed=False,correct=0,evaluated=229,errors=0,missing=0,skipped=0)
     rows=[SimpleNamespace(hits=[]) for _ in range(229)]

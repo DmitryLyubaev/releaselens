@@ -48,7 +48,27 @@ def test_empty_input_produces_no_request():
     assert batches([]) == []
 
 
-def test_upload_deadline_is_checked_after_last_successful_response(monkeypatch, tmp_path):
+def test_mapped_float32_vectors_preserve_bits_and_unicode(tmp_path):
+    path = tmp_path / 'vectors.npy'
+    values = np.array([[0.1, -1e-8, -0.0, np.finfo(np.float32).tiny,
+                        np.finfo(np.float32).max, np.nextafter(np.float32(0), np.float32(1))]], dtype=np.float32)
+    np.save(path, values)
+    mapped = np.load(path, mmap_mode='r')
+    result = batches([{'chunk_id': '1', 'content': 'café "x"\n', 'vector': mapped[0]}])
+    doc = json.loads(result[0][1])['value'][0]
+    actual = np.asarray(doc['vector'], dtype=np.float32)
+    assert actual.view(np.uint32).tolist() == values[0].view(np.uint32).tolist()
+    assert doc['content'] == 'café "x"\n'
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_nonfinite_native_vector_refuses_instead_of_becoming_null(value):
+    with pytest.raises(DeliveryRefused, match='upload'):
+        batches([{'chunk_id': '1', 'vector': np.asarray([value], dtype=np.float32)}])
+
+
+@pytest.mark.parametrize('metrics_blocked', [False, 'directory', 'existing-file'])
+def test_upload_deadline_is_checked_after_last_successful_response(monkeypatch, tmp_path, metrics_blocked):
     # Exercise the full uploader with cheap valid document structure; input validation
     # has its own complete frozen-bundle tests and is outside this timer boundary.
     ids = list(range(41825))
@@ -57,8 +77,12 @@ def test_upload_deadline_is_checked_after_last_successful_response(monkeypatch, 
     monkeypatch.setattr(client, 'load_chunks', lambda path: [SimpleNamespace(
         chunk_id=i, artefact=chunk.artefact, content=chunk.content) for i in ids])
     monkeypatch.setattr(client, 'read_json', lambda path: ids)
-    monkeypatch.setattr(client.np, 'load', lambda *a, **kw: np.zeros((41825, 1)))
+    monkeypatch.setattr(client.np, 'load', lambda *a, **kw: np.zeros((41825, 1), dtype=np.float32))
     now, posts, counts = [0.0], [], []
+    if metrics_blocked == 'directory':
+        (tmp_path/'reservation.metrics.json').mkdir()
+    elif metrics_blocked == 'existing-file':
+        (tmp_path/'reservation.metrics.json').write_bytes(b'original diagnostic')
     monkeypatch.setattr(client.time, 'monotonic', lambda: now[0])
     def server(request):
         if request.method == 'GET':
@@ -78,6 +102,21 @@ def test_upload_deadline_is_checked_after_last_successful_response(monkeypatch, 
     assert caught.value.check == 'upload-deadline'
     assert len(posts) == len(set(posts)) == 41825
     assert counts == []
+    if metrics_blocked:
+        if metrics_blocked == 'directory':
+            assert (tmp_path/'reservation.metrics.json').is_dir()
+        else:
+            assert (tmp_path/'reservation.metrics.json').read_bytes() == b'original diagnostic'
+        return
+    metrics = json.loads((tmp_path/'reservation.metrics.json').read_bytes())
+    assert metrics['documents_confirmed'] == 41500
+    assert metrics['requests_started'] == 84
+    assert metrics['bytes_started'] > 0
+    assert metrics['elapsed_seconds'] == metrics['http_seconds'] == 240
+    assert metrics['encoding_seconds'] == 0
+    assert metrics['outcome'] == 'failed' and metrics['check'] == 'upload-deadline'
+    assert set(metrics) == {'kind', 'documents_confirmed', 'requests_started', 'bytes_started',
+                           'elapsed_seconds', 'http_seconds', 'encoding_seconds', 'outcome', 'check'}
 
 
 def test_encoding_next_batch_overlaps_one_request_without_parallel_posts(monkeypatch, tmp_path):
@@ -86,15 +125,15 @@ def test_encoding_next_batch_overlaps_one_request_without_parallel_posts(monkeyp
     monkeypatch.setattr(client, 'load_chunks', lambda path: [SimpleNamespace(
         chunk_id=i, artefact='a', content='text') for i in ids])
     monkeypatch.setattr(client, 'read_json', lambda path: ids)
-    monkeypatch.setattr(client.np, 'load', lambda *a, **kw: np.zeros((41825, 1)))
+    monkeypatch.setattr(client.np, 'load', lambda *a, **kw: np.zeros((41825, 1), dtype=np.float32))
     request_started, next_encoded = threading.Event(), threading.Event()
-    original = client.canonical
+    original = client.encode_document
     def encode(document):
         if document.get('chunk_id') == '501':
             assert request_started.wait(2), 'first request must start while next batch is encoded'
             next_encoded.set()
         return original(document)
-    monkeypatch.setattr(client, 'canonical', encode)
+    monkeypatch.setattr(client, 'encode_document', encode)
     uploaded, active = [], [0]
     def server(request):
         if request.method == 'GET':
@@ -115,3 +154,6 @@ def test_encoding_next_batch_overlaps_one_request_without_parallel_posts(monkeyp
             SimpleNamespace(token=lambda: 'synthetic'), transport,
             reservation=tmp_path/'reservation.json') == 41825
     assert uploaded == [str(i) for i in ids]
+    metrics = json.loads((tmp_path/'reservation.metrics.json').read_bytes())
+    assert metrics['outcome'] == 'uploaded' and metrics['check'] is None
+    assert metrics['documents_confirmed'] == 41825 and metrics['requests_started'] == 84

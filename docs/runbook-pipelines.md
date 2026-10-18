@@ -353,12 +353,16 @@ Register those bytes in `originals.json`, then run `quiescence --session <sessio
 rechecks those originals, every build and the request digest. For early successful or
 explicit-stop cleanup, use `--request-closeout` and complete the same browser handoff
 before requesting native cleanup; this command independently checks early authority.
+Early native dispatch and direct cleanup execution require that verified
+acknowledgement. A missing or failed handoff leaves the deletion/helper reservation
+unused. Complete restoration and acknowledge it, then request early cleanup again.
 
 If the browser is unavailable or an action fails, record `--acknowledge unavailable`
 or `failed` against that same request. Missing/unverified acknowledgements are recorded
 at cleanup, never an unbounded wait past the approved profile's cleanup due/start bounds.
 Physical cleanup still proceeds within
 its scope; P8-8 cannot pass without actual pre-delete disabled/empty/restored evidence.
+This due-time fallback is unchanged by the early-cleanup acknowledgement gate.
 The concrete monitor must preserve these instructions and adopt the existing watchdog
 and native helper rather than launching duplicates. No monitor is created by this runbook.
 
@@ -367,6 +371,15 @@ and prod sets together; negative and scheduled require original positive gates. 
 Blob reservations enforce the same no-replay rule on new agents. Metadata requests use
 120 conditional-create slots shared across the session, and each upload has at most
 200 requests. A reserved slot is consumed even if its request subsequently fails.
+
+Uploads serialize the frozen float32 vectors directly, preserving their float32
+bits and keeping the existing 500-document/12-MiB batch and 240-second bounds.
+The stage artifact includes `upload-test.metrics.json` or
+`upload-demo-prod.metrics.json` on success and refusal. These contain numeric
+request/byte/confirmed-document counts and encoding/HTTP/elapsed timing, never
+corpus or response text. Encoding overlaps HTTP, so the timings are not additive.
+A successful upload metric does not imply that the subsequent count or quality
+gate passed.
 
 Use the original watchdog's `--request-cleanup` path for an authorized early closeout.
 At due time it adopts that exact native helper. Inspect `cleanup --status` and original

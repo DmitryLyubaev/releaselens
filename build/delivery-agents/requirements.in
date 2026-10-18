@@ -1,6 +1,7 @@
 # Delivery workload plus offline regression imports. Never invokes either research CLI.
 httpx==0.28.1
 numpy==2.5.3
+orjson==3.13.0
 azure-identity==1.26.0
 pytest==9.1.1
 pytest-asyncio==1.4.0

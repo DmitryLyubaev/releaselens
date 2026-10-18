@@ -93,7 +93,8 @@ def execute(directory: Path,now: datetime,*,driver=None) -> dict:
     a,raw,manifest=load(directory)
     if a.apply_started_at is None: return {"status":"no-apply","physical_pass":False}
     if (directory/"cleanup-result.json").exists(): return read(directory/"cleanup-result.json")
-    if not a.cleanup_due(now):
+    due = a.cleanup_due(now)
+    if not due:
         stop=read(directory/"owner-stop-authority.json") if (directory/"owner-stop-authority.json").exists() else {}
         from .evidence import grade
         completed=all(v["status"]=="PASS" for k,v in grade(directory).items() if k!="P8-8")
@@ -107,13 +108,18 @@ def execute(directory: Path,now: datetime,*,driver=None) -> dict:
             if read(intent)["identity_sha256"]!=a.manifest_sha256: raise DeliveryRefused("authority")
         require_idle(driver)
         driver.verify_owner()
+        quiesced = quiescence_before(directory,a,raw)
+        if not due and not quiesced:
+            # An early stop authorizes cleanup, but does not waive restoration.
+            # Leave the deletion reservation unused so the due-time fallback works.
+            return {"status":"pending","physical_pass":False,"awaiting":"restoration"}
         attempt=1
         while (directory/f"intents/cleanup-{attempt}.json").exists(): attempt+=1
         _reserve(directory,f"cleanup-{attempt}",a.manifest_sha256)
         start=datetime.now(timezone.utc).isoformat()
         summary={"session":a.session,"source_sha":a.source_sha,"manifest_sha256":a.manifest_sha256,
             "attempt":attempt,"cleanup_started_at":start,"physical_pass":False,"status":"failed","components":[]}
-        summary["quiescence_before"]=quiescence_before(directory,a,raw)
+        summary["quiescence_before"]=quiesced
         try:
             components={v["name"]:v for v in manifest["components"]}
             for name in ORDER:

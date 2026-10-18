@@ -114,6 +114,15 @@ def verify_exits(directory: Path):
 
 
 def dispatch_cleanup(directory: Path):
+    a,raw,_=load(directory)
+    now=datetime.now(timezone.utc)
+    if not a.cleanup_due(now):
+        from .quiescence import request_closeout,status
+        request_closeout(directory,now)
+        if not status(directory,a,raw)["verified"]:
+            # Do not consume the one native-helper reservation for a pending
+            # early handoff. The original due-time supervisor must still launch.
+            raise DeliveryRefused("cleanup")
     # All owner callers use this reservation, so an early cleanup is adopted at due.
     with operation_lock(directory):
         marker=directory/"cleanup-native.json"
