@@ -178,6 +178,9 @@ class Runtime:
         self.store = BlobStore(a["storage_host"],TokenSource("https://storage.azure.com/.default",principal["tenant_id"]),client)
         # Reserve before fetching any corpus/query context. A fresh agent cannot replay a set.
         self.store.put_json(f"operations/{stage}.json",self.proof | {"stage":stage})
+        # Preserve the exact token-free runtime original on the existing private
+        # evidence channel; artifact download access is not a prerequisite.
+        self.store.put_once("evidence",f"identities/{stage}.json",(self.publish/"identity.json").read_bytes())
         def metadata_budget(request):
             if request.url.host==a["search_host"] and request.method=="GET":
                 self.store.reserve_budget("metadata",120)

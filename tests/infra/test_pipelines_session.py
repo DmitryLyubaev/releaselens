@@ -61,6 +61,41 @@ def test_watchdog_handoff_and_exit(session_module,tmp_path):
     assert not watchdog.same_process(expected,None)
 
 
+def test_cutoff_preparation_is_early_durable_and_cannot_request_cleanup(session_module,tmp_path,monkeypatch):
+    watchdog=importlib.import_module("scripts.pipelines.watchdog")
+    quiescence=importlib.import_module("scripts.pipelines.quiescence")
+    a=session_module.SessionAuthority(**authority())
+    calls=[]
+    monkeypatch.setattr(quiescence,"request",lambda *args:calls.append("request"))
+    cutoff=session_module.instant(a.queue_cutoff_at)
+    path=tmp_path/"quiescence-preparation.json"
+    watchdog.cutoff_handoff(tmp_path,a,{"pipeline_id":2},cutoff-timedelta(minutes=10,seconds=1))
+    assert not path.exists() and calls==[]
+    watchdog.cutoff_handoff(tmp_path,a,{"pipeline_id":2},cutoff-timedelta(minutes=10))
+    notice=json.loads(path.read_bytes())
+    assert notice["session"]==a.session and notice["source_sha"]==a.source_sha
+    assert notice["queue_cutoff_at"]==a.queue_cutoff_at and notice["cleanup_due_at"]==a.cleanup_due_at
+    assert notice["acknowledge_by"]==(session_module.instant(a.cleanup_due_at)-timedelta(seconds=45)).isoformat()
+    assert notice["actions"]==["prepare-owner-browser-restoration"] and calls==[]
+    original=path.read_bytes()
+    watchdog.cutoff_handoff(tmp_path,a,{"pipeline_id":2},cutoff-timedelta(minutes=1))
+    assert path.read_bytes()==original and calls==[]
+    assert not (tmp_path/"quiescence/request.json").exists()
+    watchdog.cutoff_handoff(tmp_path,a,{"pipeline_id":2},cutoff)
+    assert calls==["request"] and path.read_bytes()==original
+
+
+def test_preparation_io_failure_cannot_prevent_original_cutoff_request(session_module,tmp_path,monkeypatch):
+    watchdog=importlib.import_module("scripts.pipelines.watchdog")
+    quiescence=importlib.import_module("scripts.pipelines.quiescence")
+    a=session_module.SessionAuthority(**authority());calls=[]
+    monkeypatch.setattr(quiescence,"request",lambda *args:calls.append("request"))
+    def broken(*args): raise OSError("simulated notice write failure")
+    monkeypatch.setattr(watchdog,"prepare_handoff",broken)
+    watchdog.cutoff_handoff(tmp_path,a,{"pipeline_id":2},session_module.instant(a.queue_cutoff_at))
+    assert calls==["request"]
+
+
 def test_dispatch_reserves_all_queries_before_browser_queue(session_module,tmp_path,monkeypatch):
     raw=authority(); a=session_module.SessionAuthority(**raw)
     monkeypatch.setattr(session_module,"load",lambda directory:(a,{},{}))
