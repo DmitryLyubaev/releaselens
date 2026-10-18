@@ -96,8 +96,8 @@ def execute(directory: Path,now: datetime,*,driver=None) -> dict:
     due = a.cleanup_due(now)
     if not due:
         stop=read(directory/"owner-stop-authority.json") if (directory/"owner-stop-authority.json").exists() else {}
-        from .evidence import grade
-        completed=all(v["status"]=="PASS" for k,v in grade(directory).items() if k!="P8-8")
+        from .evidence import workload_complete
+        completed=workload_complete(directory)
         if not completed and not early_allowed(stop,a.source_sha,a.session):
             return {"status":"pending","physical_pass":False}
     if driver is None:

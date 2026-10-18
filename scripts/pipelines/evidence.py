@@ -191,6 +191,33 @@ def _check_identity(o,stage,role):
         raise DeliveryRefused("identity")
 
 
+def scheduled_workload(o, bundle, raw):
+    """Authenticate scheduled results before restoration; never grade closeout."""
+    metrics=o.gate("verify",bundle)
+    verify_checks(o.json("checks-snapshot"),raw["checks_expected"])
+    build=o.build("scheduled",reason="schedule")
+    expected=checks_for_run(raw["checks_expected"]["checks"],raw["principals"],scheduled=True)
+    require_evaluations(o.json("scheduled-checks-evaluations"),expected,build["orchestrationPlan"]["planId"])
+    return metrics
+
+
+def workload_complete(directory: Path) -> bool:
+    """Authorize restoration from actual workload evidence, without a final PASS."""
+    try:
+        results=grade(directory)
+        if any(results.get("P8-"+str(i),{}).get("status")!="PASS" for i in range(1,7)):
+            return False
+        a,raw,_=load(directory)
+        o=Originals(directory,a,raw)
+        with tempfile.TemporaryDirectory(prefix="p8-workload-",dir=directory) as scratch:
+            bundle=verify_bundle(o.path("bundle"),a.release_digest,Path(scratch)/"bundle")
+            if bundle.manifest.source_sha!=a.source_sha: raise DeliveryRefused("bundle")
+            scheduled_workload(o,bundle,raw)
+        return True
+    except Exception:
+        return False
+
+
 def grade(directory: Path) -> dict[str,dict]:
     results={"P8-"+str(i):{"status":"NOT RUN","code":"missing-original"} for i in range(1,9)}
     if not (directory/"authority.json").exists(): return results
@@ -275,11 +302,7 @@ def grade(directory: Path) -> dict[str,dict]:
             return metrics
         perform(6,negative)
         def scheduled():
-            metrics=o.gate("verify",inputs())
-            verify_checks(o.json("checks-snapshot"),raw["checks_expected"])
-            build=o.build("scheduled",reason="schedule")
-            expected=checks_for_run(raw["checks_expected"]["checks"],raw["principals"],scheduled=True)
-            require_evaluations(o.json("scheduled-checks-evaluations"),expected,build["orchestrationPlan"]["planId"])
+            metrics=scheduled_workload(o,inputs(),raw)
             definition=o.json("definition-disabled")
             queue=o.json("queue-after")
             if definition["id"]!=raw["pipeline_id"] or definition["queueStatus"]!="disabled" or any(

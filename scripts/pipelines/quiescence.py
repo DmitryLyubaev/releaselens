@@ -33,9 +33,9 @@ def request_closeout(directory,now):
     a,raw,_=load(directory); verify_source(a)
     if now<instant(a.queue_cutoff_at):
         from .cleanup import early_allowed
-        from .evidence import grade
+        from .evidence import workload_complete
         stop=read(directory/"owner-stop-authority.json") if (directory/"owner-stop-authority.json").exists() else {}
-        complete=all(value["status"]=="PASS" for key,value in grade(directory).items() if key!="P8-8")
+        complete=workload_complete(directory)
         if not complete and not early_allowed(stop,a.source_sha,a.session): raise DeliveryRefused("authority")
     return request(directory,a,raw,now,early=True)
 

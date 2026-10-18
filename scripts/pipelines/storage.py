@@ -6,12 +6,17 @@ import httpx
 
 from app.delivery_search.contracts import DeliveryRefused, RequestRefused, canonical
 
+# The final twelve shared slots are exclusively for physical index observations.
+METADATA_OPERATIONS = 108
+METADATA_TOTAL = 120
+
 
 class BlobStore:
     def __init__(self,host: str,tokens,client: httpx.Client):
         if not re.fullmatch(r"[a-z0-9]{3,24}\.blob\.core\.windows\.net",host):
             raise DeliveryRefused("target")
         self.host,self.tokens,self.client = host,tokens,client
+        self._budget_next = {}
 
     def _url(self,container: str,key: str) -> str:
         if container not in ("inputs","evidence","test-state","prod-state") or not re.fullmatch(r"[A-Za-z0-9/._-]+",key) or any(p in (".","..","") for p in key.split("/")):
@@ -59,16 +64,26 @@ class BlobStore:
     def put_json(self,key: str,value: dict) -> None:
         self.put_once("evidence",key,canonical(value))
 
-    def reserve_budget(self,name: str,maximum: int) -> str:
-        if not re.fullmatch(r"[a-z-]{1,32}",name) or not 1<=maximum<=200:
+    def reserve_budget(self,name: str,maximum: int,*,start: int=0) -> str:
+        if (not re.fullmatch(r"[a-z-]{1,32}",name) or type(maximum) is not int
+                or type(start) is not int or not 0<=start<maximum<=200):
             raise DeliveryRefused("authority")
-        for i in range(maximum):
+        if name=="metadata":
+            if maximum>METADATA_TOTAL or (start>=METADATA_OPERATIONS
+                    and (start!=METADATA_OPERATIONS or maximum!=METADATA_TOTAL)):
+                raise DeliveryRefused("authority")
+            if start<METADATA_OPERATIONS:
+                maximum=min(maximum,METADATA_OPERATIONS)
+        cursor=(name,start,maximum)
+        for i in range(self._budget_next.get(cursor,start),maximum):
             key=f"budgets/{name}/{i:03}.json"
             try:
                 self.put_json(key,{"slot":i,"budget":name})
+                self._budget_next[cursor]=i+1
                 return key
             except DeliveryRefused as exc:
                 if exc.code!="reserved": raise
+                self._budget_next[cursor]=i+1
         raise DeliveryRefused("reserved")
 
     def state(self,target: str) -> dict | None:
