@@ -52,6 +52,8 @@ def verify_backend(directory: Path,expected: dict):
 
 class OwnerDriver:
     def __init__(self,directory: Path,authority: dict,manifest: dict):
+        from .metadata import require_policy
+        require_policy(authority)
         if os.name=="nt" or not Path("/proc").exists(): raise DeliveryRefused("authority")
         self.directory,self.a,self.manifest=directory.resolve(),authority,manifest
         self.logs=self.directory/"owner-originals"; self.logs.mkdir(exist_ok=True)
@@ -182,7 +184,7 @@ class OwnerDriver:
         container="test-state" if target=="test" else "prod-state"
         storage_tokens=TokenSource("https://storage.azure.com/.default",self.a["owner"]["tenant_id"])
         with httpx.Client(timeout=20,follow_redirects=False) as client:
-            store=BlobStore(self.a["storage_host"],storage_tokens,client)
+            store=BlobStore(self.a["storage_host"],storage_tokens,client,metadata_policy=self.a['metadata_policy'])
             parents={}
             for group in getattr(self,"manifest",{}).get("components",[]):
                 if group["name"]!="foundation": continue
@@ -219,10 +221,9 @@ class OwnerDriver:
                     # Infrastructure failed before any dispatch, so no worker can have
                     # consumed metadata slots. Never use this fallback after dispatch.
                     if (self.directory/"intents/dispatch-release.json").exists(): raise DeliveryRefused("plan")
-                    reserve_budget(self.directory,"metadata",120)
+                    reserve_budget(self.directory,"metadata",244,metadata_policy=self.a['metadata_policy'])
                 else:
-                    from .storage import METADATA_OPERATIONS
-                    store.reserve_budget("metadata",METADATA_OPERATIONS)
+                    store.reserve_cleanup_metadata(self.directory,self.a)
                 response=client.get(f"{checked.endpoint}/indexes/{checked.index}",params={"api-version":"2024-07-01"},
                     headers={"Authorization":"Bearer "+TokenSource("https://search.azure.com/.default",self.a["owner"]["tenant_id"]).token()})
                 index={"kind":"index","host":checked.allowed_host,"name":checked.index,"status":response.status_code}

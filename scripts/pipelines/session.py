@@ -1,6 +1,6 @@
 """Fresh session authority and crash-safe local reservations. Never loads credentials."""
 from contextlib import contextmanager
-from dataclasses import dataclass,fields
+from dataclasses import asdict,dataclass,fields
 from datetime import datetime,timedelta,timezone
 import hashlib
 import json
@@ -68,16 +68,21 @@ def bound_file(directory: Path,relative: str) -> Path:
 
 
 def scope_digest(raw: dict) -> str:
+    from .metadata import require_policy
+    policy=asdict(require_policy(raw))
     owner=require_owner_id(raw)
     profile=raw.get("timing_profile","standard")
     if profile not in TIMING_PROFILES: raise DeliveryRefused("authority")
     value={key:raw[key] for key in ("owner","owned_group_ids","principals","scopes",
         "pipeline_id","storage_host","search_host","manifest_sha256","baseline_sha256")}
-    return hashlib.sha256(canonical(value|{"owner_ado_id":owner,"timing_profile":profile})).hexdigest()
+    return hashlib.sha256(canonical(value|{"owner_ado_id":owner,"timing_profile":profile,
+        "metadata_policy":policy})).hexdigest()
 
 
 def load(directory: Path) -> tuple[SessionAuthority,dict,dict]:
     raw = read(directory/"authority.json")
+    from .metadata import require_policy
+    require_policy(raw)
     try:
         a = SessionAuthority(**{f.name:raw[f.name] for f in fields(SessionAuthority) if f.name!="timing_profile"},
             timing_profile=raw.get("timing_profile","standard"))
@@ -190,9 +195,16 @@ def reserve_operation(directory: Path,operation: str,identity: str) -> Path:
     with operation_lock(directory): return _reserve(directory,operation,identity)
 
 
-def reserve_budget(directory: Path,name: str,maximum: int) -> Path:
-    if not re.fullmatch(r"[a-z-]{1,40}",name) or not 1 <= maximum <= 200: raise DeliveryRefused("authority")
+def reserve_budget(directory: Path,name: str,maximum: int,*,metadata_policy=None) -> Path:
+    from .metadata import validate_policy
+    policy=validate_policy(metadata_policy) if metadata_policy is not None else None
+    limit=(policy.ordinary if policy else 120) if name=='metadata' else 200
+    if (not re.fullmatch(r"[a-z-]{1,40}",name) or type(maximum) is not int
+        or not 1 <= maximum <= limit): raise DeliveryRefused("authority")
+    if name=='metadata': maximum=min(maximum,policy.workload if policy else 108)
     with operation_lock(directory):
+        if name=='metadata' and any((directory/'intents').glob('dispatch-*.json')):
+            raise DeliveryRefused('authority')
         for i in range(maximum):
             operation = f"budget-{name}-{i:03}"
             if not (directory/"intents"/(operation+".json")).exists():
@@ -214,8 +226,11 @@ def verify_source(authority):
 def reserve_dispatch(directory: Path,mode: str,now: datetime) -> Path:
     a,raw,manifest=load(directory)
     verify_source(a)
+    from .metadata import require_no_local_metadata
+    require_no_local_metadata(directory)
     if (a.apply_started_at is None or now<instant(a.apply_started_at) or now>=instant(a.queue_cutoff_at)
-        or (directory/"stopped-gate.json").exists() or mode not in ("release","negative","scheduled")):
+        or any((directory/path).exists() for path in ('stopped-gate.json','owner-stop-authority.json',
+            'quiescence/request.json')) or mode not in ("release","negative","scheduled")):
         raise DeliveryRefused("authority")
     if mode!="release":
         from .evidence import grade
@@ -224,6 +239,9 @@ def reserve_dispatch(directory: Path,mode: str,now: datetime) -> Path:
             raise DeliveryRefused("gate")
     identity=hashlib.sha256((a.source_sha+a.release_digest).encode()).hexdigest()
     with operation_lock(directory):
+        require_no_local_metadata(directory)
+        if any((directory/path).exists() for path in ('stopped-gate.json','owner-stop-authority.json',
+            'quiescence/request.json')): raise DeliveryRefused('authority')
         dispatch=_reserve(directory,"dispatch-"+mode,identity)
         for name in ({"release":("test","prod"),"negative":("negative",),"scheduled":("verify",)}[mode]):
             _reserve(directory,"queries-"+name,identity)

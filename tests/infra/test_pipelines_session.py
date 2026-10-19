@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Fresh authority, durable reservations and the independent owner clock."""
 from dataclasses import asdict
 from datetime import datetime,timezone,timedelta
@@ -132,7 +133,7 @@ def test_human_receipt_binds_actual_scope_and_absence_inventory(session_module,t
     import hashlib
     raw=authority()
     prefix="/subscriptions/sub/resourceGroups/rg-p8-1016x-"
-    raw.update({"owner":{"subscription_id":"sub","tenant_id":"tenant","object_id":"owner"},
+    raw.update({"metadata_policy":dict(POLICY),"owner":{"subscription_id":"sub","tenant_id":"tenant","object_id":"owner"},
         "owner_ado_id":"11111111-2222-4333-8444-555555555555",
         "owned_group_ids":[prefix+name for name in ("search","identity","agents")],
         "principals":{},"scopes":{},"pipeline_id":2,"search_host":"owned.search.windows.net",

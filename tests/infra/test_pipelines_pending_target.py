@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Offline regression cases for the real pending-target verification path.
 
 Execution requires the human's explicit offline-test permission.
@@ -40,7 +41,7 @@ def target(tmp_path):
         files[name] = tmp_path / name
         files[name].write_bytes(('fixture-' + name).encode())
     bundle = SimpleNamespace(digest='b' * 64, manifest=SimpleNamespace(source_sha='a' * 40))
-    authority = {
+    authority = {'metadata_policy':dict(POLICY),
         'search_host': 'p8-owned.search.windows.net',
         'storage_host': 'p8owned.blob.core.windows.net',
         'scopes': {'service': SEARCH_ID,
@@ -67,6 +68,8 @@ def target(tmp_path):
     def transport(request):
         requests.append(request)
         host, path = request.url.host, request.url.path
+        if path == '/evidence/operations/metadata-workload-stopped.json':
+            return httpx.Response(404, headers={'x-ms-error-code':'BlobNotFound'})
         if request.method == 'GET' and host == 'p8owned.blob.core.windows.net' and path == '/prod-state/index.tfstate':
             if config['empty_placeholder']:
                 return httpx.Response(200, content=b'', headers={'content-length': '0'})
@@ -80,7 +83,7 @@ def target(tmp_path):
             return httpx.Response(config[kind + '_parent_status'],
                                   json={'id': config['parent_id_override'] or path})
         if request.method == 'PUT' and host == 'p8owned.blob.core.windows.net' and path in {
-            '/evidence/budgets/metadata/' + f'{i:03}.json' for i in range(120)
+            '/evidence/budgets/metadata/' + f'{i:03}.json' for i in range(256)
         }:
             assert request.headers['if-none-match'] == '*'
             return httpx.Response(config['budget_status'])
@@ -90,7 +93,7 @@ def target(tmp_path):
         raise AssertionError('Unexpected external operation: ' + request.method + ' ' + str(request.url))
 
     with httpx.Client(transport=httpx.MockTransport(transport), follow_redirects=False) as client:
-        store = BlobStore(authority['storage_host'], OfflineToken(), client)
+        store = BlobStore(authority['storage_host'], OfflineToken(), client, metadata_policy=POLICY)
         def binding(state):
             return bind_plan(files['plan'], bundle, 'demo-prod', state, files['inputs'], files['locks'])
         def verify(saved=None):
@@ -115,7 +118,7 @@ def test_initialized_serial_one_state_reaches_real_index_absence_check(target):
     assert result['state_serial'] == 1
     assert result['index']['status'] == 404
     assert len(index_reads(target)) == 1
-    assert [r.method for r in target.requests] == ['GET', 'GET', 'GET', 'PUT', 'GET']
+    assert [r.method for r in target.requests] == ['GET', 'GET', 'GET', 'GET', 'PUT', 'GET']
 
 
 def test_authentically_absent_state_must_match_absent_plan_binding(target):
@@ -224,14 +227,14 @@ def test_metadata_reservation_failure_cannot_send_the_index_get(target):
     assert not index_reads(target)
 
 
-def test_all_108_ordinary_metadata_slots_exhausted_preserves_physical_tail(target):
+def test_all_235_workload_slots_exhausted_preserves_cleanup_and_physical_tail(target):
     target.config['budget_status'] = 412
     with pytest.raises(DeliveryRefused):
         target.verify()
     puts = [r for r in target.requests if r.method == 'PUT']
-    assert len(puts) == 108
+    assert len(puts) == 235
     assert [r.url.path for r in puts] == [
-        '/evidence/budgets/metadata/' + f'{i:03}.json' for i in range(108)
+        '/evidence/budgets/metadata/' + f'{i:03}.json' for i in range(235)
     ]
     assert not index_reads(target)
 

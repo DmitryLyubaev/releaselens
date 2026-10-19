@@ -381,9 +381,45 @@ and native helper rather than launching duplicates. No monitor is created by thi
 
 Reservations precede browser queueing and corpus/query context. Release reserves test
 and prod sets together; negative and scheduled require original positive gates. Worker
-Blob reservations enforce the same no-replay rule on new agents. Metadata requests use
-120 conditional-create slots shared across the session, and each upload has at most
-200 requests. A reserved slot is consumed even if its request subsequently fails.
+Blob reservations enforce the same no-replay rule on new agents. Fresh authority must
+include the exact `metadata_policy` object defined by `scripts/pipelines/metadata.py`.
+Its version is `controller-search-get-v2`: 256 Python controller/owner-helper Search
+GETs, comprising workload slots 000..234, owner cleanup contingency 235..243 and
+physical-observation-only 244..255. Each upload still has at most 200 requests.
+A reservation is consumed even if its request subsequently fails. Missing, modified
+or stale policy refuses before worker authentication. The human scope digest and
+the complete agent authority digest bind the policy and its counting boundary.
+
+Terraform/AzAPI provider traffic is outside this controller counter. It remains
+limited to the manifest-bound two-index lifecycles, exact saved-plan validation,
+pinned provider behavior and original parent command deadlines. This policy is
+not a universal Search HTTP ceiling and grants no command retry or corrective apply.
+The owner approved this changed counting boundary explicitly; future packets must
+carry it unchanged. The 916 benchmark queries, correctness floor 120/229, resource,
+upload, cost and timing limits are unchanged.
+
+Use `BlobStore(..., metadata_policy=raw['metadata_policy'])`, then
+`reserve_metadata()` for each ordinary GET and `reserve_metadata(physical=True)`
+for the physical observer. Never copy the legacy 108/120 constants into a fresh
+adapter. Those defaults only preserve the smaller allowance in low-level legacy
+utilities; they cannot open 256 slots. Generic allocation cannot enter cleanup or
+physical ranges through an interior start. Local fallback metadata allocations are
+terminal cleanup-only; any such intent prevents later dispatch. There is no second
+local allowance available to resumed cloud work.
+
+Before the negative fingerprint, admission requires ordinary_used <= 101; after it,
+ordinary_used <= 168. Pass the explicit policy to `fingerprint_capacity`; these
+bounds retain both 43-read fingerprints, all remaining 24-read readiness loops and
+nine cleanup reads. No optional diagnostics use the cleanup reserve early.
+After capturing schema, 42 ordered pages and the actual state original, call
+`complete_fingerprint` to seal each capture. The after receipt must follow the
+completed source-bound negative run and match the before fingerprint. Owner cleanup
+uses `reserve_cleanup_metadata`; opening 235..243 requires re-reading the complete
+43-GET original evidence and its hashes, claims and chronology, or an explicit
+source/session-bound human stop plus durable quiescence request. A stopped workload
+is blocked locally at dispatch and through a create-only shared Blob marker on
+subsequent worker metadata/process entry. Physical cleanup observations retain
+their own range. Stage controllers never consume the nine cleanup slots.
 
 Uploads serialize the frozen float32 vectors directly, preserving their float32
 bits and keeping the existing 500-document/12-MiB batch and 240-second bounds.

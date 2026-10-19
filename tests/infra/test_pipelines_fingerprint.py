@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Offline cases for complete ordered fingerprints and admission."""
 import copy
 from pathlib import Path
@@ -76,6 +77,8 @@ def test_real_transport_reserves_before_each_of_43_reads_and_checks_schema(compl
     requests = []
     def transport(request):
         requests.append(request)
+        if request.url.path.endswith('/operations/metadata-workload-stopped.json'):
+            return httpx.Response(404, headers={'x-ms-error-code':'BlobNotFound'})
         if request.url.host == 'owned.blob.core.windows.net':
             assert request.method == 'PUT' and request.headers['if-none-match'] == '*'
             return httpx.Response(201)
@@ -89,15 +92,15 @@ def test_real_transport_reserves_before_each_of_43_reads_and_checks_schema(compl
     captured = []
     tokens = SimpleNamespace(token=lambda: 'offline-fixture')
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        store = BlobStore('owned.blob.core.windows.net', tokens, client)
+        store = BlobStore('owned.blob.core.windows.net', tokens, client, metadata_policy=POLICY)
         def get(suffix, params, label):
             return fingerprint_get(client, store, tokens, 'owned.search.windows.net',
                                    suffix, params, tmp_path, label, captured)
         if sortable:
             _, docs = capture_search_originals(get, expected)
             assert len(docs) == 41825 and len(captured) == 43
-            assert len(requests) == 86
+            assert len(requests) == 129
         else:
             with pytest.raises(ValueError):
                 capture_search_originals(get, expected)
-            assert len(captured) == 1 and len(requests) == 2
+            assert len(captured) == 1 and len(requests) == 3

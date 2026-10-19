@@ -6,6 +6,8 @@ from datetime import timezone
 
 def observe_test_index(directory,a,manifest,client,token,reserve,now,*,cleanup):
     from app.delivery_search.contracts import SearchTarget,exclusive_json,DeliveryRefused
+    from .metadata import require_policy
+    policy=require_policy(a)
     if not isinstance(a.get('session'),str) or not re.fullmatch(r'[a-z][a-z0-9-]{3,11}',a['session']):
         raise ValueError('valid bound session required')
     components=[c for c in manifest['components'] if c['name']=='index-test']
@@ -21,7 +23,7 @@ def observe_test_index(directory,a,manifest,client,token,reserve,now,*,cleanup):
         raise ValueError('prior presence binding mismatch')
     folder=directory/'physical-index-observations';folder.mkdir(exist_ok=True)
     # Local create-only slots also bound repeated manual observations. Shared Blob
-    # reservations remain the authority for the unchanged 120 metadata maximum.
+    # reservations remain the authority for the explicitly bound policy.
     started=now() if callable(now) else now
     for i in range(12):
         try:
@@ -31,6 +33,9 @@ def observe_test_index(directory,a,manifest,client,token,reserve,now,*,cleanup):
             if exc.code!='reserved':raise
     else:raise ValueError('twelve physical observations consumed')
     claim=reserve()
+    if (not isinstance(claim,str) or not re.fullmatch(r'budgets/metadata/[0-9]{3}\.json',claim)
+        or not policy.ordinary<=int(claim.rsplit('/',1)[1][:3])<policy.total):
+        raise DeliveryRefused('authority')
     response=client.get(target.endpoint+'/indexes/'+target.index,params={'api-version':'2024-07-01'},
                         headers={'Authorization':'Bearer '+token},follow_redirects=False,timeout=15)
     if response.status_code not in (200,404):raise ValueError('physical observation unavailable')

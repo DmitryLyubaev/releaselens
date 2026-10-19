@@ -12,10 +12,12 @@ METADATA_TOTAL = 120
 
 
 class BlobStore:
-    def __init__(self,host: str,tokens,client: httpx.Client):
+    def __init__(self,host: str,tokens,client: httpx.Client,*,metadata_policy=None):
         if not re.fullmatch(r"[a-z0-9]{3,24}\.blob\.core\.windows\.net",host):
             raise DeliveryRefused("target")
         self.host,self.tokens,self.client = host,tokens,client
+        from .metadata import validate_policy
+        self.metadata_policy = validate_policy(metadata_policy) if metadata_policy is not None else None
         self._budget_next = {}
 
     def _url(self,container: str,key: str) -> str:
@@ -65,15 +67,55 @@ class BlobStore:
         self.put_once("evidence",key,canonical(value))
 
     def reserve_budget(self,name: str,maximum: int,*,start: int=0) -> str:
+        total = self.metadata_policy.total if self.metadata_policy else METADATA_TOTAL
+        ordinary = self.metadata_policy.ordinary if self.metadata_policy else METADATA_OPERATIONS
+        workload = self.metadata_policy.workload if self.metadata_policy else ordinary
         if (not re.fullmatch(r"[a-z-]{1,32}",name) or type(maximum) is not int
-                or type(start) is not int or not 0<=start<maximum<=200):
+                or type(start) is not int or not 0<=start<maximum<=(total if name=='metadata' else 200)):
             raise DeliveryRefused("authority")
         if name=="metadata":
-            if maximum>METADATA_TOTAL or (start>=METADATA_OPERATIONS
-                    and (start!=METADATA_OPERATIONS or maximum!=METADATA_TOTAL)):
+            if (start>=workload and (start!=ordinary or maximum!=total)):
                 raise DeliveryRefused("authority")
-            if start<METADATA_OPERATIONS:
-                maximum=min(maximum,METADATA_OPERATIONS)
+            if start<workload:
+                maximum=min(maximum,workload)
+                self.require_workload_open()
+        return self._reserve_range(name,start,maximum)
+
+    def require_workload_open(self):
+        if self.metadata_policy is None: return
+        # A terminal cleanup transition is shared across fresh worker processes.
+        try:
+            response=self.client.get(self._url('evidence','operations/metadata-workload-stopped.json'),
+                headers={'Authorization':f'Bearer {self.tokens.token()}','x-ms-version':'2023-11-03'},
+                follow_redirects=False,timeout=20)
+            if response.status_code==404 and response.headers.get('x-ms-error-code')=='BlobNotFound': return
+            raise DeliveryRefused('authority')
+        except httpx.HTTPError:
+            raise DeliveryRefused('request') from None
+
+    def reserve_metadata(self,*,physical=False):
+        total = self.metadata_policy.total if self.metadata_policy else METADATA_TOTAL
+        ordinary = self.metadata_policy.ordinary if self.metadata_policy else METADATA_OPERATIONS
+        return self.reserve_budget('metadata',total,start=ordinary if physical else 0)
+
+    def reserve_cleanup_metadata(self,directory,authority):
+        from .metadata import require_policy,require_cleanup_contingency
+        if self.metadata_policy != require_policy(authority): raise DeliveryRefused('authority')
+        if (directory/'owner-stop-authority.json').exists():
+            require_cleanup_contingency(directory,authority)
+            try:
+                self.put_json('operations/metadata-workload-stopped.json',
+                    {k:authority[k] for k in ('session','source_sha','metadata_policy')})
+            except DeliveryRefused as exc:
+                if exc.code!='reserved': raise
+        try:
+            return self._reserve_range('metadata',0,self.metadata_policy.workload)
+        except DeliveryRefused as exc:
+            if exc.code!='reserved': raise
+        require_cleanup_contingency(directory,authority)
+        return self._reserve_range('metadata',self.metadata_policy.workload,self.metadata_policy.ordinary)
+
+    def _reserve_range(self,name,start,maximum):
         cursor=(name,start,maximum)
         for i in range(self._budget_next.get(cursor,start),maximum):
             key=f"budgets/{name}/{i:03}.json"
