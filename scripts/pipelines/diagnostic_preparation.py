@@ -116,11 +116,12 @@ def _static_amendment(spec, directory, baseline):
     if 'static_amendment' not in spec:
         return
     amendment = read(_file(directory, spec['static_amendment']))
+    null_defaults = amendment.get('null_defaults', {})
     if (amendment['kind'] != 'human-approved-diagnostic-static-amendment'
             or amendment['message_ref'] != spec['authority_template']['approval_ref']
             or amendment['baseline_sha256'] != spec['bindings']['baseline']['sha256']
             or amendment['expected_static_sha256'] != _digest(spec['expected_static'])
-            or not amendment['additions']):
+            or not (amendment['additions'] or null_defaults)):
         raise DeliveryRefused('authority')
     allowed = CHECKOUT_DEFAULTS | {'options': DISABLED_OPTIONS}
     for path, value in amendment['additions'].items():
@@ -133,6 +134,16 @@ def _static_amendment(spec, directory, baseline):
         if keys[-1] in node:
             raise DeliveryRefused('checks')
         node[keys[-1]] = copy.deepcopy(value)
+    # A real definition GET can contain clean:null. Preserve that original and
+    # require a distinct, explicitly reviewed null-to-fixed change, never a
+    # blanket equivalence between null, absent and configured checkout values.
+    for path, value in null_defaults.items():
+        if path != 'repository.clean' or value != CHECKOUT_DEFAULTS[path]:
+            raise DeliveryRefused('checks')
+        repository = baseline['definition']['repository']
+        if 'clean' not in repository or repository['clean'] is not None:
+            raise DeliveryRefused('checks')
+        repository['clean'] = value
 
 
 def _shape(spec, directory):
