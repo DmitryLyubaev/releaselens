@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """An early authentication refusal must leave a useful, token-free original."""
 import importlib
 import base64
@@ -136,7 +137,7 @@ def token(claims):
 def test_runtime_identity_is_published_as_identical_create_only_blob(modules, principal, monkeypatch, tmp_path, stage):
     identity, run = modules
     account, claims, expected = principal
-    authority = {"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
+    authority = {"metadata_policy":dict(POLICY),"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
                  "storage_host":"owned.blob.core.windows.net",
                  "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
     monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
@@ -146,7 +147,8 @@ def test_runtime_identity_is_published_as_identical_create_only_blob(modules, pr
     writes = []
     class ReachedInputs(Exception): pass
     class Store:
-        def __init__(self, *args): pass
+        def __init__(self, *args, **kwargs): pass
+        def require_workload_open(self): pass
         def put_json(self, key, value): writes.append((key, run.canonical(value)))
         def put_once(self, container, key, data):
             assert container == "evidence"
@@ -171,11 +173,12 @@ def test_replayed_stage_cannot_publish_an_identity_blob(modules, principal, monk
     monkeypatch.setenv("BUILD_REASON", "Manual")
     monkeypatch.setattr(run, "authenticate", lambda principal:(account, claims, {}))
     class Store:
-        def __init__(self, *args): pass
+        def __init__(self, *args, **kwargs): pass
+        def require_workload_open(self): pass
         def put_json(self, *args): raise run.DeliveryRefused("reserved")
         def put_once(self, *args): pytest.fail("replay wrote receipt")
     monkeypatch.setattr(run, "BlobStore", Store)
-    authority = {"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
+    authority = {"metadata_policy":dict(POLICY),"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
                  "storage_host":"owned.blob.core.windows.net",
                  "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
     with httpx.Client() as client:
@@ -190,7 +193,7 @@ def test_actual_constructor_authenticates_before_storage(modules, principal, mon
     expected |= {"service_connection_id": "connection", "oidc_request_origin": "https://dev.azure.com",
                  "oidc_path_prefix": "/owned/project/_apis/distributedtask/hubs/build/"}
     source = "a" * 40
-    authority = {"session": "p8-unit", "source_sha": source, "release_digest": "b" * 64,
+    authority = {"metadata_policy":dict(POLICY),"session": "p8-unit", "source_sha": source, "release_digest": "b" * 64,
                  "storage_host": "owned.blob.core.windows.net",
                  "queue_cutoff_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
     monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
@@ -207,7 +210,7 @@ def test_actual_constructor_authenticates_before_storage(modules, principal, mon
     monkeypatch.setattr(run.Runtime, "az_json", staticmethod(cli))
     class ReachedStorage(Exception):
         pass
-    def storage(*args):
+    def storage(*args, **kwargs):
         raise ReachedStorage()
     monkeypatch.setattr(run, "BlobStore", storage)
     public = tmp_path / "p8-publish"

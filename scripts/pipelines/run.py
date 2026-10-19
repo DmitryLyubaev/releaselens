@@ -30,6 +30,7 @@ from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_
 from .storage import BlobStore
 from .authority_transport import decode_authority,read_authority
 from .readiness import require_owner_id
+from .metadata import require_policy
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGES = ("build","test","plan-prod","prod","negative","verify")
@@ -101,6 +102,7 @@ def context(path: Path,stage: str) -> tuple[dict,dict]:
     a = read_authority(path) if path.exists() else decode_authority(os.environ["P8_AUTHORITY_JSON"].encode())
     if hashlib.sha256(canonical(a)).hexdigest() != os.environ["P8_AUTHORITY_SHA256"]:
         raise DeliveryRefused("authority")
+    require_policy(a)
     require_owner_id(a)
     role = connection_role(stage,os.environ["BUILD_REASON"])
     now = datetime.now(timezone.utc)
@@ -160,6 +162,7 @@ def authenticate(principal: dict) -> tuple[dict,dict,dict]:
 
 class Runtime:
     def __init__(self,a: dict,principal: dict,stage: str,receipt_dir: Path,client: httpx.Client):
+        require_policy(a)
         self.a,self.principal,self.stage,self.client = a,principal,stage,client
         self.budget = StageBudget(stage,datetime.fromisoformat(a["queue_cutoff_at"]))
         client.event_hooks["request"].append(self.budget.before_request)
@@ -175,16 +178,18 @@ class Runtime:
         # Only a digest/provenance-safe projection is retained; never the assertion/access token.
         exclusive_json(self.publish/"identity.json",self.proof | identity_receipt(account,claims) | {
             "role":connection_role(stage,os.environ["BUILD_REASON"]),"verified":True,"scheme":"WorkloadIdentityFederation"})
-        self.store = BlobStore(a["storage_host"],TokenSource("https://storage.azure.com/.default",principal["tenant_id"]),client)
+        self.store = BlobStore(a["storage_host"],TokenSource("https://storage.azure.com/.default",principal["tenant_id"]),client,
+            metadata_policy=a['metadata_policy'])
+        self.store.require_workload_open()
         # Reserve before fetching any corpus/query context. A fresh agent cannot replay a set.
         self.store.put_json(f"operations/{stage}.json",self.proof | {"stage":stage})
         # Preserve the exact token-free runtime original on the existing private
         # evidence channel; artifact download access is not a prerequisite.
         self.store.put_once("evidence",f"identities/{stage}.json",(self.publish/"identity.json").read_bytes())
         def metadata_budget(request):
-            if request.url.host==a["search_host"] and request.method=="GET":
-                from .storage import METADATA_OPERATIONS
-                self.store.reserve_budget("metadata",METADATA_OPERATIONS)
+            if request.url.host==a["search_host"]:
+                if request.method=="GET": self.store.reserve_metadata()
+                else: self.store.require_workload_open()
         client.event_hooks["request"].append(metadata_budget)
         checks = self.store.get("inputs","checks/snapshot.json")
         if hashlib.sha256(checks).hexdigest() != a["checks_snapshot_sha256"]: raise DeliveryRefused("checks")
@@ -254,6 +259,7 @@ class Runtime:
         return result
 
     def process(self,args,**kwargs):
+        self.store.require_workload_open()
         kwargs["timeout"] = self.budget.remaining(kwargs.get("timeout",120))
         result = subprocess.run(args,**kwargs)
         self.budget.remaining(1)

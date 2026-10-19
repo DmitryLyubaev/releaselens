@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """The complete authority must cross the platform limit without dropping bindings."""
 import base64
 from datetime import datetime, timedelta, timezone
@@ -22,7 +23,7 @@ def run(repo_root, monkeypatch):
 
 def authority():
     return {
-        "approval_ref": "actual-owner-approval",
+        "approval_ref": "actual-owner-approval", "metadata_policy":dict(POLICY),
         "owner_ado_id": "11111111-2222-4333-8444-555555555555",
         "session": "p8-example",
         "source_sha": "a" * 40,

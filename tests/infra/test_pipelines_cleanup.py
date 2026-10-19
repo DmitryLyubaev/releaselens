@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Delete-only continuation cannot extend the immutable original ownership set."""
 import importlib
 from datetime import datetime,timezone,timedelta
@@ -333,7 +334,7 @@ def test_index_absence_requires_both_backend_and_index_proof(cleanup,tmp_path,mo
     monkeypatch.setattr(owner.httpx,"Client",lambda **kw:new_client(transport=httpx.MockTransport(server)))
     monkeypatch.setattr(owner,"TokenSource",lambda *args: type("Tokens",(),{"token":lambda self:"synthetic"})())
     driver=object.__new__(owner.OwnerDriver)
-    driver.a={"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
+    driver.a={"metadata_policy":dict(POLICY),"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
         "owner":{"tenant_id":"tenant"},"session":"p8-1016x","source_sha":"a"*40}
     driver.directory=tmp_path; driver.record=lambda name,value:records.append((name,value))
     assert driver.index_state_absence({"name":"index-test"})
@@ -356,7 +357,7 @@ def test_missing_nested_role_is_not_absence_of_its_search_parent(cleanup,tmp_pat
     token=type("Tokens",(),{"token":lambda self:"synthetic"})()
     monkeypatch.setattr(owner,"TokenSource",lambda *args:token)
     driver=object.__new__(owner.OwnerDriver); driver.directory=tmp_path; driver.tokens=token
-    driver.a={"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
+    driver.a={"metadata_policy":dict(POLICY),"storage_host":"owned.blob.core.windows.net","search_host":"owned.search.windows.net",
         "owner":{"tenant_id":"tenant"},"session":"p8-1016x","source_sha":"a"*40}
     parent="/subscriptions/s/resourceGroups/owned/providers/Microsoft.Search/searchServices/owned"
     driver.manifest={"components":[{"name":"foundation","resources":[{"id":value,"kind":"arm","api_version":"2024-01-01"}

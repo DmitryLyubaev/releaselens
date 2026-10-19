@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Catch the real missing-owner and infeasible whole-attempt budget before billing."""
 from datetime import datetime,timedelta,timezone
 import copy
@@ -24,7 +25,7 @@ def authority(profile='standard'):
             ('queue_cutoff_at','cleanup_due_at','cleanup_start_by','closeout_by'),offsets)}}
 
 def test_human_scope_binds_the_owner_ado_id_and_timing_profile(modules):
-    raw={'owner':{},'owner_ado_id':OWNER,'owned_group_ids':[],'principals':{},'scopes':{},
+    raw={'metadata_policy':dict(POLICY),'owner':{},'owner_ado_id':OWNER,'owned_group_ids':[],'principals':{},'scopes':{},
         'pipeline_id':2,'storage_host':'owned.blob.core.windows.net','search_host':'owned.search.windows.net',
         'manifest_sha256':'a'*64,'baseline_sha256':'b'*64}
     digest=modules.scope_digest(raw)

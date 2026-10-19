@@ -1,3 +1,4 @@
+from test_pipelines_metadata_policy import POLICY
 """Direct absence must follow a real bound 200, never a delete-intent timestamp."""
 import sys
 import json
@@ -8,7 +9,7 @@ import pytest
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT),str(ROOT/'eval')]
-AUTH={'session':'p8-offline','source_sha':'a'*40,'manifest_sha256':'b'*64,
+AUTH={'metadata_policy':dict(POLICY),'session':'p8-offline','source_sha':'a'*40,'manifest_sha256':'b'*64,
       'search_host':'p8observer.search.windows.net'}
 MANIFEST={'components':[{'name':'index-test','resources':[{'kind':'index','host':AUTH['search_host'],'name':'p8-test'}]}]}
 NOW=datetime(2026,10,19,tzinfo=timezone.utc)
@@ -23,7 +24,16 @@ def client(status):
         return httpx.Response(status,json={'name':'p8-test'} if status==200 else {'error':{'code':'IndexNotFound'}})
     return httpx.Client(transport=httpx.MockTransport(handle))
 
-def reserve():return 'budgets/metadata/108.json'
+def reserve():return 'budgets/metadata/244.json'
+
+
+@pytest.mark.parametrize('claim',['budgets/metadata/108.json','budgets/metadata/235.json',
+    'budgets/metadata/243.json','budgets/metadata/256.json','foreign'])
+def test_physical_callback_cannot_use_workload_or_contingency_slots(tmp_path,claim):
+    with httpx.Client(transport=httpx.MockTransport(lambda _:pytest.fail('unreserved GET'))) as c:
+        from app.delivery_search.contracts import DeliveryRefused
+        with pytest.raises(DeliveryRefused):
+            observe(tmp_path,AUTH,MANIFEST,c,'offline',lambda:claim,NOW,cleanup=False)
 
 def test_absence_retains_actual_observation_and_prior_presence_hash(tmp_path):
     with client(200) as c:observe(tmp_path,AUTH,MANIFEST,c,'synthetic-test-only',reserve,NOW,cleanup=False)

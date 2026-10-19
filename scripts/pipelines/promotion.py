@@ -25,7 +25,9 @@ def verify_pending_prod_target(binding, plan, shown, bundle, inputs, locks, *,
     """
     from app.delivery_search.contracts import DeliveryRefused, SearchTarget
     from scripts.pipelines.plans import validate_index_plan, verify_plan
-    from scripts.pipelines.storage import METADATA_OPERATIONS
+    from scripts.pipelines.metadata import require_policy
+
+    if store.metadata_policy != require_policy(authority): raise DeliveryRefused('authority')
 
     target = SearchTarget('https://' + authority['search_host'],
                           'p8-demo-prod', authority['search_host'])
@@ -73,7 +75,7 @@ def verify_pending_prod_target(binding, plan, shown, bundle, inputs, locks, *,
                         'at': datetime.now(timezone.utc).isoformat(),
                         'body_sha256': hashlib.sha256(response.content).hexdigest()})
 
-    claim = store.reserve_budget('metadata', METADATA_OPERATIONS)
+    claim = store.reserve_metadata()
     response = client.get(target.endpoint + '/indexes/' + target.index,
                           params={'api-version': '2024-07-01'},
                           headers={'Authorization': 'Bearer ' + search_tokens.token()})
