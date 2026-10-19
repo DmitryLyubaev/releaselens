@@ -124,6 +124,28 @@ def observe_startup(launch, owned, heartbeat, *, clock_sha256, session, source_s
                             session=session, source_sha=source_sha, snapshots=snapshots, now=utc_now())
 
 
+def observe_keeper(owned, read_heartbeat, snapshot, *, session, source_sha):
+    """Check an existing keeper after the potentially slow native observation.
+
+    Callers retain their authority/intent/clock checks. The callbacks perform
+    bounded read-only transport only; reading the heartbeat afterwards avoids
+    stamping a new proof on a receipt that expired during a process query.
+    """
+    try:
+        actual = snapshot(_pid(owned['pid']))
+        _identity(owned, actual)
+        heartbeat = read_heartbeat()
+        now = utc_now()
+        if (heartbeat['pid'] != owned['pid'] or heartbeat['session'] != session
+                or heartbeat['source_sha'] != source_sha):
+            raise StartupRefused('binding')
+        if not timedelta(0) <= now - _instant(heartbeat['at']) < timedelta(seconds=40):
+            raise StartupRefused('heartbeat')
+        return {'checked_at': now.isoformat(), 'keeper': actual, 'heartbeat': heartbeat}
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise StartupRefused('receipt') from exc
+
+
 def record_startup(directory, *, clock_sha256, session, source_sha):
     """Bind the actual launch/keeper receipts before a monitor adapter freezes its prompt."""
     directory = Path(directory)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.delivery_search.contracts import DeliveryRefused,canonical,exclusive_json,sha256_file
 from .session import load,read,verify_source,operation_lock,instant
+from .definition import saved_definition
 
 MODES=("release","negative","scheduled")
 
@@ -68,6 +69,7 @@ def require_restored_definition(before,after,pipeline_id):
     if (before["id"]!=pipeline_id or after["id"]!=pipeline_id or after["queueStatus"]!="disabled"
         or before.get("variables",{})!=after.get("variables",{})):
         raise DeliveryRefused("gate")
+    before,after=saved_definition(before),saved_definition(after)
     for key in ("repository","process","queue","triggers","options","properties","jobAuthorizationScope"):
         if canonical(before.get(key))!=canonical(after.get(key)): raise DeliveryRefused("gate")
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from app.delivery_search.contracts import DeliveryRefused, canonical, exclusive_json, sha256_file
 from .authority_transport import encode_authority
 from .identity_preflight import require_context
+from .definition import saved_definition
 from .session import bound_file, instant, operation_lock, read, verify_source
 
 FOLDER = 'diagnostic-preparation'
@@ -190,11 +191,16 @@ def _shape(spec, directory):
         raise DeliveryRefused('checks')
 
 
-def _observation(directory, relative, expected, now):
+def _observation(directory, relative, expected, now, *, after_save=True):
+    """Check a Save readback; staging explicitly requires the unchanged IDs."""
     value = read(bound_file(directory, relative))
     _fresh(value, now)
     actual = value['readbacks']
-    if set(actual) != READBACKS or canonical(_normalize(actual)) != canonical(_normalize(expected)):
+    left, right = _normalize(actual), _normalize(expected)
+    if after_save:
+        left['definition'] = saved_definition(left['definition'])
+        right['definition'] = saved_definition(right['definition'])
+    if set(actual) != READBACKS or canonical(left) != canonical(right):
         raise DeliveryRefused('checks')
     return value
 
@@ -233,7 +239,7 @@ def stage(directory: Path, spec_path: str, readbacks_path: str):
         now = utc_now()
         if not instant(clock['S0']) <= now < instant(clock['ready_or_cleanup_due_at']):
             raise DeliveryRefused('deadline')
-        observation = _observation(directory, readbacks_path, spec['expected_static'], now)
+        observation = _observation(directory, readbacks_path, spec['expected_static'], now, after_save=False)
         folder = directory / FOLDER
         folder.mkdir(exist_ok=True)
         bindings = {'spec': _binding(directory, spec_path), 'readbacks': _binding(directory, readbacks_path)}
