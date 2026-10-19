@@ -408,3 +408,119 @@ def test_actual_static_get_may_omit_empty_variables_and_triggers(prepared):
     save_witness(root, time, write)
     observe('configured.json', saved)
     assert m.finalize(root, 'configured.json', 'save-witness.json')['maximum_queues'] == 1
+
+
+def checkout_null_spec(prepared, *, baseline_clean=None, null_defaults=None,
+                       additions=None, omit_clean=False):
+    """Sanitized real GET shape: clean is present/null, empty lists omitted."""
+    m, root, _, write, _, expected, _, _, _ = prepared
+    baseline = json.loads((root / 'baseline.json').read_bytes())
+    baseline_definition = baseline['readbacks']['definition']
+    baseline_definition.pop('variables')
+    baseline_definition.pop('triggers')
+    baseline_definition['repository'] = {
+        'id': 'same-repository', 'type': 'GitHub', 'clean': baseline_clean,
+        'checkoutSubmodules': False, 'properties': {'fetchDepth': '1'}}
+    if omit_clean:
+        baseline_definition['repository'].pop('clean')
+    baseline_binding = write('baseline.json', baseline)
+    expected['definition'].pop('variables')
+    expected['definition']['repository'] = json.loads(json.dumps(baseline_definition['repository']))
+    expected['definition']['repository']['clean'] = 'true'
+    expected['definition']['triggers'] = [{'triggerType': 'schedule', 'schedules': [{
+        'branchFilters': ['+refs/heads/p8-offline-no-schedule', '-refs/heads/*'],
+        'scheduleOnlyWithChanges': True, 'daysToBuild': 'all', 'scheduleJobId': 'server-job',
+        'startHours': 1, 'startMinutes': 0, 'timeZoneId': 'UTC'}]}]
+    spec = json.loads((root / 'preparation-spec.json').read_bytes())
+    spec['bindings']['baseline'] = baseline_binding
+    spec['expected_static'] = expected
+    amendment = {'kind': 'human-approved-diagnostic-static-amendment',
+                 'message_ref': 'human-approval', 'baseline_sha256': baseline_binding['sha256'],
+                 'additions': additions or {}}
+    if null_defaults is not None:
+        amendment['null_defaults'] = null_defaults
+    return spec, amendment, expected
+
+
+def bind_checkout_amendment(prepared, spec, amendment, expected):
+    _, _, _, write, observe, _, _, _, _ = prepared
+    amendment['expected_static_sha256'] = sha256(
+        json.dumps(expected, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    spec['static_amendment'] = write('static-amendment.json', amendment)
+    write('preparation-spec.json', spec)
+    observe('static.json', expected)
+
+
+@pytest.mark.parametrize('approval', ['missing', 'legacy-addition', 'explicit-null-default'])
+def test_actual_null_clean_needs_explicit_null_default_approval(prepared, approval):
+    m, root, _, _, _, _, _, _, _ = prepared
+    spec, amendment, expected = checkout_null_spec(prepared,
+        null_defaults={'repository.clean': 'true'} if approval == 'explicit-null-default' else None,
+        additions={'repository.clean': 'true'} if approval == 'legacy-addition' else None)
+    bind_checkout_amendment(prepared, spec, amendment, expected)
+    if approval == 'explicit-null-default':
+        m.stage(root, 'preparation-spec.json', 'static.json')
+        assert (root / 'diagnostic-preparation/staged.json').is_file()
+    else:
+        with pytest.raises(m.DeliveryRefused):
+            m.stage(root, 'preparation-spec.json', 'static.json')
+
+
+@pytest.mark.parametrize('before,omit', [(False, False), ('false', False), ('true', False),
+                                       (None, True)])
+def test_null_default_cannot_replace_existing_values_or_absent_clean(prepared, before, omit):
+    m, root, _, _, _, _, _, _, _ = prepared
+    spec, amendment, expected = checkout_null_spec(prepared, baseline_clean=before,
+        omit_clean=omit, null_defaults={'repository.clean': 'true'})
+    bind_checkout_amendment(prepared, spec, amendment, expected)
+    with pytest.raises(m.DeliveryRefused):
+        m.stage(root, 'preparation-spec.json', 'static.json')
+
+
+@pytest.mark.parametrize('defaults', [{'repository.clean': 'false'},
+                                     {'repository.properties.fetchTags': 'true'},
+                                     {'options': []}])
+def test_null_default_refuses_other_values_and_paths(prepared, defaults):
+    m, root, _, _, _, _, _, _, _ = prepared
+    spec, amendment, expected = checkout_null_spec(prepared, null_defaults=defaults)
+    bind_checkout_amendment(prepared, spec, amendment, expected)
+    with pytest.raises(m.DeliveryRefused):
+        m.stage(root, 'preparation-spec.json', 'static.json')
+
+
+def test_actual_classic_editor_defaults_complete_diagnostic_handoff(prepared):
+    m, root, time, write, observe, _, _, _, review = prepared
+    spec, amendment, expected = checkout_null_spec(prepared,
+        null_defaults={'repository.clean': 'true'})
+    additions = {path: value for path, value in m.CHECKOUT_DEFAULTS.items()
+                 if path != 'repository.clean'} | {'options': m.DISABLED_OPTIONS}
+    amendment['additions'] = additions
+    for path, value in additions.items():
+        keys = path.split('.')
+        node = expected['definition']
+        for key in keys[:-1]:
+            node = node[key]
+        node[keys[-1]] = value
+    bind_checkout_amendment(prepared, spec, amendment, expected)
+    original = (root / 'baseline.json').read_bytes()
+    m.stage(root, 'preparation-spec.json', 'static.json')
+    m.draft(root)
+    time[0] += timedelta(seconds=20)
+    saved = json.loads((root / 'diagnostic-preparation/configuration.private.json').read_bytes())
+    saved['definition']['revision'] = 13
+    saved['definition']['variables']['P8_PREFLIGHT_JSON']['value'] = None
+    write('save-witness.json', {'definition_id': 2, 'started_at': START.isoformat(),
+        'completed_at': time[0].isoformat(), 'revision': 13,
+        'variables': json.loads((root / 'diagnostic-preparation/variables.private.json').read_bytes())})
+    observe('configured.json', saved)
+    packet = m.finalize(root, 'configured.json', 'save-witness.json')
+    assert datetime.fromisoformat(packet['queue_before']) - time[0] == timedelta(minutes=5)
+    review()
+    observe('enable.json', saved)
+    m.admit(root, 'enable', 'enable.json', 'review.json')
+    time[0] += timedelta(seconds=30)
+    saved['definition']['queueStatus'] = 'enabled'
+    observe('queue.json', saved)
+    m.admit(root, 'queue', 'queue.json', 'review.json')
+    assert (root / 'diagnostic-preparation/queue.intent.json').is_file()
+    assert (root / 'baseline.json').read_bytes() == original

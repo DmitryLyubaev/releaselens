@@ -85,10 +85,18 @@ specification. Its kind is `human-approved-diagnostic-static-amendment`, its
 `message_ref` is the exact fresh approval, `baseline_sha256` binds the original
 baseline, and `expected_static_sha256` binds canonical `expected_static`. Its
 `additions` maps exact dotted definition paths to exact approved values. The
-code permits only the absent-to-fixed checkout defaults in `CHECKOUT_DEFAULTS`
-and the three exact disabled options in `DISABLED_OPTIONS`. It refuses changed
-existing values, other paths, other option IDs or enabled options. This code
-does not itself approve an amendment. Preserve the original baseline for restore.
+`additions` permits only the absent-to-fixed checkout defaults in
+`CHECKOUT_DEFAULTS` and the three exact disabled options in `DISABLED_OPTIONS`.
+A real definition GET may instead contain `repository.clean: null`. That
+specific transition needs a separate `null_defaults` map containing exactly
+`{"repository.clean": "true"}` in the same independently reviewed, human-approved
+amendment. Keep `additions: {}` when no absent fields need adding. This permits
+only an explicitly present null clean setting to become the fixed string
+`"true"`; it refuses absent clean keys, existing configured values, other null
+paths, other option IDs or enabled options. The exact original baseline and
+expected static hashes bind both maps. This code does not itself approve an
+amendment or normalize null into absence. Preserve the original baseline for
+restore.
 
 Complete the slow service-connection and schedule edits while Disabled. Capture
 the actual saved readbacks before issuing authority. Schedules must exclude all
