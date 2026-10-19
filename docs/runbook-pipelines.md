@@ -42,6 +42,139 @@ exact main source/tree, pipeline 2, first job/stage attempt and Manual reason. C
 hosted quota before queueing. The ordinary pipeline stays Disabled until the exact
 diagnostic queue window is approved, then returns to its original Disabled settings.
 
+### Stage configuration before starting the submission window
+
+The p8-1019c attempt stopped before any diagnostic queue because its private helper
+started the five-minute submission window before independent review and browser
+configuration. Its resources were removed. Preserve that attempt's sealed files;
+do not resume it or reuse its authority, clocks, identities or reservations.
+
+Use the versioned `scripts.pipelines.diagnostic_preparation` owner handoff for a
+separately approved fresh attempt. This CLI only validates and writes local
+evidence. It does not authenticate, change Azure DevOps, enable a definition,
+queue a job, provision resources or authorize cleanup. Keep the approved setup
+keeper and existing `setup_live()` guard alongside it: the actual keeper process,
+ownership and heartbeat bound to the original setup clock must still be fresh
+immediately before each browser mutation. A preparation PASS does not replace
+that live guard or the actual job's identity checks.
+
+First review a private `preparation-spec.json` in the fresh attempt directory:
+
+- `kind` is `identity-diagnostic-preparation`. `authority_template` has the hosted
+  diagnostic's kind, session, source/tree, pipeline, approval reference and three
+  actual principals, without `issued_at` or `expires_at`.
+- `setup_clock` is a `{path, sha256}` binding to the original clock. Its approval
+  hash must match the `approval` binding and the original 60/120/330-minute limits.
+- `bindings` has six `{path, sha256}` originals: `approval`, `identity`, `readers`,
+  `rollback`, `rollback_review` and `baseline`. The approval includes the actual
+  `message_ref`, session and source/tree. The baseline contains the complete
+  operational `readbacks` captured before this attempt's temporary edits.
+- `expected_static` contains all 14 original readback keys: definition, variable
+  groups, group permission/checks, unfinished builds and each of the three
+  endpoints with its permission/checks. Review the exact post-edit GET shape.
+  The CLI permits only the three client-ID replacements and suppressing schedules;
+  protected settings and unrelated fields must equal the bound baseline. Variable
+  groups retain the already approved public source pin. No other variable change
+  belongs in the static stage.
+
+An initial classic-editor Save can materialize checkout defaults that were absent
+from the original definition. These are operational changes. If needed, include
+them explicitly in the fresh human approval and independent static-spec review,
+before resource setup. Bind a `static_amendment` file by `{path, sha256}` in the
+specification. Its kind is `human-approved-diagnostic-static-amendment`, its
+`message_ref` is the exact fresh approval, `baseline_sha256` binds the original
+baseline, and `expected_static_sha256` binds canonical `expected_static`. Its
+`additions` maps exact dotted definition paths to exact approved values. The
+code permits only the absent-to-fixed checkout defaults in `CHECKOUT_DEFAULTS`
+and the three exact disabled options in `DISABLED_OPTIONS`. It refuses changed
+existing values, other paths, other option IDs or enabled options. This code
+does not itself approve an amendment. Preserve the original baseline for restore.
+
+Complete the slow service-connection and schedule edits while Disabled. Capture
+the actual saved readbacks before issuing authority. Schedules must exclude all
+branches; if present their branch filters are exactly
+`+refs/heads/<session>-no-schedule` and `-refs/heads/*`, with
+`scheduleOnlyWithChanges: true`. Azure DevOps may return `daysToBuild: "all"` and a
+server-generated `scheduleJobId`; review and preserve those actual values instead
+of comparing the GET with a guessed form payload. The only ignored fields are
+the documented top-level audit fields listed in `_normalize` and omitted empty
+definition collections or false attributes on the three diagnostic variables.
+Definition `createdDate`, endpoint `modificationDate`, and repository
+`properties.lastUpdated` are revision audit metadata. Comments, repository
+identity, checkout settings and options remain compared; preserve the original
+Save comment unless a separate approved change covers it.
+
+Readback files contain `started_at` (or the existing collector's `at`),
+`completed_at` and `readbacks`. Times must describe the actual capture interval,
+never the time a stale response was copied. The whole capture must be at most two
+minutes old. Missing, changed or active-build responses refuse.
+
+From the repository root, with its `eval` package on `PYTHONPATH`:
+
+```text
+python -m scripts.pipelines.diagnostic_preparation stage --session <attempt> --spec preparation-spec.json --readbacks static-readbacks.private.json
+python -m scripts.pipelines.diagnostic_preparation draft --session <attempt>
+```
+
+Stage writes no authority or execution packet. Draft starts one fixed authority
+lifetime, at most 30 minutes and never beyond the original setup deadline. It
+writes the exact private `diagnostic-preparation/variables.private.json` Save
+payload and `configuration.private.json` expected GET shape. Keep the definition
+Disabled while saving just these three variables. The draft is not owner-dispatch
+approved; do not enable or queue from it. The hosted runtime could already accept
+the saved authority, so this is an owner procedure boundary, not a second runtime
+authentication mechanism.
+
+Azure DevOps masks the secret `P8_PREFLIGHT_JSON` value in GET responses. Record an
+actual private Save witness with `definition_id`, `started_at`, `completed_at`,
+saved `revision` and the exact three `variables` captured from the submitted
+inputs. Read back the saved definition and all other protected settings. The GET
+must show a masked secret and the exact public authority digest/source, while the
+witness binds the submitted transport. This cannot prove the masked plaintext
+from GET; the hosted job still verifies its decoded authority against that digest.
+Never substitute a claimed PASS or a locally edited expectation for either actual
+browser original.
+
+```text
+python -m scripts.pipelines.diagnostic_preparation finalize --session <attempt> --readbacks configured-readbacks.private.json --save-witness authority-save.private.json
+```
+
+Only finalize creates `diagnostic-preparation/execution-packet.json`. Its cutoff is
+the earliest of finalization plus five minutes, original authority expiry minus
+21 minutes, and original setup deadline minus 21 minutes. The 21 minutes retain
+the unchanged 20-minute job timeout plus one minute; finalization requires at
+least four minutes for final review and submission. A slow variable Save can
+therefore refuse before packet issuance without renewing the authority.
+
+Obtain independent PASS on that exact packet and every bound original. Store the
+actual review as `kind: independent-diagnostic-packet-review`, `verdict: PASS`,
+zero integer `critical`/`important` counts, the independent `reviewer` and exact
+`packet_sha256`. Rehearse and budget the final review, Save and readback path
+before approving another resource setup; do not assume human review or browser
+operations take no time.
+
+```text
+python -m scripts.pipelines.diagnostic_preparation enable --session <attempt> --readbacks before-enable.private.json --review independent-review.json
+# Only after PASS and the existing live setup guard: owner enables via browser.
+python -m scripts.pipelines.diagnostic_preparation queue --session <attempt> --readbacks before-queue.private.json --review independent-review.json
+# Only after PASS and the existing live setup guard: owner submits the single exact diagnostic.
+```
+
+Before enable, capture a fresh complete Disabled snapshot. After enable, capture
+the Enabled definition and retain only still-fresh actual originals for unchanged
+resources; the snapshot start must remain the earliest included capture time.
+Both guards compare exact operational settings, source, bindings, stop state and
+review, then recheck wall time after slow reads/hashes. They require two minutes
+of submission runway. Queue admission also enforces the original 120-second
+maximum from the dispatch reservation, conservatively including enablement time.
+The first guard exclusively reserves dispatch before
+enablement; the second exclusively consumes queue submission before the browser
+click. Partial output, an existing intent or an uncertain submission cannot be
+replayed. Disable/restore and follow the original approved stop/cleanup procedure
+on a blocked phase. Never remint a packet, reset a clock, extend a cutoff or
+automatically retry. Ordinary pipeline results and acceptance remain unverified
+until their separate actual runs pass.
+
 Fresh identities and any temporary Reader assignments needed for AzureCLI
 subscription discovery require their own exact plan and approval. Restrict each
 temporary Reader assignment to that identity's own ARM resource, never the
