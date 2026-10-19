@@ -24,6 +24,36 @@ needs approval. A failure never authorizes a replay or corrective apply.
 
 ## Authentication diagnostic before paid infrastructure
 
+### Verify the Windows keeper launch before a fresh attempt
+
+The p8-1019d attempt stopped before provisioning because a private monitor helper
+required `Popen.pid` to equal the keeper's `os.getpid()`. The Windows venv launcher
+stayed alive as the interpreter's parent, so those two valid process IDs differed.
+Preserve that closed attempt's receipts and original clock. A code fix does not
+authorize replaying it or starting another live attempt.
+
+The fresh monitor adapter must call `scripts.pipelines.startup.record_startup`
+with its independently reviewed session, source SHA and original clock hash,
+after verifying its actual approval and before freezing its monitor prompt.
+The function reads the actual launch, keeper-owned and heartbeat receipts and
+records `startup-process-binding.json` exclusively. It observes both Windows
+processes together and requires their complete PID/creation/command/helper-hash
+identities to match. Different PIDs require a direct parent-child relationship
+and a keeper created no earlier than the launcher. The heartbeat must identify
+the keeper, match the original session/source/clock and be less than 40 seconds
+old after the native query. An expired, future or incomplete receipt fails closed.
+Subsequent live ownership checks still use the actual keeper identity.
+
+Before live approval, run `tests/infra/test_pipelines_startup.py` using the same
+native Windows venv interpreter as the proposed keeper. Its offline probe really
+self-launches with the keeper's argv form and creation flag, admits the observed
+launcher/interpreter chain through `record_startup`, then verifies both processes
+have exited. It creates no live authority, setup clock or cloud resources. The
+dedicated Windows CI job repeats this path in a real venv. Bind the exact fresh
+adapter and its imported source files into the independent helper review and
+runtime seals. A PASS for an isolated validator does not cover an unreviewed
+adapter or replace the required live approval.
+
 After build 7's identity refusal on 17 October, its published artifact was empty:
 the private traceback had been written outside the published directory. Failed
 stages now publish a fixed-code `failure.json`, never raw exception text, claims,
