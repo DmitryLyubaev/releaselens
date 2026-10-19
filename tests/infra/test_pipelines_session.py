@@ -102,6 +102,7 @@ def test_dispatch_reserves_all_queries_before_browser_queue(session_module,tmp_p
     monkeypatch.setattr(session_module,"load",lambda directory:(a,{},{}))
     monkeypatch.setattr(session_module,"verify_source",lambda authority:None)
     now=datetime.fromisoformat(raw["apply_started_at"])+timedelta(minutes=20)
+    monkeypatch.setattr(session_module,"utc_now",lambda:now)
     session_module.reserve_dispatch(tmp_path,"release",now)
     assert (tmp_path/"intents/queries-test.json").exists() and (tmp_path/"intents/queries-prod.json").exists()
     with pytest.raises(Exception): session_module.reserve_dispatch(tmp_path,"release",now)

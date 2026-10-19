@@ -1,0 +1,20 @@
+{
+  "kind": "sanitized-observed-ADO-Save-shape",
+  "observed_transition": "static Save revision64 to authority-variable Save revision65",
+  "copied_fields": [
+    "id",
+    "revision",
+    "queueStatus",
+    "triggers",
+    "options",
+    "jobAuthorizationScope",
+    "jobTimeoutInMinutes",
+    "jobCancelTimeoutInMinutes",
+    "process"
+  ],
+  "sanitization": "Session branch renamed to p8-offline. Variable values, repository/account URLs, identities, private transport and audit actors excluded. This projection is not a full response or evidence of a live test.",
+  "originals": {
+    "diagnostic-static-readbacks.private.json": "b483831683844017abba82c9ac83b4a911dc1d07d46692cc830e8eb136cf9c69",
+    "diagnostic-configured-readbacks.private.json": "65d06fcc87e9c9ba4ae44c145d40c1d597c245c0d5f1ae8b0099423a018d9877"
+  }
+}

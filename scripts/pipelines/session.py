@@ -14,6 +14,10 @@ from app.delivery_search.contracts import DeliveryRefused,canonical,exclusive_js
 from .readiness import TIMING_PROFILES,require_owner_id
 
 
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
 def instant(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None: raise DeliveryRefused("authority")
@@ -240,12 +244,44 @@ def reserve_dispatch(directory: Path,mode: str,now: datetime) -> Path:
     identity=hashlib.sha256((a.source_sha+a.release_digest).encode()).hexdigest()
     with operation_lock(directory):
         require_no_local_metadata(directory)
+        # Source inspection, grading and lock acquisition can cross the cutoff.
+        # A caller's pre-validation timestamp cannot authorize a late dispatch.
+        current=utc_now()
+        if current<instant(a.apply_started_at) or current>=instant(a.queue_cutoff_at):
+            raise DeliveryRefused('deadline')
         if any((directory/path).exists() for path in ('stopped-gate.json','owner-stop-authority.json',
             'quiescence/request.json')): raise DeliveryRefused('authority')
         dispatch=_reserve(directory,"dispatch-"+mode,identity)
         for name in ({"release":("test","prod"),"negative":("negative",),"scheduled":("verify",)}[mode]):
             _reserve(directory,"queries-"+name,identity)
         return dispatch
+
+
+def require_dispatch_current(directory: Path, mode: str, *, owner_check=None):
+    """Read-only final browser handoff check, immediately before submission.
+
+    A reservation remains consumed if submission is uncertain. This check
+    neither queues nor reserves another run, and never extends its cutoff.
+    """
+    a,raw,_=load(directory)
+    verify_source(a)
+    from .metadata import require_no_local_metadata
+    if mode not in ('release','negative','scheduled') or a.apply_started_at is None:
+        raise DeliveryRefused('authority')
+    identity=hashlib.sha256((a.source_sha+a.release_digest).encode()).hexdigest()
+    for name in ('dispatch-'+mode, *('queries-'+target for target in {
+            'release':('test','prod'),'negative':('negative',),'scheduled':('verify',)}[mode])):
+        if read(directory/'intents'/(name+'.json'))['identity_sha256']!=identity:
+            raise DeliveryRefused('authority')
+    require_no_local_metadata(directory)
+    if owner_check is not None:
+        owner_check()
+    if any((directory/path).exists() for path in ('stopped-gate.json','owner-stop-authority.json','quiescence/request.json')):
+        raise DeliveryRefused('authority')
+    current=utc_now()
+    if not instant(a.apply_started_at)<=current<instant(a.queue_cutoff_at):
+        raise DeliveryRefused('deadline')
+    return {'at':current.isoformat(),'mode':mode,'session':a.session,'source_sha':a.source_sha}
 
 
 if __name__=="__main__":
