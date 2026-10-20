@@ -5,9 +5,17 @@ import re
 import pytest
 
 DECLARED = re.compile(r'^(resource|data) "([^"]+)" "([^"]+)"',re.M)
+OUTPUT = re.compile(r'^output "([^"]+)" \{\n(.*?)^\}',re.M|re.S)
 PLATFORM = ["azurerm_federated_identity_credential.delivery","azurerm_resource_group.platform","azurerm_resource_group.search",
     "azurerm_role_assignment.delivery","azurerm_role_assignment.owner_storage","azurerm_storage_account.platform",
     "azurerm_storage_container.private","azurerm_user_assigned_identity.delivery","random_string.suffix"]
+
+
+def outputs(stack):
+    """Every declared output, with its block body ("" for a one-line output)."""
+    text = (stack/"outputs.tf").read_text()
+    blocks = dict(OUTPUT.findall(text))
+    return {name:blocks.get(name,"") for name in re.findall(r'^output "([^"]+)"',text,re.M)}
 
 
 def declared(stack):
@@ -65,3 +73,12 @@ def test_platform_stack_holds_no_search_service(repo_root):
     # Every role assignment is one the contract test enumerates; the search service is per run.
     assert declared(root) == PLATFORM
     assert 'key              = "p8-platform.tfstate"' in (root/"backend.tf").read_text()
+
+
+@pytest.mark.parametrize("stack,names",[("platform",["principals","search_group","search_service_name","storage_account_name",
+    "subscription_id","tenant_id"]),("service",["search_host"])])
+def test_outputs_never_print_identifiers(repo_root,stack,names):
+    # An apply prints only <sensitive>; terraform output -json still returns each value.
+    found = outputs(repo_root/"infra/pipelines"/stack)
+    assert sorted(found) == names
+    assert all(re.search(r"^\s*sensitive\s*=\s*true\s*$",body,re.M) for body in found.values())
