@@ -1,4 +1,4 @@
-"""Private Blob transport, canonical state reads and atomic no-replay receipts."""
+"""Private Blob transport, canonical state reads, no-replay receipts and the current-release pointer."""
 import json
 import re
 
@@ -6,22 +6,24 @@ import httpx
 
 from app.delivery_search.contracts import DeliveryRefused, RequestRefused, canonical
 
-# The final twelve shared slots are exclusively for physical index observations.
-METADATA_OPERATIONS = 108
-METADATA_TOTAL = 120
+POINTER_KEY = "current.json"
+STATES = {"test":("test-state","index.tfstate"),"demo-prod":("prod-state","index.tfstate"),
+          "service":("service-state","service.tfstate")}
+
+
+def run_key(release_run_id: int, key: str) -> str:
+    """Every artefact of one release run lives under its own evidence prefix."""
+    return f"runs/{release_run_id}/{key}"
 
 
 class BlobStore:
-    def __init__(self,host: str,tokens,client: httpx.Client,*,metadata_policy=None):
+    def __init__(self,host: str,tokens,client: httpx.Client):
         if not re.fullmatch(r"[a-z0-9]{3,24}\.blob\.core\.windows\.net",host):
             raise DeliveryRefused("target")
         self.host,self.tokens,self.client = host,tokens,client
-        from .metadata import validate_policy
-        self.metadata_policy = validate_policy(metadata_policy) if metadata_policy is not None else None
-        self._budget_next = {}
 
     def _url(self,container: str,key: str) -> str:
-        if container not in ("inputs","evidence","test-state","prod-state") or not re.fullmatch(r"[A-Za-z0-9/._-]+",key) or any(p in (".","..","") for p in key.split("/")):
+        if container not in ("inputs","evidence","test-state","prod-state","service-state") or not re.fullmatch(r"[A-Za-z0-9/._-]+",key) or any(p in (".","..","") for p in key.split("/")):
             raise DeliveryRefused("target")
         return f"https://{self.host}/{container}/{key}"
 
@@ -51,7 +53,7 @@ class BlobStore:
     def put_once(self,container: str,key: str,data: bytes) -> None:
         if container != "evidence" or len(data) > 16*1024*1024:
             raise DeliveryRefused("authority")
-        check = "metadata-budget" if key.startswith("budgets/metadata/") else "blob-create"
+        check = "blob-create"
         try:
             response = self.client.put(self._url(container,key),content=data,headers={
                 "Authorization":f"Bearer {self.tokens.token()}","x-ms-version":"2023-11-03",
@@ -66,73 +68,24 @@ class BlobStore:
     def put_json(self,key: str,value: dict) -> None:
         self.put_once("evidence",key,canonical(value))
 
-    def reserve_budget(self,name: str,maximum: int,*,start: int=0) -> str:
-        total = self.metadata_policy.total if self.metadata_policy else METADATA_TOTAL
-        ordinary = self.metadata_policy.ordinary if self.metadata_policy else METADATA_OPERATIONS
-        workload = self.metadata_policy.workload if self.metadata_policy else ordinary
-        if (not re.fullmatch(r"[a-z-]{1,32}",name) or type(maximum) is not int
-                or type(start) is not int or not 0<=start<maximum<=(total if name=='metadata' else 200)):
-            raise DeliveryRefused("authority")
-        if name=="metadata":
-            if (start>=workload and (start!=ordinary or maximum!=total)):
-                raise DeliveryRefused("authority")
-            if start<workload:
-                maximum=min(maximum,workload)
-                self.require_workload_open()
-        return self._reserve_range(name,start,maximum)
-
-    def require_workload_open(self):
-        if self.metadata_policy is None: return
-        # A terminal cleanup transition is shared across fresh worker processes.
+    def write_pointer(self,value: dict) -> None:
+        """The one overwriting write: the current-release pointer, with no If-None-Match."""
         try:
-            response=self.client.get(self._url('evidence','operations/metadata-workload-stopped.json'),
-                headers={'Authorization':f'Bearer {self.tokens.token()}','x-ms-version':'2023-11-03'},
-                follow_redirects=False,timeout=20)
-            if response.status_code==404 and response.headers.get('x-ms-error-code')=='BlobNotFound': return
-            raise DeliveryRefused('authority')
+            response = self.client.put(self._url("evidence",POINTER_KEY),content=canonical(value),headers={
+                "Authorization":f"Bearer {self.tokens.token()}","x-ms-version":"2023-11-03",
+                "x-ms-blob-type":"BlockBlob"},follow_redirects=False,timeout=30)
+            if response.status_code != 201: raise DeliveryRefused("request")
         except httpx.HTTPError:
-            raise DeliveryRefused('request') from None
+            raise DeliveryRefused("request") from None
 
-    def reserve_metadata(self,*,physical=False):
-        total = self.metadata_policy.total if self.metadata_policy else METADATA_TOTAL
-        ordinary = self.metadata_policy.ordinary if self.metadata_policy else METADATA_OPERATIONS
-        return self.reserve_budget('metadata',total,start=ordinary if physical else 0)
-
-    def reserve_cleanup_metadata(self,directory,authority):
-        from .metadata import require_policy,require_cleanup_contingency
-        if self.metadata_policy != require_policy(authority): raise DeliveryRefused('authority')
-        if (directory/'owner-stop-authority.json').exists():
-            require_cleanup_contingency(directory,authority)
-            try:
-                self.put_json('operations/metadata-workload-stopped.json',
-                    {k:authority[k] for k in ('session','source_sha','metadata_policy')})
-            except DeliveryRefused as exc:
-                if exc.code!='reserved': raise
-        try:
-            return self._reserve_range('metadata',0,self.metadata_policy.workload)
-        except DeliveryRefused as exc:
-            if exc.code!='reserved': raise
-        require_cleanup_contingency(directory,authority)
-        return self._reserve_range('metadata',self.metadata_policy.workload,self.metadata_policy.ordinary)
-
-    def _reserve_range(self,name,start,maximum):
-        cursor=(name,start,maximum)
-        for i in range(self._budget_next.get(cursor,start),maximum):
-            key=f"budgets/{name}/{i:03}.json"
-            try:
-                self.put_json(key,{"slot":i,"budget":name})
-                self._budget_next[cursor]=i+1
-                return key
-            except DeliveryRefused as exc:
-                if exc.code!="reserved": raise
-                self._budget_next[cursor]=i+1
-        raise DeliveryRefused("reserved")
+    def read_pointer(self) -> dict:
+        return self.json("evidence",POINTER_KEY)
 
     def state(self,target: str) -> dict | None:
-        if target not in ("test","demo-prod"): raise DeliveryRefused("target")
-        container = "test-state" if target == "test" else "prod-state"
+        if target not in STATES: raise DeliveryRefused("target")
+        container,key = STATES[target]
         try:
-            response = self.client.get(self._url(container,"index.tfstate"),headers={
+            response = self.client.get(self._url(container,key),headers={
                 "Authorization":f"Bearer {self.tokens.token()}","x-ms-version":"2023-11-03"},
                 follow_redirects=False,timeout=20)
             if response.status_code == 404 and response.headers.get("x-ms-error-code") == "BlobNotFound":
