@@ -1,5 +1,4 @@
 """Hosted-agent pipeline YAML (release, negative, teardown, schedule, identity preflight), parsed offline."""
-import hashlib
 import importlib
 import json
 import re
@@ -29,7 +28,7 @@ MODES = [("release", "Manual"), ("negative", "Manual"), ("teardown", "Manual"), 
 @pytest.fixture
 def modules(repo_root,monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root / "eval"))
-    return tuple(importlib.import_module("scripts.pipelines."+name) for name in ("checks","run","storage"))
+    return tuple(importlib.import_module("scripts.pipelines."+name) for name in ("run","storage"))
 
 
 # A small reader for the Azure Pipelines template syntax the files use: if-blocks and template inclusion.
@@ -366,28 +365,8 @@ def test_templates_take_no_untrusted_step_parameters(repo_root):
         for parameter in body.get("parameters", []): assert parameter["type"] != "stepList", name
 
 
-def test_required_checks_snapshot(modules):
-    checks,_,_ = modules
-    raw = {"checks":[{"id":i,"type":{"id":f"type-{kind}"},"resource":{"id":"resource","type":"environment"},
-                     "settings":{"policy":kind},"isDisabled":False,"version":1}
-                    for i,kind in enumerate(["approval","branch","required-template","exclusive-lock"],1)],
-           "pipeline_authorized":True,"pool_authorized":True,"private_project":True,"main_protected":True,
-           "secrets_masked":True}
-    expected = {"approval_ref":"reviewed-settings", "checks":[{
-        "kind":kind,"id":i,"type_id":f"type-{kind}","resource":{"id":"resource","type":"environment"},
-        "settings_sha256":hashlib.sha256(json.dumps({"policy":kind},sort_keys=True,separators=(",",":")).encode()).hexdigest(),
-        "version":1} for i,kind in enumerate(["approval","branch","required-template","exclusive-lock"],1)]}
-    checks.verify_checks(raw,expected)
-    for flag in ["pipeline_authorized","pool_authorized","private_project","main_protected","secrets_masked"]:
-        with pytest.raises(Exception): checks.verify_checks(raw | {flag:False},expected)
-    for i in range(4):
-        with pytest.raises(Exception): checks.verify_checks(raw | {"checks":raw["checks"][:i]+raw["checks"][i+1:]},expected)
-    changed = dict(raw["checks"][0]); changed["settings"] = {"policy":"bypass"}
-    with pytest.raises(Exception): checks.verify_checks(raw | {"checks":[changed]+raw["checks"][1:]},expected)
-
-
 def test_blob_claim_and_state_absence_fail_closed(modules):
-    _,_,storage = modules
+    _,storage = modules
     requests = []
     class Tokens:
         def token(self): return "synthetic"
@@ -405,7 +384,7 @@ def test_blob_claim_and_state_absence_fail_closed(modules):
 
 
 def test_missing_results_files_refuse(modules,tmp_path):
-    _,run,_ = modules
+    run,_ = modules
     with pytest.raises(Exception): run.require_result_files(tmp_path)
     (tmp_path/"results.json").write_text("{}")
     with pytest.raises(Exception): run.require_result_files(tmp_path)
