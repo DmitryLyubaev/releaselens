@@ -9,6 +9,8 @@ parameters:
   values: [run, service]
 - name: command
   type: string
+  values: [build, plan-test, test, plan-prod, prod, negative, promote-negative, verify, create-service, status,
+           teardown-prod, teardown-test]
 - name: displayName
   type: string
 - name: artifact

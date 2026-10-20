@@ -10,6 +10,9 @@ import yaml
 
 STATUS_OUTPUT = "dependencies.Status.outputs['Status.StatusCheck.P8Status']"
 READY = f"eq({STATUS_OUTPUT}, 'ready')"
+# A completed Status step's output stays readable after its job fails, so teardown also needs the stage result.
+TEARDOWN_CONDITION = ("and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), "
+                      "eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))")
 SETTINGS = ("P8_TENANT_ID", "P8_SUBSCRIPTION_ID", "P8_STORAGE_ACCOUNT", "P8_SEARCH_GROUP", "P8_SEARCH_SERVICE",
             "P8_RELEASE_DIGEST", "P8_PRINCIPALS_JSON")
 BUILD_ENV = {"BUILD_REASON": "$(Build.Reason)", "BUILD_SOURCEBRANCH": "$(Build.SourceBranch)",
@@ -91,7 +94,6 @@ def expand(node, ctx):
 
 
 def render(repo_root, mode, reason):
-    main = yaml.safe_load((repo_root / "pipelines/search-delivery.yml").read_bytes())
     root = repo_root / "pipelines/templates"
     template = yaml.safe_load((root / "search-delivery.yml").read_bytes())
     assert mode in template["parameters"][0]["values"]
@@ -231,15 +233,15 @@ def test_schedule_verify_and_teardown_conditions(repo_root):
     assert verify["dependsOn"] == "Status"
     assert verify["condition"] == f"and(succeeded(), {READY})"
     assert prod["dependsOn"] == ["Status", "Verify"]
-    assert prod["condition"] == f"and(always(), {READY})"
+    assert prod["condition"] == TEARDOWN_CONDITION
     assert test["dependsOn"] == ["Status", "TeardownProd"]
-    assert test["condition"] == f"and(always(), {READY})"
+    assert test["condition"] == TEARDOWN_CONDITION
     assert "scripts.pipelines.run verify " in command_of(verify)
     assert "scripts.pipelines.service teardown-prod " in command_of(prod)
     assert "scripts.pipelines.service teardown-test " in command_of(test)
 
 
-def test_status_stage_publishes_no_junit_and_reads_the_output_name(repo_root):
+def test_status_stage_publishes_receipts_but_no_junit(repo_root):
     status = render(repo_root, "release", "Schedule")[0]
     steps = job_steps(status["jobs"][0])
     assert not [s for s in steps if s.get("task") == "PublishTestResults@2"]
@@ -312,7 +314,7 @@ def test_guard_runs_before_login_for_run_stages(repo_root):
         steps = job_steps(job)
         (azure,) = azure_steps(job) if mode != "identity-preflight" else (None,)
         script = azure["inputs"]["inlineScript"] if azure else ""
-        if "scripts.pipelines.run " not in script or "promote-negative" in script: continue
+        if "scripts.pipelines.run " not in script: continue
         guards = [i for i, s in enumerate(steps) if "--guard-only" in s.get("bash", "")]
         assert len(guards) == 1 and guards[0] < steps.index(azure), stage["stage"]
         guard = steps[guards[0]]
@@ -407,3 +409,17 @@ def test_missing_results_files_refuse(modules,tmp_path):
     with pytest.raises(Exception): run.require_result_files(tmp_path)
     (tmp_path/"results.json").write_text("{}")
     with pytest.raises(Exception): run.require_result_files(tmp_path)
+
+
+def test_stage_steps_command_is_an_allow_list(repo_root):
+    body = yaml.safe_load((repo_root / "pipelines/templates/stage-steps.yml").read_bytes())
+    (command,) = [p for p in body["parameters"] if p["name"] == "command"]
+    assert command["values"] == ["build", "plan-test", "test", "plan-prod", "prod", "negative", "promote-negative",
+                                 "verify", "create-service", "status", "teardown-prod", "teardown-test"]
+    used = set()
+    for mode, reason in MODES:
+        for stage in render(repo_root, mode, reason):
+            for job in jobs_of(stage):
+                for step in azure_steps(job):
+                    used |= set(re.findall(r"scripts\.pipelines\.(?:run|service) (\S+)", step["inputs"]["inlineScript"]))
+    assert used == set(command["values"])
