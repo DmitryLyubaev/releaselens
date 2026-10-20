@@ -11,7 +11,7 @@ import httpx
 from app.delivery_search.contracts import DeliveryRefused, exclusive_json
 from .identity import IDENTITY_CHECKS, IdentityRefused, verify_principal
 from .run import authenticate, jwt_claims
-from .settings import ROLES, Settings, load_settings
+from .settings import ROLES, Settings, check_principals, load_settings
 
 CHECKS = {"principal_verified": True, "refresh_environment_verified": True,
           "refresh_request_verified": True, "refreshed_principal_verified": True}
@@ -27,12 +27,7 @@ def require_context(env: dict) -> tuple[Settings, int]:
     except (KeyError, TypeError, ValueError):
         raise DeliveryRefused("authority") from None
     settings = load_settings(env)
-    for principal in settings.principals.values():
-        if principal["oidc_request_origin"] != "https://dev.azure.com" or not principal["oidc_path_prefix"].startswith("/"):
-            raise DeliveryRefused("identity")
-    for key in ("client_id", "object_id", "service_connection_id"):
-        if len({principal[key] for principal in settings.principals.values()}) != len(ROLES):
-            raise DeliveryRefused("identity")
+    check_principals(settings.principals)
     return settings, run_id
 
 
