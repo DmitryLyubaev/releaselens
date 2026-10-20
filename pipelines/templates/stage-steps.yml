@@ -1,0 +1,85 @@
+# One delivery command: the toolchain, a source guard before login (run stages), the command under its
+# service connection, then the JUnit results and receipts. Fixed parameters only; no step lists.
+parameters:
+- name: connection
+  type: string
+  values: [ReleaseLens-P8-Test, ReleaseLens-P8-Prod, ReleaseLens-P8-Verify]
+- name: module
+  type: string
+  values: [run, service]
+- name: command
+  type: string
+- name: displayName
+  type: string
+- name: artifact
+  type: string
+- name: junit
+  type: boolean
+  default: true
+- name: stepName
+  type: string
+  default: DeliveryStep
+steps:
+- template: setup-steps.yml
+- ${{ if eq(parameters.module, 'run') }}:
+  - bash: |
+      set -euo pipefail
+      "$(Agent.TempDirectory)/p8-workload/bin/python" -m scripts.pipelines.run ${{ parameters.command }} --receipt-dir "$(Agent.TempDirectory)/p8-publish" --guard-only
+    displayName: Guard main and the settings before Azure login
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+      BUILD_REASON: $(Build.Reason)
+      BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+      BUILD_BUILDID: $(Build.BuildId)
+      P8_TENANT_ID: $(P8_TENANT_ID)
+      P8_SUBSCRIPTION_ID: $(P8_SUBSCRIPTION_ID)
+      P8_STORAGE_ACCOUNT: $(P8_STORAGE_ACCOUNT)
+      P8_SEARCH_GROUP: $(P8_SEARCH_GROUP)
+      P8_SEARCH_SERVICE: $(P8_SEARCH_SERVICE)
+      P8_RELEASE_DIGEST: $(P8_RELEASE_DIGEST)
+      P8_PRINCIPALS_JSON: $(P8_PRINCIPALS_JSON)
+- task: AzureCLI@2
+  name: ${{ parameters.stepName }}
+  displayName: ${{ parameters.displayName }}
+  inputs:
+    azureSubscription: ${{ parameters.connection }}
+    scriptType: bash
+    scriptLocation: inlineScript
+    addSpnToEnvironment: true
+    visibleAzLogin: false
+    keepAzSessionActive: true
+    inlineScript: |
+      set -euo pipefail
+      "$(Agent.TempDirectory)/p8-workload/bin/python" -m scripts.pipelines.${{ parameters.module }} ${{ parameters.command }} --receipt-dir "$(Agent.TempDirectory)/p8-publish"
+    workingDirectory: $(Build.SourcesDirectory)
+  env:
+    PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
+    BUILD_REASON: $(Build.Reason)
+    BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+    BUILD_BUILDID: $(Build.BuildId)
+    P8_TENANT_ID: $(P8_TENANT_ID)
+    P8_SUBSCRIPTION_ID: $(P8_SUBSCRIPTION_ID)
+    P8_STORAGE_ACCOUNT: $(P8_STORAGE_ACCOUNT)
+    P8_SEARCH_GROUP: $(P8_SEARCH_GROUP)
+    P8_SEARCH_SERVICE: $(P8_SEARCH_SERVICE)
+    P8_RELEASE_DIGEST: $(P8_RELEASE_DIGEST)
+    P8_PRINCIPALS_JSON: $(P8_PRINCIPALS_JSON)
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)
+- ${{ if eq(parameters.junit, true) }}:
+  - task: PublishTestResults@2
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(Agent.TempDirectory)/p8-publish/**/*.xml
+      failTaskOnFailedTests: true
+      failTaskOnMissingResultsFile: true
+      testRunTitle: P8 ${{ parameters.command }}
+- task: PublishPipelineArtifact@1
+  condition: always()
+  inputs:
+    targetPath: $(Agent.TempDirectory)/p8-publish
+    artifact: ${{ parameters.artifact }}

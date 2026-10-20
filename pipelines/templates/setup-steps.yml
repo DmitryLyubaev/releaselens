@@ -1,0 +1,31 @@
+# The toolchain every job starts with: the checkout, Python 3.12, two hash-locked virtual environments
+# (the pinned Azure CLI and the workload) and the digest-checked Terraform.
+steps:
+- checkout: self
+  clean: true
+  persistCredentials: false
+- task: UsePythonVersion@0
+  displayName: Python 3.12
+  inputs:
+    versionSpec: '3.12'
+    addToPath: true
+- bash: |
+    set -euo pipefail
+    python -m venv "$(Agent.TempDirectory)/p8-cli"
+    "$(Agent.TempDirectory)/p8-cli/bin/pip" install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r build/delivery-agents/cli-requirements.lock
+  displayName: Install the pinned Azure CLI
+  workingDirectory: $(Build.SourcesDirectory)
+- bash: |
+    set -euo pipefail
+    python -m venv "$(Agent.TempDirectory)/p8-workload"
+    "$(Agent.TempDirectory)/p8-workload/bin/pip" install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r build/delivery-agents/requirements.lock
+  displayName: Install the workload environment
+  workingDirectory: $(Build.SourcesDirectory)
+- bash: |
+    set -euo pipefail
+    mkdir -p "$(Agent.TempDirectory)/p8-bin"
+    "$(Agent.TempDirectory)/p8-workload/bin/python" build/delivery-agents/install.py build/delivery-agents --terraform-out "$(Agent.TempDirectory)/p8-bin/terraform"
+    echo "##vso[task.prependpath]$(Agent.TempDirectory)/p8-cli/bin"
+    echo "##vso[task.prependpath]$(Agent.TempDirectory)/p8-bin"
+  displayName: Install the digest-checked Terraform and put the tools on PATH
+  workingDirectory: $(Build.SourcesDirectory)
