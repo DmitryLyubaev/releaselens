@@ -223,12 +223,17 @@ def test_schedule_never_creates(harness):
 
 # status: absent, incomplete or ready; read-only, exit 0 for all three.
 
+COMPLETE = "##vso[task.complete result=SucceededWithIssues;]"
+
+
 def status_line(out):
-    lines = [line for line in out.splitlines() if line.startswith("##vso[")]
-    assert len(lines) == 1
     prefix = "##vso[task.setvariable variable=P8Status;isOutput=true]"
-    assert lines[0].startswith(prefix)
-    return lines[0][len(prefix):]
+    lines = [line for line in out.splitlines() if line.startswith(prefix)]
+    assert len(lines) == 1
+    status = lines[0][len(prefix):]
+    # Only an incomplete release ends orange; absent and ready end green.
+    assert [line for line in out.splitlines() if line.startswith("##vso[") and line != lines[0]] == ([COMPLETE] if status == "incomplete" else [])
+    return status
 
 
 def run_status(harness,capsys):
@@ -250,6 +255,22 @@ def test_status_absent(harness,capsys):
 def test_status_ready(harness,capsys):
     harness.receipts()
     assert run_status(harness,capsys) == "ready"
+
+
+def test_status_incomplete_prints_task_complete_with_issues(harness,capsys):
+    harness.receipts(prod=False,negative=False)
+    assert harness.main("status",reason="Schedule",build_id="60") == 0
+    out = capsys.readouterr().out
+    assert out.splitlines().count(COMPLETE) == 1 and status_line(out) == "incomplete"
+
+
+@pytest.mark.parametrize("present,expected",[(False,"absent"),(True,"ready")])
+def test_status_absent_and_ready_print_no_task_complete(harness,capsys,present,expected):
+    harness.present = present
+    harness.receipts()
+    assert harness.main("status",reason="Schedule",build_id="60") == 0
+    out = capsys.readouterr().out
+    assert "task.complete" not in out and status_line(out) == expected
 
 
 def test_status_incomplete_when_prod_receipt_missing(harness,capsys):

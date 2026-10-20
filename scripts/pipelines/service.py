@@ -234,6 +234,8 @@ def main(argv=None) -> int:
         print("status=pass code=stage")
     else:
         print("##vso[task.setvariable variable=P8Status;isOutput=true]"+status)
+        # An incomplete release may still be billing: the scheduled run shows orange, not green. Still exit 0.
+        if status == "incomplete": print("##vso[task.complete result=SucceededWithIssues;]")
         print("status=pass code="+status)
     return 0
 

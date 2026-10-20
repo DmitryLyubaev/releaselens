@@ -244,6 +244,6 @@ and the tests pinning it (`tests/infra/test_pipelines_yaml.py`); `docs/pipelines
 | 7 | Every run's service is named `p8-search-<suffix>`; a create soon after a delete may meet a name Azure has not yet released | run day | |
 | 8 | A stage killed at its timeout (`run.py`, `service.py`) leaves a state lease or a service no state lists; whether the recovery was needed | run day | |
 | 9 | Verify's `Reader` on `rg-p8-search` lets the scheduled Status run `az search service show` | run day | |
-| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject; the OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` (step 6) | 1, 3, 6 | |
+| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject; the OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` (step 6). The prefix check is case-sensitive and the prefix is built from the organisation name as typed; if the step-6 preflight fails with `refresh-endpoint`, compare the prefix's casing with `System.OidcRequestUri`, rerun `owner_setup variables` with a new `--out` path (it never overwrites), then rewrite the variable group | 1, 3, 6 | |
 | 11 | The platform plan was exactly 31 to add (or the number, and why) | 1 | |
 | 12 | `-backend-config=use_oidc=false` let the fallback destroy use the owner's `az login` (or "not used") | stops | |
