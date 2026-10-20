@@ -13,6 +13,17 @@ session cleanup. See the [measured results and earlier failed attempts](docs/age
 and [agent session runbook](docs/runbook-agents.md). This is a small CV demonstration;
 multi-agent scale-out, production readiness and zero total idle cost are not claimed.
 
+Project 8 delivers one frozen search release through Azure Pipelines on Microsoft-hosted agents:
+build and test, a per-run Basic search service, a gated test index, the owner's approval, then the
+same release on a demo-prod index. A negative run must go red at the gate with prod unchanged, and
+one genuine scheduled run verifies prod read-only before tearing the service down. The gate is all
+229 audited questions evaluated, at least 120 correct at top 1, with no model or embedding call.
+Identities, federated credentials and role grants are set up once (`infra/pipelines/platform`);
+only the search service and its indexes exist per run. **Not yet run.** Five earlier live attempts
+stopped in the session machinery this design removed. See the
+[design](docs/superpowers/specs/2026-10-20-pipelines-simplified-delivery-design.md) and the
+[runbook](docs/runbook-pipelines.md).
+
 Project 6 adds an owner-only .NET 10 Razor Pages front end with main/staging slots and a
 direct API Management gateway route. **Acceptance completed on 14 October 2026:** W1-W5
 and both W6 halves passed across explicitly approved sessions. W1/W3 retain their original

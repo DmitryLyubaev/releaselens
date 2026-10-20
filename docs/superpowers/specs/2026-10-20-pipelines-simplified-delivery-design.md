@@ -309,3 +309,9 @@ Refresh the price before the run.
 - How long a Basic search service takes to create and to delete.
 - That the 23:30 UTC schedule registers from `main` and fires as `Build.Reason = Schedule`.
 - That the Test identity can delete the service, and the indexes with it, under the group-scope grant.
+- Every run's search service has the same name, `p8-search-<suffix>`, so a create soon after a delete
+  may meet a name Azure has not yet released.
+- That a stage killed at its timeout (`run.py`, `service.py`) leaves no Terraform state lease and no
+  resource that no state lists. The runbook gives the recovery for each.
+- That the Verify identity's `Reader` on `rg-p8-search` lets the scheduled status check run
+  `az search service show`.
