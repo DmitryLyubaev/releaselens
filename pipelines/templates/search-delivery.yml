@@ -68,7 +68,7 @@ stages:
     condition: and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: TeardownTest
-      timeoutInMinutes: 40
+      timeoutInMinutes: 60
       cancelTimeoutInMinutes: 1
       pool:
         vmImage: ubuntu-24.04
@@ -102,7 +102,7 @@ stages:
       dependsOn: BuildAndTest
       jobs:
       - job: CreateService
-        timeoutInMinutes: 40
+        timeoutInMinutes: 50
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -249,7 +249,7 @@ stages:
       condition: always()
       jobs:
       - job: TeardownTest
-        timeoutInMinutes: 40
+        timeoutInMinutes: 60
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
