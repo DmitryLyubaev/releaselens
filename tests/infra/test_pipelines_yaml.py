@@ -340,7 +340,7 @@ def test_every_job_publishes_its_receipts_and_has_a_timeout(repo_root):
         assert artifact["condition"] == "always()"
         assert artifact["inputs"]["targetPath"] in ("$(Agent.TempDirectory)/p8-publish", "$(Agent.TempDirectory)/p8-identity-preflight")
         names.setdefault((mode, reason), []).append(artifact["inputs"]["artifact"])
-        assert type(job["timeoutInMinutes"]) is int and 15 <= job["timeoutInMinutes"] <= 40, stage["stage"]
+        assert type(job["timeoutInMinutes"]) is int and 15 <= job["timeoutInMinutes"] <= 60, stage["stage"]
         assert job["cancelTimeoutInMinutes"] == 1
     for artifacts in names.values(): assert len(artifacts) == len(set(artifacts))
 
@@ -348,29 +348,44 @@ def test_every_job_publishes_its_receipts_and_has_a_timeout(repo_root):
 def test_release_timeouts_fit_the_run_day_timeline(repo_root):
     stages = by_name(render(repo_root, "release", "Manual"))
     limits = {name: stage["jobs"][0]["timeoutInMinutes"] for name, stage in stages.items()}
-    assert limits == {"BuildAndTest": 20, "CreateService": 40, "PlanTest": 15, "TestIndex": 20, "PlanProd": 15, "ProdIndex": 20}
+    assert limits == {"BuildAndTest": 20, "CreateService": 50, "PlanTest": 15, "TestIndex": 20, "PlanProd": 15, "ProdIndex": 20}
 
 
 def test_other_job_timeouts_are_exact(repo_root):
     limits = lambda mode, reason: {n: s["jobs"][0]["timeoutInMinutes"] for n, s in by_name(render(repo_root, mode, reason)).items()}
-    assert limits("release", "Schedule") == {"Status": 15, "Verify": 20, "TeardownProd": 30, "TeardownTest": 40}
+    assert limits("release", "Schedule") == {"Status": 15, "Verify": 20, "TeardownProd": 30, "TeardownTest": 60}
     assert limits("negative", "Manual") == {"NegativeGate": 20, "PromoteNegative": 15}
-    assert limits("teardown", "Manual") == {"TeardownProd": 30, "TeardownTest": 40}
+    assert limits("teardown", "Manual") == {"TeardownProd": 30, "TeardownTest": 60}
     assert limits("identity-preflight", "Manual") == {"IdentityPreflight": 15}
 
 
 def test_terraform_jobs_outlast_their_subprocess_timeouts_by_ten_minutes(repo_root):
-    """A job timeout mid-apply or mid-destroy kills Terraform and can strand a state lease and a billing service."""
-    service = (repo_root / "scripts/pipelines/service.py").read_text(encoding="utf-8")
-    plans = (repo_root / "scripts/pipelines/plans.py").read_text(encoding="utf-8")
+    """A job timeout mid-apply or mid-destroy kills Terraform and can strand a state lease and a billing service.
+    A command that runs several subprocesses needs the sum of their timeouts, not the longest."""
+    read = lambda name: (repo_root / "scripts/pipelines" / name).read_text(encoding="utf-8")
+    service, plans, run = read("service.py"), read("plans.py"), read("run.py")
     seconds = lambda text, pattern: int(re.search(pattern, text).group(1))
     index_apply = seconds(plans, r'(?s)"terraform","apply".*?timeout=(\d+)')
     service_apply = seconds(service, r'"apply-service",(\d+)')
     service_destroy = seconds(service, r'"destroy-service",(\d+)')
     index_destroy = seconds(service, r'"destroy-"\+target,(\d+)')
+    init = seconds(service, r'"init-"\+target,(\d+)')
+    plan, show, output = (seconds(service, rf'"{name}-service",(\d+)') for name in ("plan", "show", "output"))
+    state_rm = seconds(service, r'"state-rm-"\+target,(\d+)')
+    present = seconds(run, r'(?s)"search","service","show".*?timeout=(\d+)')
+    az_login = seconds(run, r'subprocess\.run\(\["az",\*args\].*?timeout=(\d+)')
     assert (index_apply, service_apply, service_destroy, index_destroy) == (480, 1800, 1800, 480)
-    code_seconds = {"run test": [index_apply], "run prod": [index_apply], "service create-service": [service_apply],
-                    "service teardown-prod": [index_destroy], "service teardown-test": [index_destroy, service_destroy]}
+    assert (init, plan, show, output, state_rm, present, az_login) == (120, 120, 30, 30, 120, 60, 30)
+    # Two az calls authenticate each service stage (run.py authenticate: account show, then get-access-token).
+    login = 2 * az_login
+    # create: login, present, init, plan, show, apply, output (Lifecycle.create).
+    create = login + present + init + plan + show + service_apply + output
+    # teardown-test, the longest path: login, present, test-index init and destroy, service init and destroy,
+    # then on failure present again and state rm (Lifecycle.teardown_test); the success path ends with present instead.
+    teardown_test = login + present + init + index_destroy + init + service_destroy + present + state_rm
+    code_seconds = {"run test": index_apply, "run prod": index_apply, "service create-service": create,
+                    "service teardown-prod": index_destroy, "service teardown-test": teardown_test}
+    assert (create, teardown_test) == (2220, 2820)
     checked = set()
     for mode, reason, stage, job in every_job(repo_root):
         steps = azure_steps(job)
@@ -378,7 +393,7 @@ def test_terraform_jobs_outlast_their_subprocess_timeouts_by_ten_minutes(repo_ro
         command = steps[0]["inputs"]["inlineScript"].split("scripts.pipelines.")[1].split(" --receipt-dir")[0]
         if command not in code_seconds: continue
         checked.add(command)
-        assert job["timeoutInMinutes"] >= max(code_seconds[command]) / 60 + 10, (mode, stage["stage"])
+        assert job["timeoutInMinutes"] >= code_seconds[command] / 60 + 10, (mode, stage["stage"])
     assert checked == set(code_seconds)
 
 
