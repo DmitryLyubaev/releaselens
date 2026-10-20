@@ -12,7 +12,7 @@ class DeliveryRefused(Exception):
     def __init__(self, code: str):
         self.code = code if code in {"inputs", "bundle", "transport", "authority", "reserved",
             "prepare", "target", "request", "upload", "count", "gate", "plan", "identity",
-            "deadline", "cleanup", "checks", "evidence", "internal"} else "internal"
+            "deadline", "cleanup", "checks", "evidence", "settings", "internal"} else "internal"
         super().__init__(self.code)
 
 
