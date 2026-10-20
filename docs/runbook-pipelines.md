@@ -1,8 +1,9 @@
 # Runbook: Project 8, the search delivery on hosted agents
 
 The one-time setup and the run day of [the 20 October design](superpowers/specs/2026-10-20-pipelines-simplified-delivery-design.md):
-a gated release to test and, once approved, demo-prod; a negative run that must go red; and the 09:30
-scheduled run that verifies prod and tears down. **Status: not yet run;** nothing is applied or queued.
+a gated release to test and, once approved, demo-prod; a negative run that must go red; and the 16:00
+scheduled run that verifies prod and tears down. (The schedule moved from 09:30 to 16:00 Brisbane, 06:00 UTC,
+so a morning release is verified and torn down the same day.) **Status: not yet run;** nothing is applied or queued.
 
 ## Rules
 
@@ -26,7 +27,7 @@ scheduled run that verifies prod and tears down. **Status: not yet run;** nothin
 
 AI Search Basic is about US$0.13 an hour (US$3.19 a day; refresh it) from `CreateService` to `TeardownTest`,
 75 to 90 minutes: under AUD 1 a run. Platform: pennies a month; hosted jobs: the free grant. **The service
-bills until destroyed;** left to the next day's 09:30, about US$3.20 more.
+bills until destroyed;** left to the next day's 16:00, about US$3.20 more.
 
 ## The windows and the helpers
 
@@ -146,8 +147,8 @@ $acct = $null
 
 ### Step 5. The pipeline from YAML
 
-**Ask first,** for the merge and each portal change. **Do steps 5 and 6 in one sitting, before 09:30
-Brisbane:** merging to `main` registers the 09:30 schedule, whose run would wait on step 6's permits.
+**Ask first,** for the merge and each portal change. **Do steps 5 and 6 in one sitting, before 16:00
+Brisbane:** merging to `main` registers the 16:00 schedule, whose run would wait on step 6's permits.
 Merge the reviewed PR, then: Pipelines, New pipeline, GitHub, this repository, Existing Azure Pipelines
 YAML file, `main`, `/pipelines/search-delivery.yml`; **Save, not Run.** Leave pipeline 2 disabled. The
 Triggers must not override the schedule. On both environments (Security, Pipeline permissions) add the
@@ -167,14 +168,14 @@ cost. Green, with `<role>-identity.json` per role; red leaves `<role>-failure.js
 | ~08:55 | TestIndex green; the release waits at `ReleaseLens-P8-DemoProd` | **Ask first:** approve |
 | ~09:00 | PlanProd, then ProdIndex: prod applied, loaded and gated | — |
 | ~09:10 | **Ask first.** Run pipeline, `main`, mode `negative` | one click |
-| 09:30 | The scheduled run: Status, Verify, TeardownProd, TeardownTest | — |
-| ~09:45 | "After the run", below | a look |
+| 16:00 | The scheduled run: Status, Verify, TeardownProd, TeardownTest | — |
+| ~16:15 | "After the run", below | a look |
 
 - **The negative run must go red:** `NegativeGate` ends `status=expected-failure code=quality`,
   `PromoteNegative` is skipped, and its `gate/receipt.json` has `acceptance_pass` and `prod_unchanged`
   `true`. A `status=refused code=...` line is a real failure.
 - **The scheduled run** (reason Scheduled): Status prints `code=ready`, then all four stages green.
-  `code=incomplete` skips Verify and teardown: queue `mode: teardown`, or wait for the next 09:30.
+  `code=incomplete` skips Verify and teardown: queue `mode: teardown`, or wait for the next 16:00.
 - **A failed run means teardown and a fresh release.** Evidence is create-only under `evidence/runs/<release
   run id>/` (pointer `evidence/current.json`): a rerun or a second negative is refused (`code=reserved`).
 - **A release refuses while a service exists** (`code=reserved` at BuildAndTest, when a search service
@@ -239,7 +240,7 @@ and the tests pinning it (`tests/infra/test_pipelines_yaml.py`); `docs/pipelines
 | 2 | Hosted agents install the pinned toolchain within the job timeouts, and the 41,825-row upload stays inside its 240 s and 200-request budget (`upload-*.metrics.json`) | run day | |
 | 3 | Workload identity federation and token refresh for the long-lived identities | 6 | |
 | 4 | How long a Basic search service takes to create (`CreateService`) and to delete (`TeardownTest`) | run day | |
-| 5 | The 23:30 UTC schedule registers from `main` and fires as `Build.Reason = Schedule` | run day | |
+| 5 | The 06:00 UTC schedule registers from `main` and fires as `Build.Reason = Schedule` | run day | |
 | 6 | The Test identity deletes the service, and the indexes with it, under the group-scope grant | run day | |
 | 7 | Every run's service is named `p8-search-<suffix>`; a create soon after a delete may meet a name Azure has not yet released | run day | |
 | 8 | A stage killed at its timeout (`run.py`, `service.py`) leaves a state lease or a service no state lists; whether the recovery was needed | run day | |
