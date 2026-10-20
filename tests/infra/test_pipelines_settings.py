@@ -107,3 +107,23 @@ def test_role_for_refuses_verify_outside_schedule(mod,refused,stage):
 def test_role_for_refuses_unknown_stage(mod,refused):
     with pytest.raises(refused) as e: mod.role_for("deploy","Manual")
     assert e.value.code == "settings"
+
+
+def devops_principals(**changes):
+    """Three distinct principals on Azure DevOps' own token origin, with one role's fields changed."""
+    principals = {r:PRINCIPAL | {"oidc_request_origin":"https://dev.azure.com","oidc_path_prefix":"/example/project/",
+        "client_id":f"00000000-0000-0000-0000-00000000002{n}","object_id":f"00000000-0000-0000-0000-00000000001{n}",
+        "service_connection_id":f"00000000-0000-0000-0000-00000000003{n}"} for n,r in enumerate(ROLES)}
+    principals["verify"] |= changes
+    return principals
+
+
+@pytest.mark.parametrize("changes",[{"oidc_request_origin":"https://example.vstoken.visualstudio.com"},
+    {"oidc_path_prefix":"example/project/"},{"client_id":"00000000-0000-0000-0000-000000000020"},
+    {"object_id":"00000000-0000-0000-0000-000000000010"},{"service_connection_id":"00000000-0000-0000-0000-000000000030"}])
+def test_check_principals_refuses_a_foreign_origin_relative_path_or_shared_identity(mod,refused,changes):
+    mod.check_principals(devops_principals())
+    with pytest.raises(refused) as e: mod.check_principals(devops_principals(**changes))
+    assert e.value.code == "identity"
+    with pytest.raises(refused) as e: mod.check_principals(devops_principals(**changes),"settings")
+    assert e.value.code == "settings"

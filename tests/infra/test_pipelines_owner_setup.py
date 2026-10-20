@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import re
+import subprocess
 
 import pytest
 
@@ -54,15 +55,30 @@ def test_variables_have_exactly_the_settings_keys(mod,inputs,tmp_path,repo_root)
     assert test["subject"] == CONNECTIONS["test"]["subject"] and test["oidc_path_prefix"] == CONNECTIONS["oidc_path_prefix"]
 
 
-def test_variables_output_refuses_tracked_path(mod,inputs,repo_root,capsys):
-    tracked = repo_root/"scripts"/"pipelines"/"p8-variables.json"
+@pytest.fixture
+def fake_repo(tmp_path,monkeypatch,mod):
+    """A throwaway git repository standing in for this one, so a regression can never write into the real tree."""
+    root = tmp_path/"repo"
+    (root/"scripts").mkdir(parents=True)
+    (root/"scripts"/"kept.py").write_text("")
+    (root/".gitignore").write_text(".local/\n*.tfvars.json\n")
+    for command in (["init","-q"],["add","scripts/kept.py",".gitignore"]):
+        subprocess.run(["git",*command],cwd=root,check=True,capture_output=True)
+    monkeypatch.setattr(mod,"ROOT",root)
+    return root
+
+
+def test_variables_output_refuses_tracked_path(mod,inputs,fake_repo,capsys):
+    tracked = fake_repo/"scripts"/"p8-variables.json"
     assert mod.main(args(inputs,tracked)) == 2
     assert not tracked.exists()
     assert capsys.readouterr().out.strip() == "refused: target"
-    # An ignored file in a tracked directory is still refused; an ignored directory is not.
-    assert not mod.allowed_output(repo_root/"infra"/"pipelines"/"platform"/"terraform.tfvars.json")
-    assert not mod.allowed_output(repo_root/"p8-variables.json")
-    assert mod.allowed_output(repo_root/".local"/"project8"/"setup"/"variables.json")
+    # An ignored file in a tracked directory is still refused, as is the root; an ignored directory is not.
+    assert not mod.allowed_output(fake_repo/"scripts"/"inputs.tfvars.json",fake_repo)
+    assert not mod.allowed_output(fake_repo/"p8-variables.json",fake_repo)
+    ignored = fake_repo/".local"/"project8"/"setup"/"variables.json"
+    assert mod.allowed_output(ignored,fake_repo)
+    assert mod.main(args(inputs,ignored)) == 0 and json.loads(ignored.read_text())["P8_SEARCH_GROUP"] == "rg-p8-search"
 
 
 def test_variables_refuses_bad_inputs_and_an_existing_file(mod,inputs,tmp_path,capsys):

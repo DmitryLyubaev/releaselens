@@ -10,6 +10,7 @@ ROLES = ("test", "prod", "verify")
 PRINCIPAL_KEYS = ("client_id", "object_id", "issuer", "subject", "service_connection_id",
                   "oidc_request_origin", "oidc_path_prefix")
 GUID = r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+DEVOPS_ORIGIN = "https://dev.azure.com"
 STAGE_ROLES = {"build":"test", "create-service":"test", "plan-test":"test", "test":"test", "negative":"test",
                "teardown-test":"test", "plan-prod":"prod", "prod":"prod", "promote-negative":"prod",
                "teardown-prod":"prod", "status":"verify", "verify":"verify"}
@@ -67,6 +68,17 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         _value(env, "P8_SEARCH_SERVICE", r"[a-z0-9][a-z0-9-]{1,58}[a-z0-9]"),
         _value(env, "P8_RELEASE_DIGEST", r"[0-9a-f]{64}"),
         _principals(_value(env, "P8_PRINCIPALS_JSON", r"(?s).+"), tenant_id, subscription_id))
+
+
+def check_principals(principals: Mapping[str, dict], code: str = "identity") -> None:
+    """The identity preflight's rule, shared with the owner's setup: Azure DevOps' own token origin, an
+    absolute request path, and three distinct identities and connections."""
+    for principal in principals.values():
+        if principal["oidc_request_origin"] != DEVOPS_ORIGIN or not principal["oidc_path_prefix"].startswith("/"):
+            raise DeliveryRefused(code)
+    for key in ("client_id", "object_id", "service_connection_id"):
+        if len({principal[key] for principal in principals.values()}) != len(ROLES):
+            raise DeliveryRefused(code)
 
 
 def role_for(stage: str, reason: str) -> str:

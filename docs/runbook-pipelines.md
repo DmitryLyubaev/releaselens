@@ -6,9 +6,8 @@ scheduled run that verifies prod and tears down. **Status: not yet run;** nothin
 
 ## Rules
 
-- **Every step marked "Ask first" waits for the owner's explicit yes** in chat; a yes for one step is
-  not a yes for the next. That is every apply, destroy, upload, merge, run, approval, permit click,
-  and Azure DevOps or identity change.
+- **Every step marked "Ask first" waits for the owner's explicit yes** in chat, one yes per step: every
+  apply, destroy, upload, merge, run, approval, permit click, and Azure DevOps or identity change.
 - **The owner signs in** with the personal account (`az login` per window, the portal in the browser).
   **No keys** exist (shared keys and local auth are off); no password, PAT or token goes anywhere.
 - **Before any `az` command, `acctok` must print `True`,** and it prints nothing else (`az account show`
@@ -44,7 +43,8 @@ function acctok {
 }
 ```
 
-Ubuntu in WSL (organisation and project typed without echo; `setting` is used only inside a command):
+Ubuntu in WSL. Organisation and project are typed without echo; `setting` is used only inside a
+command; `stack` enters a clean copy of a stack, with no `terraform.tfvars*` to load by accident:
 
 ```bash
 REPO=/mnt/e/Projects/ReleaseLens   # adjust to your clone
@@ -52,6 +52,7 @@ P8="$REPO/.local/project8/setup"; mkdir -p "$P8"; export TF_PLUGIN_CACHE_DIR="$H
 read -rsp 'Organisation: ' ADO_ORG; echo; read -rsp 'Project: ' ADO_PROJECT; echo
 ado() { az "$@" --org "https://dev.azure.com/$ADO_ORG" --project "$ADO_PROJECT"; }
 setting() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$P8/variables.json" "$1"; }
+stack() { local s="$REPO/infra/pipelines/$1"; W=$(mktemp -d); cp "$s"/{main,variables,versions,outputs,backend}.tf "$s/.terraform.lock.hcl" "$W"; cd "$W"; }
 acctok() { local u t b; u=$(az account show --query user.name -o tsv) && t=$(az account show --query tenantId -o tsv) || { echo False; return; }
   b=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir="$REPO/infra/bootstrap" output -raw tenant_id)
   [[ -n "$WORK_DOMAIN" && "$u" != *"$WORK_DOMAIN"* && -n "$t" && "$t" == "$b" ]] && echo True || echo False; }
@@ -61,8 +62,7 @@ acctok() { local u t b; u=$(az account show --query user.name -o tsv) && t=$(az 
 
 ### Step 1. The platform stack
 
-**Ask first.** Three identities with federated credentials, a storage account with five containers,
-`rg-p8-platform`, the empty `rg-p8-search` and the role grants. Pennies a month.
+**Ask first.** Identities, credentials, storage, `rg-p8-platform`, the empty `rg-p8-search`, the grants.
 
 **1a. Read the three connections** (WSL, with the `azure-devops` extension). It writes each one's
 issuer, subject and ID, and the stack's inputs; a `KeyError` is a connection missing or not federated:
@@ -81,10 +81,10 @@ EOF
 ```
 
 **1b. Plan,** with state in the bootstrap's state account, container `tfstate-bootstrap`, key
-`p8-platform.tfstate`; the plan's text goes to a private file:
+`p8-platform.tfstate`; the plan's text goes to a private file. Run 1b and 1c in one shell, in that copy:
 
 ```bash
-cd "$REPO/infra/pipelines/platform"; export TF_DATA_DIR="$HOME/tfdata/p8-platform"
+stack platform; export TF_DATA_DIR="$HOME/tfdata/p8-platform"
 ACCOUNT=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir="$REPO/infra/bootstrap" output -raw tfstate_storage_account)
 terraform init -input=false -lockfile=readonly -backend-config=storage_account_name="$ACCOUNT" -backend-config=container_name=tfstate-bootstrap
 az group exists --name rg-p8-platform; az group exists --name rg-p8-search    # both false
@@ -117,9 +117,8 @@ save. Keep each branch check. If the client ID cannot change, stop.
 
 ### Step 3. The variable group
 
-**Ask first.** The helper builds the seven values (`P8_TENANT_ID`, `P8_SUBSCRIPTION_ID`,
-`P8_STORAGE_ACCOUNT`, `P8_SEARCH_GROUP`, `P8_SEARCH_SERVICE`, `P8_RELEASE_DIGEST`,
-`P8_PRINCIPALS_JSON`), checks them with the pipeline's own loader, prints key names and `written`:
+**Ask first.** The helper builds the seven `P8_*` values, checks them with the pipeline's own settings
+and preflight checks, and prints only the key names and `written`:
 
 ```powershell
 eval/.venv/Scripts/python.exe -m scripts.pipelines.owner_setup variables --platform-outputs "$P8/platform-outputs.json" --connections "$P8/connections.json" --release-digest $digest --out "$P8/variables.json"
@@ -149,12 +148,12 @@ $acct = $null
 
 ### Step 5. The pipeline from YAML
 
-**Ask first,** for the merge and each portal change. Schedules register from the default branch, so the
-reviewed PR is merged to `main` first. Then: Pipelines, New pipeline, GitHub, this repository, Existing
-Azure Pipelines YAML file, `main`, `/pipelines/search-delivery.yml`; **Save, not Run.** Leave pipeline 2
-disabled. The new pipeline's Triggers must not override the schedule. On both environments (Security,
-Pipeline permissions) add it, so a release never waits at a permit prompt; DemoProd keeps its owner
-approval and exclusive lock. Organization settings, Parallel jobs: one hosted private job, minutes left.
+**Ask first,** for the merge and each portal change. **Do steps 5 and 6 in one sitting, before 09:30
+Brisbane:** merging to `main` registers the 09:30 schedule, whose run would wait on step 6's permits.
+Merge the reviewed PR, then: Pipelines, New pipeline, GitHub, this repository, Existing Azure Pipelines
+YAML file, `main`, `/pipelines/search-delivery.yml`; **Save, not Run.** Leave pipeline 2 disabled. The
+Triggers must not override the schedule. On both environments (Security, Pipeline permissions) add the
+pipeline; DemoProd keeps its approval and exclusive lock. Parallel jobs: one hosted private job, minutes left.
 
 ### Step 6. The identity preflight
 
@@ -166,7 +165,7 @@ role; red leaves `<role>-failure.json` with a check code (`refresh-endpoint`: th
 
 | Brisbane | Step | The owner |
 |---|---|---|
-| before 08:30 | `acctok` is `True`; `az search service list --resource-group rg-p8-search --query "length(@)" -o tsv` prints `0`; nothing queued | a look |
+| before 08:30 | `acctok` is `True`; `az search service list --resource-group rg-p8-search --query "length(@)" -o tsv` prints `0`; nothing queued (cancel a scheduled run waiting on permissions) | a look |
 | ~08:30 | **Ask first.** Run pipeline, `main`, mode `release`: BuildAndTest, CreateService, PlanTest, TestIndex | one click |
 | ~08:55 | TestIndex green; the release waits at `ReleaseLens-P8-DemoProd` | **Ask first:** approve |
 | ~09:00 | PlanProd, then ProdIndex: prod applied, loaded and gated | — |
@@ -179,34 +178,37 @@ role; red leaves `<role>-failure.json` with a check code (`refresh-endpoint`: th
   `true`. A `status=refused code=...` line is a real failure.
 - **The scheduled run** (reason Scheduled): Status prints `code=ready`, then all four stages green.
   `code=incomplete` skips Verify and teardown: queue `mode: teardown`, or wait for the next 09:30.
-- **A failed run means teardown and a fresh release.** Evidence is create-only, per release run, under
-  `evidence/runs/<release run id>/` (the pointer is `evidence/current.json`), so a rerun stage or a
-  second negative run for that release is refused (`code=reserved`). Never rerun.
+- **A failed run means teardown and a fresh release.** Evidence is create-only under `evidence/runs/<release
+  run id>/` (pointer `evidence/current.json`): a rerun or a second negative is refused (`code=reserved`).
 - **A release refuses while a service exists** (`code=reserved` at BuildAndTest, when a search service
   exists or `service-state` lists one): queue `mode: teardown` first.
 
 ### If anything stops
 
-1. **Ask first.** Run pipeline, `main`, mode `teardown`: TeardownProd, then TeardownTest, which runs
-   even if the first failed. Both green; each artifact's `teardown.json` says `outcome: pass`.
+1. **Ask first.** If a release waits at the DemoProd approval, reject it first. Then run pipeline, `main`,
+   mode `teardown`: TeardownProd, then TeardownTest, which runs even if the first failed. Both green;
+   each artifact's `teardown.json` says `outcome: pass`.
 2. **If teardown cannot run, destroy the service stack from WSL. Ask first.** A clean copy, `service.py`'s
-   inputs, `run.py`'s init flags and the owner's `az login` (`use_oidc=false` overrides the backend's):
+   inputs, `run.py`'s init flags and the owner's `az login` (`use_oidc=false` overrides the backend's).
+   The plan must be only `azurerm_search_service.search` and `Plan: 0 to add, 0 to change, 1 to destroy.`:
 
-```bash
-W=$(mktemp -d); S="$REPO/infra/pipelines/service"; cp "$S"/{main,variables,versions,outputs,backend}.tf "$S/.terraform.lock.hcl" "$W"; cd "$W"
-unset ${!ARM_*}; export TF_DATA_DIR="$HOME/tfdata/p8-service"
-python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps({"search_service_name":v["P8_SEARCH_SERVICE"],"resource_group_name":v["P8_SEARCH_GROUP"],"location":"australiaeast","subscription_id":v["P8_SUBSCRIPTION_ID"],"tenant_id":v["P8_TENANT_ID"]}))' "$P8/variables.json" > inputs.tfvars.json
-terraform init -input=false -reconfigure -lockfile=readonly -backend-config=storage_account_name="$(setting P8_STORAGE_ACCOUNT)" \
-  -backend-config=container_name=service-state -backend-config=key=service.tfstate -backend-config=use_oidc=false
-acctok                                                          # must print True
-terraform destroy -input=false -var-file=inputs.tfvars.json     # 1 to destroy; answer yes
-```
+   ```bash
+   stack service; unset ${!ARM_*}; export TF_DATA_DIR="$HOME/tfdata/p8-service"
+   python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps({"search_service_name":v["P8_SEARCH_SERVICE"],"resource_group_name":v["P8_SEARCH_GROUP"],"location":"australiaeast","subscription_id":v["P8_SUBSCRIPTION_ID"],"tenant_id":v["P8_TENANT_ID"]}))' "$P8/variables.json" > inputs.tfvars.json
+   terraform init -input=false -reconfigure -lockfile=readonly -backend-config=storage_account_name="$(setting P8_STORAGE_ACCOUNT)" \
+     -backend-config=container_name=service-state -backend-config=key=service.tfstate -backend-config=use_oidc=false
+   acctok                                                          # must print True
+   terraform plan -destroy -input=false -var-file=inputs.tfvars.json -out=destroy.tfplan > "$P8/destroy-plan.private.txt"
+   terraform show -no-color destroy.tfplan | grep -E '^Plan:|^  # '
+   terraform apply -input=false destroy.tfplan > "$P8/destroy-apply.private.txt"; grep -E '^(Apply complete|Error)' "$P8/destroy-apply.private.txt"
+   ```
 
-   The indexes go with the service; later, one `mode: teardown` run clears the two index states.
-3. **A state lease left by a stage killed at its timeout** shows `leased` below. **Ask first**, then queue
-   `mode: teardown` again: `az storage blob lease break --auth-mode login --account-name "$(setting P8_STORAGE_ACCOUNT)" --container-name <container> --blob-name <blob>`.
+   The indexes go with the service; **before any new release, run `mode: teardown` once** to clear their states.
+3. **A state lease left by a stage killed at its timeout** (`leased` below). **Ask first.** First break it, then queue `mode: teardown` again:
+   `az storage blob lease break --auth-mode login --account-name "$(setting P8_STORAGE_ACCOUNT)" --container-name <container> --blob-name <blob>`.
 4. **A search service no state lists** (the list prints `1`, `service-state` empty). **Ask first:**
    `az search service delete --name "$(setting P8_SEARCH_SERVICE)" --resource-group rg-p8-search --yes`.
+   **Before any new release, run `mode: teardown` once** to clear the index states.
 
 ## After the run
 
@@ -220,14 +222,13 @@ for s in test-state/index.tfstate prod-state/index.tfstate service-state/service
   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(sys.argv[2], "HOLDS" if any(r.get("mode")=="managed" and r.get("instances") for r in s.get("resources",[])) else "empty")' "$P8/$c.private.json" "$c"
   az storage blob show --auth-mode login --account-name "$(setting P8_STORAGE_ACCOUNT)" --container-name "$c" --name "$b" --query properties.lease.state -o tsv
 done
-cd "$REPO/infra/pipelines/platform"; TF_DATA_DIR="$HOME/tfdata/p8-platform" terraform plan -input=false -detailed-exitcode -var-file="$P8/platform.tfvars.json" > "$P8/platform-recheck.private.txt"; echo $?
+stack platform; TF_DATA_DIR="$HOME/tfdata/p8-platform" terraform plan -input=false -detailed-exitcode -var-file="$P8/platform.tfvars.json" > "$P8/platform-recheck.private.txt"; echo $?
 ```
 
 ## The follow-up PR
 
-**Ask first.** After the one genuine scheduled run, a small PR removes the `schedules:` block from
-`pipelines/search-delivery.yml` and the tests pinning it (`tests/infra/test_pipelines_yaml.py`), so
-nothing runs nightly. The report, `docs/pipelines-report.md`, shows that one run as evidence only.
+**Ask first.** After the one genuine scheduled run, a small PR removes `schedules:` from `pipelines/search-delivery.yml`
+and the tests pinning it (`tests/infra/test_pipelines_yaml.py`); `docs/pipelines-report.md` shows that one run.
 
 ## Findings
 
