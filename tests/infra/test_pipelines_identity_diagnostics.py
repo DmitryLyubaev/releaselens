@@ -1,10 +1,8 @@
-from test_pipelines_metadata_policy import POLICY
 """An early authentication refusal must leave a useful, token-free original."""
 import importlib
 import base64
 import json
 import time
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -29,6 +27,11 @@ def principal():
               "access": {"tid": "tenant", "oid": "object", "appid": "client",
                          "exp": time.time() + 300}}
     return account, claims, expected
+
+
+def settings_for(run, expected):
+    return run.Settings("tenant", "sub", "owned", "rg-p8-search", "owned", "b" * 64,
+                        {role: expected for role in ("test", "prod", "verify")})
 
 
 def test_principal_refusal_identifies_check_without_claim_values(modules, principal):
@@ -68,8 +71,7 @@ def test_main_publishes_safe_failure_even_before_runtime_assignment(modules, mon
     monkeypatch.setenv("idToken", "PRIVATE_ASSERTION")
     monkeypatch.setenv("SYSTEM_ACCESSTOKEN", "PRIVATE_JOB_TOKEN")
     public = tmp_path / "p8-publish"
-    assert run.main(["build", "--authority", str(tmp_path / "authority.json"),
-                     "--receipt-dir", str(public)]) == 2
+    assert run.main(["build", "--receipt-dir", str(public)]) == 2
     artifact = json.loads((public / "failure.json").read_bytes())
     assert artifact == {"kind": "stage-failure", "stage": "build",
                         "code": "identity" if kind == "identity" else "internal",
@@ -85,8 +87,7 @@ def test_guard_only_does_not_authenticate_or_publish_failure(modules, monkeypatc
         raise AssertionError("guard must not authenticate")
     monkeypatch.setattr(run, "Runtime", unexpected)
     public = tmp_path / "p8-publish"
-    assert run.main(["build", "--authority", str(tmp_path / "authority.json"),
-                     "--receipt-dir", str(public), "--guard-only"]) == 0
+    assert run.main(["build", "--receipt-dir", str(public), "--guard-only"]) == 0
     assert not public.exists()
 
 
@@ -100,8 +101,7 @@ def test_upload_refusal_publishes_fixed_check_not_remote_text(modules, monkeypat
         raise refusal('upload-deadline')
     monkeypatch.setattr(run, 'Runtime', fail)
     public = tmp_path / 'publish'
-    assert run.main(['test', '--authority', str(tmp_path / 'authority.json'),
-        '--receipt-dir', str(public)]) == 2
+    assert run.main(['test', '--receipt-dir', str(public)]) == 2
     assert json.loads((public / 'failure.json').read_bytes()) == {
         'kind': 'stage-failure', 'stage': 'test', 'code': 'upload', 'check': 'upload-deadline'}
     assert str(refusal('PRIVATE_RESPONSE_TOKEN')) == 'upload'
@@ -137,31 +137,32 @@ def token(claims):
 def test_runtime_identity_is_published_as_identical_create_only_blob(modules, principal, monkeypatch, tmp_path, stage):
     identity, run = modules
     account, claims, expected = principal
-    authority = {"metadata_policy":dict(POLICY),"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
-                 "storage_host":"owned.blob.core.windows.net",
-                 "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
     monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
+    release = 9 if stage in ("negative", "verify") else 17
     monkeypatch.setenv("BUILD_BUILDID", "17")
+    monkeypatch.setenv("BUILD_SOURCEVERSION", "a"*40)
     monkeypatch.setenv("BUILD_REASON", "Schedule" if stage == "verify" else "Manual")
     monkeypatch.setattr(run, "authenticate", lambda principal:(account, claims, {}))
+    monkeypatch.setattr(run, "TokenSource", lambda *args: SimpleNamespace(token=lambda: "synthetic"))
     writes = []
     class ReachedInputs(Exception): pass
     class Store:
         def __init__(self, *args, **kwargs): pass
-        def require_workload_open(self): pass
+        def read_pointer(self): return {"release_run_id": release, "release_digest": "b"*64, "source_sha": "a"*40}
         def put_json(self, key, value): writes.append((key, run.canonical(value)))
         def put_once(self, container, key, data):
             assert container == "evidence"
             writes.append((key, data))
-        def get(self, *args): raise ReachedInputs()
+    def fetch(*args, **kwargs): raise ReachedInputs()
     monkeypatch.setattr(run, "BlobStore", Store)
+    monkeypatch.setattr(run, "fetch_bundle", fetch)
     public = tmp_path / "published"
     with httpx.Client() as client:
-        with pytest.raises(ReachedInputs): run.Runtime(authority, expected, stage, public, client)
-    assert [key for key, data in writes] == [f"operations/{stage}.json", f"identities/{stage}.json"]
-    assert writes[1][1] == (public / "identity.json").read_bytes()
-    receipt = json.loads(writes[1][1])
-    assert receipt["run_id"] == 17 and receipt["source_sha"] == "a"*40
+        with pytest.raises(ReachedInputs): run.Runtime(settings_for(run, expected), stage, public, client)
+    assert [key for key, data in writes] == [f"runs/{release}/identities/{stage}.json"]
+    assert writes[0][1] == (public / "identity.json").read_bytes()
+    receipt = json.loads(writes[0][1])
+    assert receipt["build_id"] == 17 and receipt["source_sha"] == "a"*40
     assert receipt["scheme"] == "WorkloadIdentityFederation" and receipt["verified"] is True
 
 
@@ -170,20 +171,21 @@ def test_replayed_stage_cannot_publish_an_identity_blob(modules, principal, monk
     account, claims, expected = principal
     monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
     monkeypatch.setenv("BUILD_BUILDID", "17")
+    monkeypatch.setenv("BUILD_SOURCEVERSION", "a"*40)
     monkeypatch.setenv("BUILD_REASON", "Manual")
     monkeypatch.setattr(run, "authenticate", lambda principal:(account, claims, {}))
+    monkeypatch.setattr(run, "TokenSource", lambda *args: SimpleNamespace(token=lambda: "synthetic"))
+    monkeypatch.setattr(run, "fetch_bundle", lambda *args, **kwargs: pytest.fail("replay fetched inputs"))
     class Store:
         def __init__(self, *args, **kwargs): pass
-        def require_workload_open(self): pass
-        def put_json(self, *args): raise run.DeliveryRefused("reserved")
-        def put_once(self, *args): pytest.fail("replay wrote receipt")
+        def read_pointer(self): return {"release_run_id": 17, "release_digest": "b"*64, "source_sha": "a"*40}
+        def put_json(self, *args): pytest.fail("replay wrote receipt")
+        # The stage's identity blob already exists: create-only refuses the replay.
+        def put_once(self, *args): raise run.DeliveryRefused("reserved")
     monkeypatch.setattr(run, "BlobStore", Store)
-    authority = {"metadata_policy":dict(POLICY),"session":"p8-unit", "source_sha":"a"*40, "release_digest":"b"*64,
-                 "storage_host":"owned.blob.core.windows.net",
-                 "queue_cutoff_at":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}
     with httpx.Client() as client:
         with pytest.raises(run.DeliveryRefused, match="reserved"):
-            run.Runtime(authority, expected, "test", tmp_path/"published", client)
+            run.Runtime(settings_for(run, expected), "test", tmp_path/"published", client)
 
 
 @pytest.mark.parametrize("wrong_uri", [False, True])
@@ -193,11 +195,9 @@ def test_actual_constructor_authenticates_before_storage(modules, principal, mon
     expected |= {"service_connection_id": "connection", "oidc_request_origin": "https://dev.azure.com",
                  "oidc_path_prefix": "/owned/project/_apis/distributedtask/hubs/build/"}
     source = "a" * 40
-    authority = {"metadata_policy":dict(POLICY),"session": "p8-unit", "source_sha": source, "release_digest": "b" * 64,
-                 "storage_host": "owned.blob.core.windows.net",
-                 "queue_cutoff_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
     monkeypatch.setattr(run.Path, "home", lambda: tmp_path)
-    for key, value in {"BUILD_BUILDID": "7", "BUILD_REASON": "Manual", "idToken": token(claims["federation"]),
+    for key, value in {"BUILD_BUILDID": "7", "BUILD_REASON": "Manual", "BUILD_SOURCEVERSION": source,
+                       "idToken": token(claims["federation"]),
                        "SYSTEM_ACCESSTOKEN": "PRIVATE_JOB_TOKEN",
                        "AZURESUBSCRIPTION_SERVICE_CONNECTION_ID": "connection",
                        "SYSTEM_OIDCREQUESTURI": "https://dev.azure.com/" + ("wrong/" if wrong_uri else "owned/project/_apis/distributedtask/hubs/build/plans/p/jobs/j/") + "oidctoken"}.items():
@@ -216,12 +216,12 @@ def test_actual_constructor_authenticates_before_storage(modules, principal, mon
     public = tmp_path / "p8-publish"
     with httpx.Client(transport=httpx.MockTransport(lambda request: pytest.fail("no network allowed"))) as client:
         with pytest.raises(identity.IdentityRefused if wrong_uri else ReachedStorage) as caught:
-            run.Runtime(authority, expected, "build", public, client)
+            run.Runtime(settings_for(run, expected), "build", public, client)
     assert calls == [["account", "show"], ["account", "get-access-token"]]
     if wrong_uri:
         assert caught.value.check == "refresh-endpoint"
         assert not (public / "identity.json").exists()
     else:
         receipt = json.loads((public / "identity.json").read_bytes())
-        assert receipt["verified"] is True and receipt["source_sha"] == source and receipt["run_id"] == 7
+        assert receipt["verified"] is True and receipt["source_sha"] == source and receipt["build_id"] == 7
         assert "PRIVATE" not in (public / "identity.json").read_text()

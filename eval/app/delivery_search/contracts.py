@@ -19,6 +19,7 @@ class DeliveryRefused(Exception):
 REQUEST_CHECKS = frozenset({
     "metadata-budget-http", "metadata-budget-transport", "blob-create-http", "blob-create-transport",
     "search-count-http", "search-count-transport", "search-documents-http", "search-documents-transport",
+    "search-index-http", "search-index-transport", "pointer-http", "pointer-transport",
 })
 
 
