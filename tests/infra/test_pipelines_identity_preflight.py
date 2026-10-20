@@ -134,7 +134,7 @@ def test_preflight_yaml_uses_free_hosted_job_without_live_dispatch(repo_root):
     stage = next(v["${{ if eq(parameters.mode, 'identity-preflight') }}"] for v in manual
                  if "${{ if eq(parameters.mode, 'identity-preflight') }}" in v)
     job = stage[0]["jobs"][0]
-    assert job["pool"] == {"vmImage": "ubuntu-24.04"} and job["timeoutInMinutes"] == 10
+    assert job["pool"] == {"vmImage": "ubuntu-24.04"} and job["timeoutInMinutes"] == 15
     text = json.dumps(stage)
     assert "--guard-only" in text and "--receipt-dir" in text
     assert "P8_PREFLIGHT" not in text and "P8_AUTHORITY" not in text

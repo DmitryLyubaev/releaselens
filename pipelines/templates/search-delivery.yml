@@ -14,7 +14,7 @@ stages:
   - stage: Status
     jobs:
     - job: Status
-      timeoutInMinutes: 5
+      timeoutInMinutes: 15
       cancelTimeoutInMinutes: 1
       pool:
         vmImage: ubuntu-24.04
@@ -33,7 +33,7 @@ stages:
     condition: and(succeeded(), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: Verify
-      timeoutInMinutes: 8
+      timeoutInMinutes: 20
       cancelTimeoutInMinutes: 1
       pool:
         vmImage: ubuntu-24.04
@@ -50,7 +50,7 @@ stages:
     condition: and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: TeardownProd
-      timeoutInMinutes: 10
+      timeoutInMinutes: 30
       cancelTimeoutInMinutes: 1
       pool:
         vmImage: ubuntu-24.04
@@ -68,7 +68,7 @@ stages:
     condition: and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: TeardownTest
-      timeoutInMinutes: 20
+      timeoutInMinutes: 40
       cancelTimeoutInMinutes: 1
       pool:
         vmImage: ubuntu-24.04
@@ -86,7 +86,7 @@ stages:
     - stage: BuildAndTest
       jobs:
       - job: BuildAndTest
-        timeoutInMinutes: 10
+        timeoutInMinutes: 20
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -102,7 +102,7 @@ stages:
       dependsOn: BuildAndTest
       jobs:
       - job: CreateService
-        timeoutInMinutes: 12
+        timeoutInMinutes: 40
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -119,7 +119,7 @@ stages:
       dependsOn: CreateService
       jobs:
       - job: PlanTest
-        timeoutInMinutes: 6
+        timeoutInMinutes: 15
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -135,7 +135,7 @@ stages:
       dependsOn: PlanTest
       jobs:
       - deployment: TestIndex
-        timeoutInMinutes: 12
+        timeoutInMinutes: 20
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -156,7 +156,7 @@ stages:
       dependsOn: TestIndex
       jobs:
       - job: PlanProd
-        timeoutInMinutes: 6
+        timeoutInMinutes: 15
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -172,7 +172,7 @@ stages:
       dependsOn: PlanProd
       jobs:
       - deployment: ProdIndex
-        timeoutInMinutes: 12
+        timeoutInMinutes: 20
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -193,7 +193,7 @@ stages:
     - stage: NegativeGate
       jobs:
       - deployment: NegativeGate
-        timeoutInMinutes: 10
+        timeoutInMinutes: 20
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -214,7 +214,7 @@ stages:
       dependsOn: NegativeGate
       jobs:
       - job: PromoteNegative
-        timeoutInMinutes: 5
+        timeoutInMinutes: 15
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -231,7 +231,7 @@ stages:
     - stage: TeardownProd
       jobs:
       - job: TeardownProd
-        timeoutInMinutes: 10
+        timeoutInMinutes: 30
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -249,7 +249,7 @@ stages:
       condition: always()
       jobs:
       - job: TeardownTest
-        timeoutInMinutes: 20
+        timeoutInMinutes: 40
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
@@ -266,7 +266,7 @@ stages:
     - stage: IdentityPreflight
       jobs:
       - job: IdentityPreflight
-        timeoutInMinutes: 10
+        timeoutInMinutes: 15
         cancelTimeoutInMinutes: 1
         pool:
           vmImage: ubuntu-24.04
