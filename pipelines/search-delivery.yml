@@ -10,7 +10,7 @@ parameters:
 variables:
   - group: ReleaseLens-P8-Delivery
 schedules:
-  - cron: '30 23 * * *'
+  - cron: '0 6 * * *'
     displayName: Verify prod, then tear down
     branches:
       include: [main]
