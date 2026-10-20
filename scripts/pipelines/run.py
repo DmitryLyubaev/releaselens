@@ -34,6 +34,7 @@ STAGES = ("build","plan-test","test","plan-prod","prod","negative","promote-nega
 RELEASE_STAGES = ("build","plan-test","test","plan-prod","prod")
 # Gates from earlier stages, or other runs, belong to the same release, not necessarily the same commit.
 RELEASE_KEYS = ("release_digest","release_run_id")
+NOT_FOUND = ("ResourceNotFound","ResourceGroupNotFound")
 STACK_FILES = ("main.tf","variables.tf","versions.tf","outputs.tf","backend.tf",".terraform.lock.hcl")
 BUNDLED_COPIES = (("scorer.py","eval/app/retrieval/score.py"),
     ("requirements.lock","build/delivery-agents/requirements.lock"),
@@ -140,6 +141,26 @@ def authenticate(principal: dict) -> tuple[dict,dict,dict]:
     return account,claims,terraform_environment(principal,assertion)
 
 
+def service_present(settings: Settings,run=subprocess.run) -> bool:
+    """Exit 0 is present and a not-found error absent; any other answer is unknown. stderr stays private."""
+    try:
+        result = run(["az","search","service","show","--name",settings.search_service_name,
+            "--resource-group",settings.search_group],capture_output=True,text=True,timeout=60)
+    except (OSError,subprocess.TimeoutExpired):
+        raise DeliveryRefused("request") from None
+    if result.returncode == 0: return True
+    if any(code in (result.stderr or "") for code in NOT_FOUND): return False
+    raise DeliveryRefused("request")
+
+
+def holds(state: dict | None) -> bool:
+    """Terraform leaves an emptied state behind after a destroy; only a managed instance means something exists."""
+    if state is None: return False
+    resources = state.get("resources",[])
+    if not isinstance(resources,list) or not all(isinstance(r,dict) for r in resources): raise DeliveryRefused("plan")
+    return any(r.get("mode") == "managed" and r.get("instances") for r in resources)
+
+
 def copy_stack(stack: str,directory: Path) -> Path:
     """A fresh workspace holding only the reviewed configuration: no tfvars, no stray files."""
     directory.mkdir(parents=True)
@@ -183,6 +204,10 @@ class Runtime:
             "role":role,"verified":True,"scheme":"WorkloadIdentityFederation"})
         storage_tokens = TokenSource("https://storage.azure.com/.default",settings.tenant_id)
         self.store = BlobStore(settings.storage_host,storage_tokens,client)
+        # A new release never starts while a search service, or a state holding one, remains:
+        # moving the pointer first would strand the earlier release's service as incomplete, billing.
+        if stage == "build" and (service_present(settings,self.process) or holds(self.store.state("service"))):
+            raise DeliveryRefused("reserved")
         if stage in RELEASE_STAGES:
             self.proof = source | {"release_run_id":int(build_id)}
             # Only the build of this run names the release; later stages need its pointer unchanged.

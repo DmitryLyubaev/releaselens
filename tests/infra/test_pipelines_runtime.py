@@ -53,11 +53,13 @@ def env(monkeypatch,tmp_path):
 @pytest.fixture
 def processes(run,monkeypatch):
     """git and the offline pytest only; Terraform or az reaching subprocess fails the test."""
-    state=SimpleNamespace(calls=[],head="a"*40,dirty=False,pytest=0)
+    state=SimpleNamespace(calls=[],head="a"*40,dirty=False,pytest=0,service=False)
     def fake(args,**kw):
         state.calls.append(list(args))
         if list(args[:2])==["git","rev-parse"]: return SimpleNamespace(returncode=0,stdout=state.head+"\n",stderr="")
         if list(args[:2])==["git","diff"]: return SimpleNamespace(returncode=1 if state.dirty else 0,stdout="",stderr="")
+        if list(args[:4])==["az","search","service","show"]:
+            return SimpleNamespace(returncode=0 if state.service else 3,stdout="",stderr="" if state.service else "(ResourceNotFound) private")
         if "pytest" in args: return SimpleNamespace(returncode=state.pytest,stdout="private",stderr="")
         pytest.fail(f"unexpected process {args[:2]}")
     monkeypatch.setattr(run.subprocess,"run",fake)
@@ -253,6 +255,25 @@ def test_release_stage_writes_pointer_once_in_build(harness):
     assert harness.principals == [PRINCIPALS["test"]|{"tenant_id":SETTINGS["P8_TENANT_ID"],"subscription_id":SETTINGS["P8_SUBSCRIPTION_ID"]}]
     assert harness.store.evidence("runs/41/identities/build.json")["build_id"] == 41
     assert (harness.home/"p8"/"41").is_dir()
+
+
+@pytest.mark.parametrize("present,held",[(True,None),(False,"service")])
+def test_build_refuses_while_a_service_or_its_state_remains(harness,present,held):
+    harness.processes.service=present
+    if held: harness.store.states["service"]={"version":4,"lineage":"00000000-0000-0000-0000-000000000009","serial":3,
+        "resources":[{"mode":"managed","type":"azurerm_search_service","name":"search","instances":[{"attributes":{}}]}]}
+    assert harness.main("build") == 2
+    assert harness.failure()["code"] == "reserved"
+    assert harness.store.pointer_writes == [] and harness.store.blobs == {} and harness.fetched == []
+    assert not any("pytest" in call for call in harness.processes.calls)
+    assert ["az","search","service","show","--name","p8-search-a1b2c3","--resource-group","rg-p8-search"] in harness.processes.calls
+
+
+@pytest.mark.parametrize("held",[None,{"version":4,"lineage":"00000000-0000-0000-0000-000000000009","serial":9,"resources":[]}])
+def test_build_proceeds_when_the_service_is_absent_and_its_state_empty(harness,held):
+    harness.store.states["service"]=held
+    assert harness.main("build") == 0
+    assert harness.store.pointer_writes == [{"release_run_id":41,"release_digest":DIGEST,"source_sha":"a"*40}]
 
 
 def test_build_without_passing_offline_tests_writes_no_pointer(harness):

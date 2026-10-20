@@ -10,8 +10,8 @@ import subprocess
 from app.delivery_search.bundle import fetch_bundle
 from app.delivery_search.contracts import DeliveryRefused,canonical,exclusive_json
 from app.retrieval.azure_auth import TokenSource
-from .run import (RELEASE_KEYS,authenticate,check_bundle,copy_stack,http_client,identity_receipt,index_inputs,
-    init_args,refusal,require_gate,source_context)
+from .run import (RELEASE_KEYS,authenticate,check_bundle,copy_stack,holds,http_client,identity_receipt,index_inputs,
+    init_args,refusal,require_gate,service_present,source_context)
 from .settings import Settings,role_for
 from .storage import BlobStore,run_key
 
@@ -21,28 +21,8 @@ REASONS = {"create-service":("Manual",),"status":("Schedule",),"teardown-prod":(
     "teardown-test":("Manual","Schedule")}
 LOCATION = "australiaeast"
 INDEX_ADDRESS = "azapi_data_plane_resource.index"
-NOT_FOUND = ("ResourceNotFound","ResourceGroupNotFound")
+SERVICE_ADDRESS = "azurerm_search_service.search"
 DESTROY = ["terraform","destroy","-auto-approve","-input=false","-var-file=inputs.tfvars.json"]
-
-
-def service_present(settings: Settings,run=subprocess.run) -> bool:
-    """Exit 0 is present and a not-found error absent; any other answer is unknown. stderr stays private."""
-    try:
-        result = run(["az","search","service","show","--name",settings.search_service_name,
-            "--resource-group",settings.search_group],capture_output=True,text=True,timeout=60)
-    except (OSError,subprocess.TimeoutExpired):
-        raise DeliveryRefused("request") from None
-    if result.returncode == 0: return True
-    if any(code in (result.stderr or "") for code in NOT_FOUND): return False
-    raise DeliveryRefused("request")
-
-
-def holds(state: dict | None) -> bool:
-    """Terraform leaves an emptied state behind after a destroy; only a managed instance means something exists."""
-    if state is None: return False
-    resources = state.get("resources",[])
-    if not isinstance(resources,list) or not all(isinstance(r,dict) for r in resources): raise DeliveryRefused("plan")
-    return any(r.get("mode") == "managed" and r.get("instances") for r in resources)
 
 
 def release_status(settings: Settings,store,present: bool) -> str:
@@ -66,14 +46,16 @@ def release_status(settings: Settings,store,present: bool) -> str:
 
 
 def validate_service_plan(plan: dict,settings: Settings) -> None:
-    """The one change a create may make: a new search service with the configured name, in the configured group."""
+    """The one change a create may make: one new Basic search service, 1 replica and 1 partition,
+    with the configured name, in the configured group."""
     try:
         rows = [row for row in plan["resource_changes"] if row["mode"] == "managed"]
         if len(rows) != 1: raise DeliveryRefused("plan")
         row = rows[0]
         after = row["change"]["after"]
-        if (row["type"] != "azurerm_search_service" or row["change"]["actions"] != ["create"]
-            or after["name"] != settings.search_service_name or after["resource_group_name"] != settings.search_group):
+        if (row["address"] != SERVICE_ADDRESS or row["type"] != "azurerm_search_service" or row["change"]["actions"] != ["create"]
+            or after["name"] != settings.search_service_name or after["resource_group_name"] != settings.search_group
+            or after["sku"] != "basic" or after["replica_count"] != 1 or after["partition_count"] != 1):
             raise DeliveryRefused("plan")
     except (KeyError,TypeError):
         raise DeliveryRefused("plan") from None
@@ -97,6 +79,7 @@ class Lifecycle:
         self.work = Path.home()/"p8"/stage
         self.work.mkdir(parents=True,exist_ok=True)
         self.failure = "plan" if stage == "create-service" else "cleanup"
+        self.workspaces = {}
 
     def process(self,args,**kwargs):
         return subprocess.run(args,**kwargs)
@@ -111,11 +94,14 @@ class Lifecycle:
         return result
 
     def workspace(self,target: str) -> Path:
-        """A clean copy of the reviewed stack, initialized against the target's own state container."""
-        if target == "service": directory = copy_stack("service",Path.home()/"p8"/"service")
-        else: directory = copy_stack("index",self.work/("index-"+target))
-        self.command(init_args(self.settings.storage_account_name,target),directory,"init-"+target,120)
-        return directory
+        """A clean copy of the reviewed stack under this stage's own work directory, initialized once
+        against the target's own state container."""
+        if target not in self.workspaces:
+            if target == "service": directory = copy_stack("service",self.work/"service")
+            else: directory = copy_stack("index",self.work/("index-"+target))
+            self.command(init_args(self.settings.storage_account_name,target),directory,"init-"+target,120)
+            self.workspaces[target] = directory
+        return self.workspaces[target]
 
     def service_inputs(self,directory: Path) -> None:
         (directory/"inputs.tfvars.json").write_bytes(canonical({"search_service_name":self.settings.search_service_name,
@@ -147,8 +133,7 @@ class Lifecycle:
         if not holds(self.store.state(target)): return "empty"
         directory = self.workspace(target)
         if not present:
-            # The service took the index with it; only the state still lists it. Terraform alone changes state.
-            self.command(["terraform","state","rm",INDEX_ADDRESS],directory,"state-rm-"+target,120)
+            self.forget_index(target)
             return "state-removed"
         host,digest = self.settings.storage_host,self.settings.release_digest
         bundle = fetch_bundle(f"https://{host}/inputs/releases/{digest}/release.tar.gz",digest,self.work/"verified",
@@ -158,6 +143,10 @@ class Lifecycle:
         (directory/"inputs.tfvars.json").write_bytes(index_inputs(self.settings,target,bundle.root/"schema.json"))
         self.command(DESTROY,directory,"destroy-"+target,480)
         return "destroyed"
+
+    def forget_index(self,target: str) -> None:
+        # The service took the index with it; only the state still lists it. Terraform alone changes state.
+        self.command(["terraform","state","rm",INDEX_ADDRESS],self.workspace(target),"state-rm-"+target,120)
 
     def teardown_service(self) -> str:
         if not holds(self.store.state("service")): return "empty"
@@ -172,10 +161,22 @@ class Lifecycle:
             actions["test"] = self.teardown_index("test",present)
         except Exception as exc:
             actions["test"],failed = "failed",exc
-        # The service goes even when its index did not: it must not stay billing, and a later
-        # teardown clears the stale index state once the service is absent.
-        actions["service"] = self.teardown_service()
-        if failed is not None: raise failed
+        # The service goes even when its index did not: it must not stay billing.
+        try:
+            actions["service"] = self.teardown_service()
+        except Exception as exc:
+            if failed is not None: raise exc from failed
+            raise
+        if failed is not None:
+            # Once the service is confirmed gone, nothing later would clear the index state; clear it now,
+            # and still end red for the failed destroy.
+            try:
+                if not self.present() and holds(self.store.state("test")):
+                    self.forget_index("test")
+                    actions["test-state"] = "state-removed"
+            except Exception as exc:
+                raise exc from failed
+            raise failed
         # A service no state lists is still billing; the run must not end green.
         if self.present(): raise DeliveryRefused("cleanup")
 
