@@ -1,5 +1,10 @@
 # Project 8: Azure Pipelines search delivery - scope refresh
 
+> **Superseded in part, 20 October 2026,** by
+> [the simplified delivery design](2026-10-20-pipelines-simplified-delivery-design.md): its
+> hosted agents, long-lived platform stack and per-run search service replace this design's
+> self-hosted agents, session clocks and controller. The intent, gate and frozen data below stand.
+
 Status: search-only scope approved by the owner on 16 October 2026. Scope refreshed
 15 October. Approval authorizes the implementation plan; implementation, public publication,
 identity changes, Azure resources and paid calls retain their separate gates.

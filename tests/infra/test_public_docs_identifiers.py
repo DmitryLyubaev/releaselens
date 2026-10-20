@@ -28,6 +28,7 @@ HOSTNAME = re.compile(r"[A-Za-z0-9<>{}$._-]*\.(?:azure\.com|azure-api\.net|windo
 PUBLIC_ENDPOINTS = {
     "ai.azure.com",                 # the token audience for Azure OpenAI v1 through the Foundry endpoint
     "cognitiveservices.azure.com",  # the token audience for the gateway's call to a model
+    "dev.azure.com",                # Azure DevOps itself; the organisation is a path after it, never written
     "management.azure.com",         # the Azure Resource Manager
     "search.azure.com",             # the token audience for Azure AI Search
     "storage.azure.com",            # the token audience for Azure Storage (the Functions harness reads queues)
@@ -137,7 +138,7 @@ def test_the_scan_lets_a_placeholder_or_a_public_endpoint_through(text: str) -> 
 _CAPTURED = re.compile(r"\$\w+\s*=\s*az account show")       # PowerShell: `$sub = az account show ...`
 
 
-@pytest.mark.parametrize("runbook", ["runbook-gateway.md", "runbook-functions.md"])
+@pytest.mark.parametrize("runbook", ["runbook-gateway.md", "runbook-functions.md", "runbook-pipelines.md"])
 def test_a_runbook_never_prints_the_signed_in_account(repo_root: Path, runbook: str) -> None:
     # `az account show` prints the account's email unless its output is captured: the runbook's own
     # rule forbids an email on a screen, so each use must be a capture, and `acctok` prints a Boolean.
