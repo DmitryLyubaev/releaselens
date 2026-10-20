@@ -65,29 +65,6 @@ def processes(run,monkeypatch):
 
 
 @pytest.fixture
-def fake_store(run):
-    class FakeStore:
-        """Dict-backed BlobStore stand-in: create-only evidence and one overwritable pointer."""
-        def __init__(self): self.blobs,self.pointer_writes={},[]
-        def get(self,container,key,**kw):
-            if (container,key) not in self.blobs: raise run.DeliveryRefused("request")
-            return self.blobs[(container,key)]
-        def json(self,container,key): return json.loads(self.get(container,key))
-        def put_once(self,container,key,data):
-            if container != "evidence": raise run.DeliveryRefused("authority")
-            if (container,key) in self.blobs: raise run.DeliveryRefused("reserved")
-            self.blobs[(container,key)]=bytes(data)
-        def put_json(self,key,value): self.put_once("evidence",key,run.canonical(value))
-        def write_pointer(self,value):
-            self.pointer_writes.append(value)
-            self.blobs[("evidence","current.json")]=run.canonical(value)
-        def read_pointer(self): return self.json("evidence","current.json")
-        def state(self,target): return None
-        def evidence(self,key): return json.loads(self.blobs[("evidence",key)])
-    return FakeStore()
-
-
-@pytest.fixture
 def fake_search():
     """Index GET, count and search on one owned host. Search answers the S2 or negative candidate."""
     state=SimpleNamespace(requests=[],correct=229,ignore_filter=False,prod_bodies=[INDEX_BODY],prod_counts=[41825])
@@ -488,6 +465,16 @@ def test_index_workspace_copies_only_reviewed_configuration(run,settings,tmp_pat
     directory = runtime.terraform("test")
     assert {p.name for p in directory.iterdir()} == {
         "main.tf","variables.tf","versions.tf","outputs.tf","backend.tf",".terraform.lock.hcl"}
+
+
+@pytest.mark.parametrize("target,container,key",[("test","test-state","index.tfstate"),
+    ("demo-prod","prod-state","index.tfstate"),("service","service-state","service.tfstate")])
+def test_init_names_each_targets_own_backend(run,target,container,key):
+    args=run.init_args("p8a1b2c3",target)
+    assert args[:2] == ["terraform","init"] and "-lockfile=readonly" in args
+    assert [a for a in args if a.startswith("-backend-config=")] == ["-backend-config=storage_account_name=p8a1b2c3",
+        "-backend-config=container_name="+container,"-backend-config=key="+key]
+    with pytest.raises(run.DeliveryRefused): run.init_args("p8a1b2c3","verify")
 
 
 @pytest.fixture

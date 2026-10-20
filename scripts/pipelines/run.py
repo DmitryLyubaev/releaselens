@@ -26,7 +26,7 @@ from app.retrieval.azure_auth import TokenSource
 from .identity import IDENTITY_CHECKS,IdentityRefused,verify_principal,terraform_environment
 from .plans import PlanBinding,apply_exact,bind_plan,validate_index_plan,verify_plan
 from .settings import Settings,load_settings,role_for
-from .storage import BlobStore,run_key
+from .storage import STATES,BlobStore,run_key
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGES = ("build","plan-test","test","plan-prod","prod","negative","promote-negative","verify")
@@ -34,6 +34,7 @@ STAGES = ("build","plan-test","test","plan-prod","prod","negative","promote-nega
 RELEASE_STAGES = ("build","plan-test","test","plan-prod","prod")
 # Gates from earlier stages, or other runs, belong to the same release, not necessarily the same commit.
 RELEASE_KEYS = ("release_digest","release_run_id")
+STACK_FILES = ("main.tf","variables.tf","versions.tf","outputs.tf","backend.tf",".terraform.lock.hcl")
 BUNDLED_COPIES = (("scorer.py","eval/app/retrieval/score.py"),
     ("requirements.lock","build/delivery-agents/requirements.lock"),
     ("provider.lock.hcl","infra/pipelines/index/.terraform.lock.hcl"))
@@ -83,11 +84,16 @@ def context(stage: str) -> tuple[Settings,dict]:
     """Runs before AzureCLI@2 login as well as inside the authenticated task."""
     # A negative candidate is never promoted, whatever the settings say.
     if stage == "promote-negative" or stage not in STAGES: raise DeliveryRefused("authority")
-    if os.environ.get("BUILD_SOURCEBRANCH") != "refs/heads/main": raise DeliveryRefused("authority")
     reason = os.environ.get("BUILD_REASON","")
     # The scheduled run only verifies; every other stage is a manual release or negative run.
     if reason not in ("Manual","Schedule") or (stage == "verify") != (reason == "Schedule"):
         raise DeliveryRefused("authority")
+    return source_context(stage,reason)
+
+
+def source_context(stage: str,reason: str) -> tuple[Settings,dict]:
+    """main, the delivery settings and a clean checkout of the running commit, for any entrypoint's stage."""
+    if os.environ.get("BUILD_SOURCEBRANCH") != "refs/heads/main": raise DeliveryRefused("authority")
     try:
         role = role_for(stage,reason)
     except DeliveryRefused:
@@ -132,6 +138,28 @@ def authenticate(principal: dict) -> tuple[dict,dict,dict]:
     claims = {"federation":jwt_claims(assertion),"access":jwt_claims(access_token,"access-format")}
     verify_principal(account,claims,principal)
     return account,claims,terraform_environment(principal,assertion)
+
+
+def copy_stack(stack: str,directory: Path) -> Path:
+    """A fresh workspace holding only the reviewed configuration: no tfvars, no stray files."""
+    directory.mkdir(parents=True)
+    for name in STACK_FILES:
+        shutil.copyfile(ROOT/"infra/pipelines"/stack/name,directory/name)
+    return directory
+
+
+def init_args(storage_account_name: str,target: str) -> list[str]:
+    """Each target initializes against its own state container and key, with the reviewed provider locks."""
+    if target not in STATES: raise DeliveryRefused("target")
+    container,key = STATES[target]
+    return ["terraform","init","-input=false","-reconfigure","-lockfile=readonly",
+        "-backend-config=storage_account_name="+storage_account_name,
+        "-backend-config=container_name="+container,"-backend-config=key="+key]
+
+
+def index_inputs(settings: Settings,target: str,schema_file: Path) -> bytes:
+    return canonical({"subscription_id":settings.subscription_id,"tenant_id":settings.tenant_id,
+        "target":target,"search_host":settings.search_host,"schema_file":str(schema_file)})
 
 
 def http_client() -> httpx.Client:
@@ -196,18 +224,10 @@ class Runtime:
         return SearchTarget("https://"+host,"p8-"+name,host)
 
     def prepare_workspace(self,target: str) -> Path:
-        directory = self.work/("index-"+target)
-        directory.mkdir()
-        for name in ("main.tf","variables.tf","versions.tf","outputs.tf","backend.tf",".terraform.lock.hcl"):
-            shutil.copyfile(ROOT/"infra/pipelines/index"/name,directory/name)
-        return directory
+        return copy_stack("index",self.work/("index-"+target))
 
     def initialize(self,directory: Path,target: str):
-        container = "test-state" if target == "test" else "prod-state"
-        args = ["terraform","init","-input=false","-reconfigure","-lockfile=readonly",
-            "-backend-config=storage_account_name="+self.settings.storage_account_name,
-            "-backend-config=container_name="+container]
-        self.command(args,directory,"init-"+target,120)
+        self.command(init_args(self.settings.storage_account_name,target),directory,"init-"+target,120)
 
     def terraform(self,target: str) -> Path:
         directory=self.prepare_workspace(target)
@@ -226,8 +246,7 @@ class Runtime:
     def plan(self,target: str):
         directory = self.terraform(target)
         inputs = directory/"inputs.tfvars.json"
-        inputs.write_bytes(canonical({"subscription_id":self.settings.subscription_id,"tenant_id":self.settings.tenant_id,
-            "target":target,"search_host":self.settings.search_host,"schema_file":str(self.bundle.root/"schema.json")}))
+        inputs.write_bytes(index_inputs(self.settings,target,self.bundle.root/"schema.json"))
         self.command(["terraform","plan","-input=false","-out=plan.tfplan","-var-file=inputs.tfvars.json"],directory,"plan-"+target,120)
         shown = self.command(["terraform","show","-json","plan.tfplan"],directory,"show-"+target,30)
         validate_index_plan(json.loads(shown.stdout),self.settings.search_host,target)
@@ -411,26 +430,31 @@ def main(argv=None) -> int:
         print("status=pass code=stage" if passed else "status=expected-failure code=quality")
         return 0 if passed else 17
     except Exception as exc:
-        code = DeliveryRefused(exc.code).code if isinstance(exc,DeliveryRefused) else "internal"
-        check = exc.check if isinstance(exc,IdentityRefused) and exc.check in IDENTITY_CHECKS else "unclassified"
-        if isinstance(exc,UploadRefused) and exc.check in UPLOAD_CHECKS:
-            check = exc.check
-        details={}
-        if isinstance(exc,RequestRefused):
-            check=exc.check if isinstance(exc.check,str) and exc.check in REQUEST_CHECKS else "unclassified"
-            details['http_status']=exc.http_status if type(exc.http_status) is int and 100<=exc.http_status<=599 else None
-        # The directory published by every stage must contain the early refusal.
-        # Exception text and raw tracebacks remain outside this artifact.
-        with suppress(OSError):
-            args.receipt_dir.mkdir(parents=True,exist_ok=True)
-            exclusive_json(args.receipt_dir/"failure.json",{
-                "kind":"stage-failure","stage":args.stage,"code":code,"check":check,**details})
-        with suppress(OSError):
-            args.receipt_dir.parent.mkdir(parents=True,exist_ok=True)
-            with (args.receipt_dir.parent/"failure-private.txt").open("x",encoding="utf-8") as out:
-                out.write(traceback.format_exc())
-        print("status=refused code="+code)
-        return 2
+        return refusal(args.stage,args.receipt_dir,exc)
+
+
+def refusal(stage: str,receipt_dir: Path,exc: Exception) -> int:
+    """The one public failure shape for every entrypoint: fixed codes, never exception text."""
+    code = DeliveryRefused(exc.code).code if isinstance(exc,DeliveryRefused) else "internal"
+    check = exc.check if isinstance(exc,IdentityRefused) and exc.check in IDENTITY_CHECKS else "unclassified"
+    if isinstance(exc,UploadRefused) and exc.check in UPLOAD_CHECKS:
+        check = exc.check
+    details={}
+    if isinstance(exc,RequestRefused):
+        check=exc.check if isinstance(exc.check,str) and exc.check in REQUEST_CHECKS else "unclassified"
+        details['http_status']=exc.http_status if type(exc.http_status) is int and 100<=exc.http_status<=599 else None
+    # The directory published by every stage must contain the early refusal.
+    # Exception text and raw tracebacks remain outside this artifact.
+    with suppress(OSError):
+        receipt_dir.mkdir(parents=True,exist_ok=True)
+        exclusive_json(receipt_dir/"failure.json",{
+            "kind":"stage-failure","stage":stage,"code":code,"check":check,**details})
+    with suppress(OSError):
+        receipt_dir.parent.mkdir(parents=True,exist_ok=True)
+        with (receipt_dir.parent/"failure-private.txt").open("x",encoding="utf-8") as out:
+            out.write("".join(traceback.format_exception(exc)))
+    print("status=refused code="+code)
+    return 2
 
 
 if __name__ == "__main__":
