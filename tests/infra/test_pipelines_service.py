@@ -34,7 +34,8 @@ INDEX = state(("azapi_data_plane_resource","index"))
 SERVICE = state(("azurerm_search_service","search"))
 EMPTIED = state(serial=9)
 SHOWN = {"resource_changes":[{"address":"azurerm_search_service.search","mode":"managed","type":"azurerm_search_service",
-    "change":{"actions":["create"],"after":{"name":"p8-search-a1b2c3","resource_group_name":"rg-p8-search"}}}]}
+    "change":{"actions":["create"],"after":{"name":"p8-search-a1b2c3","resource_group_name":"rg-p8-search",
+        "sku":"basic","replica_count":1,"partition_count":1}}}]}
 
 
 @pytest.fixture
@@ -97,10 +98,10 @@ def harness(service,fake_store,repo_root,tmp_path,monkeypatch):
     monkeypatch.setattr(service,"BlobStore",blob_store)
     monkeypatch.setattr(service,"TokenSource",lambda scope,tenant:SimpleNamespace(token=lambda:"synthetic"))
     monkeypatch.setattr(service,"http_client",lambda:httpx.Client(transport=httpx.MockTransport(lambda r:pytest.fail("network"))))
-    def main(command,*,reason="Manual",build_id="41"):
+    def main(command,*,reason="Manual",build_id="41",reuse_home=False):
         monkeypatch.setenv("BUILD_REASON",reason); monkeypatch.setenv("BUILD_BUILDID",build_id)
-        # Every job runs on a fresh hosted agent, with its own home directory.
-        h.home = tmp_path/"home"/(command+"-"+build_id); h.home.mkdir(parents=True)
+        # Every job normally runs on a fresh hosted agent, with its own home directory.
+        if not reuse_home: h.home = tmp_path/"home"/(command+"-"+build_id); h.home.mkdir(parents=True)
         monkeypatch.setenv("HOME",str(h.home)); monkeypatch.setenv("USERPROFILE",str(h.home))
         h.publish = tmp_path/"publish"/(command+"-"+build_id)
         return service.main([command,"--receipt-dir",str(h.publish)])
@@ -171,7 +172,7 @@ def test_create_runs_init_plan_apply_in_order(harness,capsys):
     assert "-backend-config=storage_account_name=p8a1b2c3" in init.argv
     assert plan.argv == ["terraform","plan","-input=false","-out=service.tfplan","-var-file=inputs.tfvars.json"]
     assert apply.argv == ["terraform","apply","-input=false","service.tfplan"]
-    assert init.cwd == harness.home/"p8"/"service" and all(c.cwd == init.cwd for c in harness.terraform())
+    assert init.cwd == harness.home/"p8"/"create-service"/"service" and all(c.cwd == init.cwd for c in harness.terraform())
     assert all(c.env == {"TF_IN_AUTOMATION":"true"} for c in harness.terraform())
     assert json.loads((init.cwd/"inputs.tfvars.json").read_bytes()) == {"search_service_name":"p8-search-a1b2c3",
         "resource_group_name":"rg-p8-search","location":"australiaeast",
@@ -190,15 +191,18 @@ def test_create_accepts_the_state_a_teardown_leaves(harness):
     assert ("apply","service") in harness.verbs()
 
 
-@pytest.mark.parametrize("change",[{"actions":["delete","create"]},{"after":{"name":"other","resource_group_name":"rg-p8-search"}},
-    {"after":{"name":"p8-search-a1b2c3","resource_group_name":"rg-other"}},{"type":"azurerm_storage_account"},"extra"])
+@pytest.mark.parametrize("change",[{"actions":["delete","create"]},{"name":"other"},{"resource_group_name":"rg-other"},
+    {"type":"azurerm_storage_account"},{"address":"azurerm_search_service.other"},{"sku":"standard"},{"sku":"free"},
+    {"replica_count":2},{"partition_count":2},{"replica_count":None},{"partition_count":"1"},"no-sku","extra"])
 def test_create_never_applies_a_plan_other_than_one_new_service(harness,change):
     harness.present = False
     row = json.loads(json.dumps(SHOWN["resource_changes"][0]))
     if change == "extra": harness.shown = {"resource_changes":[row,row]}
     else:
-        if "type" in change: row["type"] = change["type"]
-        else: row["change"] |= change
+        if change == "no-sku": del row["change"]["after"]["sku"]
+        elif "actions" in change: row["change"] |= change
+        elif "type" in change or "address" in change: row |= change
+        else: row["change"]["after"] |= change
         harness.shown = {"resource_changes":[row]}
     assert harness.main("create-service") == 2
     assert ("apply","service") not in harness.verbs() and harness.failure()["code"] == "plan"
@@ -357,10 +361,47 @@ def test_teardown_test_destroys_service_even_when_index_destroy_fails(harness):
     harness.store.states["service"] = SERVICE
     harness.failing.add(("destroy","index-test"))
     assert harness.main("teardown-test") == 2
-    assert harness.verbs()[-1] == ("destroy","service") and harness.present is False
+    # Once the service is confirmed gone, the stale index state is cleared in the same run; it still ends red.
+    assert harness.verbs() == [("init","index-test"),("destroy","index-test"),("init","service"),("destroy","service"),
+        ("state-rm","index-test")]
+    shows = [i for i,c in enumerate(harness.calls) if c.argv[0] == "az"]
+    assert len(shows) == 2 and shows[1] < len(harness.calls)-1 and harness.present is False
+    assert harness.terraform()[-1].argv == ["terraform","state","rm","azapi_data_plane_resource.index"]
     assert harness.failure()["code"] == "cleanup"
     receipt = harness.store.evidence("teardowns/41/teardown-test.json")
-    assert receipt["actions"] == {"test":"failed","service":"destroyed"} and receipt["outcome"] == "failed"
+    assert receipt["actions"] == {"test":"failed","service":"destroyed","test-state":"state-removed"}
+    assert receipt["outcome"] == "failed"
+
+
+def test_teardown_test_keeps_the_index_state_while_the_service_remains(harness):
+    harness.store.states["test"] = INDEX
+    harness.failing.add(("destroy","index-test"))
+    assert harness.main("teardown-test") == 2
+    assert harness.verbs() == [("init","index-test"),("destroy","index-test")] and harness.present is True
+
+
+def test_both_failed_destroys_stay_in_the_private_traceback(harness,capsys):
+    harness.store.states["test"] = INDEX
+    harness.store.states["service"] = SERVICE
+    harness.failing |= {("destroy","index-test"),("destroy","service")}
+    assert harness.main("teardown-test") == 2
+    assert harness.verbs() == [("init","index-test"),("destroy","index-test"),("init","service"),("destroy","service")]
+    private = (harness.publish.parent/"failure-private.txt").read_text(encoding="utf-8")
+    assert "direct cause" in private and ", in teardown_index" in private and ", in teardown_service" in private
+    assert private.index(", in teardown_index") < private.index("direct cause") < private.index(", in teardown_service")
+    assert harness.failure() == {"kind":"stage-failure","stage":"teardown-test","code":"cleanup","check":"unclassified"}
+    assert "private" not in capsys.readouterr().out
+
+
+def test_lifecycle_commands_in_one_home_never_collide(harness):
+    harness.present = False
+    assert harness.main("create-service") == 0
+    harness.present = True
+    harness.store.states["service"] = SERVICE
+    assert harness.main("teardown-prod",reuse_home=True) == 0
+    assert harness.main("teardown-test",reuse_home=True) == 0
+    services = {c.cwd for c in harness.terraform() if c.cwd.name == "service"}
+    assert services == {harness.home/"p8"/"create-service"/"service",harness.home/"p8"/"teardown-test"/"service"}
 
 
 def test_teardown_test_refuses_when_the_service_outlives_its_state(harness):

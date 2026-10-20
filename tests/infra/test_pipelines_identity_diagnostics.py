@@ -149,11 +149,14 @@ def test_runtime_identity_is_published_as_identical_create_only_blob(modules, pr
     class Store:
         def __init__(self, *args, **kwargs): pass
         def read_pointer(self): return {"release_run_id": release, "release_digest": "b"*64, "source_sha": "a"*40}
+        def state(self, target): return None
         def put_json(self, key, value): writes.append((key, run.canonical(value)))
         def put_once(self, container, key, data):
             assert container == "evidence"
             writes.append((key, data))
     def fetch(*args, **kwargs): raise ReachedInputs()
+    # build first proves no search service remains; no az process runs in a test.
+    monkeypatch.setattr(run, "service_present", lambda *args: False)
     monkeypatch.setattr(run, "BlobStore", Store)
     monkeypatch.setattr(run, "fetch_bundle", fetch)
     public = tmp_path / "published"
