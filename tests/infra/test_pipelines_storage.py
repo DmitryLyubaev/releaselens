@@ -113,6 +113,24 @@ def test_pointer_write_failure_is_refused(storage):
     assert caught.value.code == "request" and "private" not in str(caught.value)
 
 
+def test_pointer_http_failure_carries_label_and_status(storage):
+    blobs, client = store(storage, lambda request: httpx.Response(503, text="private"))
+    with client, pytest.raises(storage.RequestRefused) as caught:
+        blobs.write_pointer({"release_run_id": 41})
+    assert (caught.value.code, caught.value.check, caught.value.http_status) == ("request", "pointer-http", 503)
+
+
+def test_pointer_transport_failure_carries_label(storage):
+    def server(request):
+        raise httpx.ConnectError("private transport detail")
+
+    blobs, client = store(storage, server)
+    with client, pytest.raises(storage.RequestRefused) as caught:
+        blobs.write_pointer({"release_run_id": 41})
+    assert (caught.value.check, caught.value.http_status) == ("pointer-transport", None)
+    assert "private" not in str(caught.value) and caught.value.__cause__ is None
+
+
 def test_pointer_round_trips(storage):
     seen = []
 

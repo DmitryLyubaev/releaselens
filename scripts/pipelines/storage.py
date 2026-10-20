@@ -74,9 +74,9 @@ class BlobStore:
             response = self.client.put(self._url("evidence",POINTER_KEY),content=canonical(value),headers={
                 "Authorization":f"Bearer {self.tokens.token()}","x-ms-version":"2023-11-03",
                 "x-ms-blob-type":"BlockBlob"},follow_redirects=False,timeout=30)
-            if response.status_code != 201: raise DeliveryRefused("request")
+            if response.status_code != 201: raise RequestRefused("pointer-http",response.status_code)
         except httpx.HTTPError:
-            raise DeliveryRefused("request") from None
+            raise RequestRefused("pointer-transport") from None
 
     def read_pointer(self) -> dict:
         return self.json("evidence",POINTER_KEY)
