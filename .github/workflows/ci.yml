@@ -137,7 +137,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl', 'infra/gateway/.terraform.lock.hcl', 'infra/functions/.terraform.lock.hcl', 'infra/webapp/.terraform.lock.hcl', 'infra/agents/.terraform.lock.hcl', 'infra/pipelines/identity/.terraform.lock.hcl', 'infra/pipelines/foundation/.terraform.lock.hcl', 'infra/pipelines/index/.terraform.lock.hcl') }}
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/bootstrap/.terraform.lock.hcl', 'infra/terraform/.terraform.lock.hcl', 'infra/search/.terraform.lock.hcl', 'infra/gateway/.terraform.lock.hcl', 'infra/functions/.terraform.lock.hcl', 'infra/webapp/.terraform.lock.hcl', 'infra/agents/.terraform.lock.hcl', 'infra/pipelines/platform/.terraform.lock.hcl', 'infra/pipelines/service/.terraform.lock.hcl', 'infra/pipelines/index/.terraform.lock.hcl') }}
 
       - name: Format check
         run: terraform fmt -check -recursive infra
@@ -192,15 +192,15 @@ jobs:
           terraform validate
           terraform test
 
-      - name: Check infra/pipelines/identity
-        working-directory: infra/pipelines/identity
+      - name: Check infra/pipelines/platform
+        working-directory: infra/pipelines/platform
         run: |
           terraform init -backend=false -input=false -lockfile=readonly
           terraform validate
           terraform test
 
-      - name: Check infra/pipelines/foundation
-        working-directory: infra/pipelines/foundation
+      - name: Check infra/pipelines/service
+        working-directory: infra/pipelines/service
         run: |
           terraform init -backend=false -input=false -lockfile=readonly
           terraform validate

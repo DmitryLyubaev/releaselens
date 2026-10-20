@@ -53,7 +53,7 @@ def test_delivery_image_workflow_only_publishes_smoked_main(repo_root):
 def test_new_terraform_roots_are_in_credential_free_ci(repo_root):
     w = yaml.safe_load((repo_root / ".github/workflows/ci.yml").read_bytes())
     steps = w["jobs"]["terraform-plan"]["steps"]
-    for root in ("identity","foundation","index"):
+    for root in ("platform","service","index"):
         step = next(s for s in steps if s.get("working-directory") == "infra/pipelines/"+root)
         assert "-backend=false" in step["run"] and "terraform test" in step["run"]
 
