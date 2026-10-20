@@ -47,7 +47,7 @@ stages:
           artifact: p8-verify
   - stage: TeardownProd
     dependsOn: [Status, Verify]
-    condition: and(always(), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
+    condition: and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: TeardownProd
       timeoutInMinutes: 10
@@ -65,7 +65,7 @@ stages:
           junit: false
   - stage: TeardownTest
     dependsOn: [Status, TeardownProd]
-    condition: and(always(), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
+    condition: and(always(), in(dependencies.Status.result, 'Succeeded', 'SucceededWithIssues'), eq(dependencies.Status.outputs['Status.StatusCheck.P8Status'], 'ready'))
     jobs:
     - job: TeardownTest
       timeoutInMinutes: 20
