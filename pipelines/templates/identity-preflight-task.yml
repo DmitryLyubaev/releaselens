@@ -18,14 +18,23 @@ steps:
     scriptLocation: inlineScript
     addSpnToEnvironment: true
     visibleAzLogin: false
+    keepAzSessionActive: true
     inlineScript: |
       set -euo pipefail
-      "$(Agent.TempDirectory)/p8-preflight-workload/bin/python" -m scripts.pipelines.identity_preflight ${{ parameters.role }} --receipt-dir "$(Agent.TempDirectory)/p8-identity-preflight"
+      "$(Agent.TempDirectory)/p8-workload/bin/python" -m scripts.pipelines.identity_preflight ${{ parameters.role }} --receipt-dir "$(Agent.TempDirectory)/p8-identity-preflight"
     workingDirectory: $(Build.SourcesDirectory)
   env:
     PYTHONPATH: $(Build.SourcesDirectory):$(Build.SourcesDirectory)/eval
-    P8_PREFLIGHT_JSON: $(P8_PREFLIGHT_JSON)
-    P8_PREFLIGHT_SHA256: $(P8_PREFLIGHT_SHA256)
-    P8_PREFLIGHT_SOURCE_SHA: $(P8_PREFLIGHT_SOURCE_SHA)
+    BUILD_REASON: $(Build.Reason)
+    BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+    BUILD_SOURCEVERSION: $(Build.SourceVersion)
+    BUILD_BUILDID: $(Build.BuildId)
+    P8_TENANT_ID: $(P8_TENANT_ID)
+    P8_SUBSCRIPTION_ID: $(P8_SUBSCRIPTION_ID)
+    P8_STORAGE_ACCOUNT: $(P8_STORAGE_ACCOUNT)
+    P8_SEARCH_GROUP: $(P8_SEARCH_GROUP)
+    P8_SEARCH_SERVICE: $(P8_SEARCH_SERVICE)
+    P8_RELEASE_DIGEST: $(P8_RELEASE_DIGEST)
+    P8_PRINCIPALS_JSON: $(P8_PRINCIPALS_JSON)
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)

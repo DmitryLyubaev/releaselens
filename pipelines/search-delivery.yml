@@ -1,16 +1,17 @@
-# Private Project 8 pipeline only. Creating/enabling it requires separate owner approval.
+# Private Project 8 pipeline only. It runs on Microsoft-hosted agents and reads plain settings from the
+# private variable group; the group holds no secrets. A schedule registers from the default branch.
 trigger: none
 pr: none
 parameters:
   - name: mode
     type: string
     default: release
-    values: [release, negative, identity-preflight]
+    values: [release, negative, teardown, identity-preflight]
 variables:
-  - group: ReleaseLens-P8
+  - group: ReleaseLens-P8-Delivery
 schedules:
-  - cron: '0 9 * * *'
-    displayName: Bounded nightly read-only verification
+  - cron: '30 23 * * *'
+    displayName: Verify prod, then tear down
     branches:
       include: [main]
     always: true
