@@ -62,7 +62,6 @@ coverage/
 .local/project7/
 .local/project8/
 scripts/pipelines/__pycache__/
-scripts/pipelines/helper_templates/__pycache__/
 build/delivery-agents/__pycache__/
 
 # Eval sweep output. Reports are evidence of a run, not source; the README quotes
