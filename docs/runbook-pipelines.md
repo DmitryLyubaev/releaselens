@@ -14,19 +14,19 @@ scheduled run that verifies prod and tears down. **Status: not yet run;** nothin
   alone prints the email): the user lacks `WORK_DOMAIN` (WSL: `WSLENV=WORK_DOMAIN`), the tenant is the bootstrap's.
 - **Never print an identifier** (tenant, subscription, client, object or connection ID, storage or search
   name, organisation, email): values stay in variables or `.local/project8/setup/`, which git ignores.
-- **On Windows, `az` needs the Norton CA bundle** for that process only:
-  `$env:REQUESTS_CA_BUNDLE = "$env:USERPROFILE\.azure\ca-bundle-with-norton.pem"`. Norton can hold
-  a short reply (an empty body, a refusal) for two minutes: if `az` hangs on one, use WSL instead.
-- **Terraform runs only in WSL (Ubuntu),** with `TF_DATA_DIR=$HOME/tfdata/p8-platform` or
-  `$HOME/tfdata/p8-service`. **Never permanently delete the owner's files,** Codex's worktrees,
+- **On Windows, `az` needs the Norton CA bundle** for that process only (`$env:REQUESTS_CA_BUNDLE`, below).
+  Norton can hold a short reply (an empty body, a refusal) for two minutes: if `az` hangs, use WSL.
+- **Terraform runs only in WSL (Ubuntu),** with `TF_DATA_DIR=$HOME/tfdata/p8-platform` or `p8-service`;
+  its plan, apply and error text (stdout and stderr) go to private files, with only summary lines
+  shown. **Never permanently delete the owner's files,** Codex's worktrees,
   `.local` evidence, or the old pipeline 2 and its `ReleaseLens-P8` group.
 - **Findings go in `.local/project8/findings.md`,** then into the table at the end, failures included.
 
 ## What it costs
 
-AI Search Basic is about US$0.13 an hour (US$3.19 a day; refresh the price) from `CreateService` to
-`TeardownTest`, 75 to 90 minutes: under AUD 1 a run. The platform is pennies a month; hosted jobs use the
-free grant. **The service bills until destroyed;** left to the next day's 09:30, about US$3.20 more.
+AI Search Basic is about US$0.13 an hour (US$3.19 a day; refresh it) from `CreateService` to `TeardownTest`,
+75 to 90 minutes: under AUD 1 a run. Platform: pennies a month; hosted jobs: the free grant. **The service
+bills until destroyed;** left to the next day's 09:30, about US$3.20 more.
 
 ## The windows and the helpers
 
@@ -80,15 +80,14 @@ open(f"{d}/platform.tfvars.json", "x").write(json.dumps({"subscription_id": os.e
 EOF
 ```
 
-**1b. Plan,** with state in the bootstrap's state account, container `tfstate-bootstrap`, key
-`p8-platform.tfstate`; the plan's text goes to a private file. Run 1b and 1c in one shell, in that copy:
+**1b. Plan** (state: the bootstrap's account, `tfstate-bootstrap`, `p8-platform.tfstate`). Run 1b and 1c in one shell:
 
 ```bash
 stack platform; export TF_DATA_DIR="$HOME/tfdata/p8-platform"
 ACCOUNT=$(TF_DATA_DIR="$HOME/tfdata/bootstrap-live" terraform -chdir="$REPO/infra/bootstrap" output -raw tfstate_storage_account)
-terraform init -input=false -lockfile=readonly -backend-config=storage_account_name="$ACCOUNT" -backend-config=container_name=tfstate-bootstrap
+terraform init -input=false -reconfigure -lockfile=readonly -backend-config=storage_account_name="$ACCOUNT" -backend-config=container_name=tfstate-bootstrap > "$P8/platform-init.private.txt" 2>&1; grep -E '^Terraform has been successfully initialized|Error:' "$P8/platform-init.private.txt"
 az group exists --name rg-p8-platform; az group exists --name rg-p8-search    # both false
-terraform plan -input=false -var-file="$P8/platform.tfvars.json" -out="$P8/platform.tfplan" > "$P8/platform-plan.private.txt"
+terraform plan -no-color -input=false -var-file="$P8/platform.tfvars.json" -out="$P8/platform.tfplan" > "$P8/platform-plan.private.txt" 2>&1; grep -E '^(Plan:|Apply complete|No changes)|Error:' "$P8/platform-plan.private.txt"
 terraform show -no-color "$P8/platform.tfplan" | grep -E '^Plan:|^  # '
 ```
 
@@ -99,17 +98,16 @@ grant, and the 15 grants that `grants_made_once` in `infra/pipelines/platform/te
 **1c. Apply, save the outputs** (sensitive; `-json` writes the values) **and check the credentials** (`1` each):
 
 ```bash
-terraform apply -input=false "$P8/platform.tfplan" > "$P8/platform-apply.private.txt"; grep -E '^(Apply complete|Error)' "$P8/platform-apply.private.txt"
-terraform output -json > "$P8/platform-outputs.json"
+terraform apply -no-color -input=false "$P8/platform.tfplan" > "$P8/platform-apply.private.txt" 2>&1; grep -E '^(Plan:|Apply complete|No changes)|Error:' "$P8/platform-apply.private.txt"
+terraform output -no-color -json > "$P8/platform-outputs.json" 2> "$P8/platform-output.private.txt"; grep -E 'Error:' "$P8/platform-output.private.txt"
 for r in test prod verify; do az identity federated-credential list --identity-name "id-p8-$r" --resource-group rg-p8-platform --query "length(@)" -o tsv; done
 ```
 
 ### Step 2. Point the connections at the identities
 
-**Ask first.** Step 1 made each identity's federated credential from its connection's issuer and
-subject. Copy each client ID unseen (PowerShell; `test`, then `prod`, `verify`) into the portal: Project
-settings, Service connections, `ReleaseLens-P8-Test` (`-Prod`, `-Verify`), Edit, client ID; Verify and
-save. Keep each branch check. If the client ID cannot change, stop.
+**Ask first.** Step 1 made the credentials from each connection's issuer and subject. Copy each client ID
+unseen (PowerShell; `test`, then `prod`, `verify`) into the portal: Project settings, Service connections,
+`ReleaseLens-P8-Test` (`-Prod`, `-Verify`), Edit, client ID; Verify and save. Keep each branch check. If it cannot change, stop.
 
 ```powershell
 (Get-Content "$P8/platform-outputs.json" | ConvertFrom-Json).principals.value.test.client_id | Set-Clipboard
@@ -157,9 +155,8 @@ pipeline; DemoProd keeps its approval and exclusive lock. Parallel jobs: one hos
 
 ### Step 6. The identity preflight
 
-**Ask first.** Run pipeline, `main`, mode `identity-preflight`; permit the three connections and the group
-on this first run. No Azure cost. It must be green, its artifact holding `<role>-identity.json` for each
-role; red leaves `<role>-failure.json` with a check code (`refresh-endpoint`: the path prefix). Stop.
+**Ask first.** Run pipeline, `main`, mode `identity-preflight`; permit the three connections and the group. No Azure
+cost. Green, with `<role>-identity.json` per role; red leaves `<role>-failure.json` with a check code: stop.
 
 ## The run day
 
@@ -189,18 +186,22 @@ role; red leaves `<role>-failure.json` with a check code (`refresh-endpoint`: th
    mode `teardown`: TeardownProd, then TeardownTest, which runs even if the first failed. Both green;
    each artifact's `teardown.json` says `outcome: pass`.
 2. **If teardown cannot run, destroy the service stack from WSL. Ask first.** A clean copy, `service.py`'s
-   inputs, `run.py`'s init flags and the owner's `az login` (`use_oidc=false` overrides the backend's).
-   The plan must be only `azurerm_search_service.search` and `Plan: 0 to add, 0 to change, 1 to destroy.`:
+   inputs, `run.py`'s init flags and the owner's `az login` (`use_oidc=false` overrides the backend's):
 
    ```bash
    stack service; unset ${!ARM_*}; export TF_DATA_DIR="$HOME/tfdata/p8-service"
    python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps({"search_service_name":v["P8_SEARCH_SERVICE"],"resource_group_name":v["P8_SEARCH_GROUP"],"location":"australiaeast","subscription_id":v["P8_SUBSCRIPTION_ID"],"tenant_id":v["P8_TENANT_ID"]}))' "$P8/variables.json" > inputs.tfvars.json
    terraform init -input=false -reconfigure -lockfile=readonly -backend-config=storage_account_name="$(setting P8_STORAGE_ACCOUNT)" \
-     -backend-config=container_name=service-state -backend-config=key=service.tfstate -backend-config=use_oidc=false
+     -backend-config=container_name=service-state -backend-config=key=service.tfstate -backend-config=use_oidc=false > "$P8/service-init.private.txt" 2>&1; grep -E '^Terraform has been successfully initialized|Error:' "$P8/service-init.private.txt"
    acctok                                                          # must print True
-   terraform plan -destroy -input=false -var-file=inputs.tfvars.json -out=destroy.tfplan > "$P8/destroy-plan.private.txt"
+   terraform plan -destroy -no-color -input=false -var-file=inputs.tfvars.json -out=destroy.tfplan > "$P8/destroy-plan.private.txt" 2>&1; grep -E '^(Plan:|Apply complete|No changes)|Error:' "$P8/destroy-plan.private.txt"
    terraform show -no-color destroy.tfplan | grep -E '^Plan:|^  # '
-   terraform apply -input=false destroy.tfplan > "$P8/destroy-apply.private.txt"; grep -E '^(Apply complete|Error)' "$P8/destroy-apply.private.txt"
+   ```
+
+   It must be only `azurerm_search_service.search`, `Plan: 0 to add, 0 to change, 1 to destroy.`; else stop. Then:
+
+   ```bash
+   terraform apply -no-color -input=false destroy.tfplan > "$P8/destroy-apply.private.txt" 2>&1; grep -E '^(Plan:|Apply complete|No changes)|Error:' "$P8/destroy-apply.private.txt"
    ```
 
    The indexes go with the service; **before any new release, run `mode: teardown` once** to clear their states.
@@ -212,8 +213,8 @@ role; red leaves `<role>-failure.json` with a check code (`refresh-endpoint`: th
 
 ## After the run
 
-In WSL: `0` services; each state `empty` and `available`; the platform plan `0` (no changes, so every
-identity, credential and grant is still there). A service still present is a failure, whatever passed.
+In WSL: `0` services; each state `empty` and `available`; platform plan `0` (no changes: identities, credentials
+and grants all there). A service still present is a failure, whatever passed.
 
 ```bash
 az search service list --resource-group rg-p8-search --query "length(@)" -o tsv
@@ -222,7 +223,7 @@ for s in test-state/index.tfstate prod-state/index.tfstate service-state/service
   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(sys.argv[2], "HOLDS" if any(r.get("mode")=="managed" and r.get("instances") for r in s.get("resources",[])) else "empty")' "$P8/$c.private.json" "$c"
   az storage blob show --auth-mode login --account-name "$(setting P8_STORAGE_ACCOUNT)" --container-name "$c" --name "$b" --query properties.lease.state -o tsv
 done
-stack platform; TF_DATA_DIR="$HOME/tfdata/p8-platform" terraform plan -input=false -detailed-exitcode -var-file="$P8/platform.tfvars.json" > "$P8/platform-recheck.private.txt"; echo $?
+stack platform; TF_DATA_DIR="$HOME/tfdata/p8-platform" terraform plan -no-color -input=false -detailed-exitcode -var-file="$P8/platform.tfvars.json" > "$P8/platform-recheck.private.txt" 2>&1; echo $?
 ```
 
 ## The follow-up PR
@@ -243,7 +244,6 @@ and the tests pinning it (`tests/infra/test_pipelines_yaml.py`); `docs/pipelines
 | 7 | Every run's service is named `p8-search-<suffix>`; a create soon after a delete may meet a name Azure has not yet released | run day | |
 | 8 | A stage killed at its timeout (`run.py`, `service.py`) leaves a state lease or a service no state lists; whether the recovery was needed | run day | |
 | 9 | Verify's `Reader` on `rg-p8-search` lets the scheduled Status run `az search service show` | run day | |
-| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject | 1, 3 | |
-| 11 | The OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` | 6 | |
-| 12 | The platform plan was exactly 31 to add (or the number, and why) | 1 | |
-| 13 | `-backend-config=use_oidc=false` let the fallback destroy use the owner's `az login` (or "not used") | stops | |
+| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject; the OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` (step 6) | 1, 3, 6 | |
+| 11 | The platform plan was exactly 31 to add (or the number, and why) | 1 | |
+| 12 | `-backend-config=use_oidc=false` let the fallback destroy use the owner's `az login` (or "not used") | stops | |
