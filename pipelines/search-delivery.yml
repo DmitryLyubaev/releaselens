@@ -1,5 +1,6 @@
 # Private Project 8 pipeline only. It runs on Microsoft-hosted agents and reads plain settings from the
-# private variable group; the group holds no secrets. A schedule registers from the default branch.
+# private variable group; the group holds no secrets. The one genuine scheduled run took place on
+# 21 October 2026 (docs/pipelines-report.md); the schedule is removed, and the template keeps the path.
 trigger: none
 pr: none
 parameters:
@@ -9,12 +10,6 @@ parameters:
     values: [release, negative, teardown, identity-preflight]
 variables:
   - group: ReleaseLens-P8-Delivery
-schedules:
-  - cron: '0 6 * * *'
-    displayName: Verify prod, then tear down
-    branches:
-      include: [main]
-    always: true
 lockBehavior: sequential
 extends:
   template: templates/search-delivery.yml

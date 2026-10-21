@@ -155,11 +155,9 @@ def test_no_self_hosted_pool_or_demands(repo_root):
         assert "ReleaseLens-P7" not in text and "demands" not in text and "name: ReleaseLens" not in text, path
 
 
-def test_schedule_is_0600_utc_main_always(repo_root):
+def test_no_schedule_after_the_one_scheduled_run(repo_root):
     source = yaml.safe_load((repo_root / "pipelines/search-delivery.yml").read_bytes())
-    (schedule,) = source["schedules"]
-    assert schedule["cron"] == "0 6 * * *" and schedule["always"] is True
-    assert schedule["branches"] == {"include": ["main"]}
+    assert "schedules" not in source
 
 
 def test_variable_group_is_delivery_and_no_authority_variables(repo_root):

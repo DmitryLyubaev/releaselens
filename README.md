@@ -19,8 +19,11 @@ same release on a demo-prod index. A negative run must go red at the gate with p
 one genuine scheduled run verifies prod read-only before tearing the service down. The gate is all
 229 audited questions evaluated, at least 120 correct at top 1, with no model or embedding call.
 Identities, federated credentials and role grants are set up once (`infra/pipelines/platform`);
-only the search service and its indexes exist per run. **Not yet run.** Five earlier live attempts
-stopped in the session machinery this design removed. See the
+only the search service and its indexes exist per run. **Run on 21 October 2026, every check
+passed:** the release gated test and demo-prod at 121 of 229 correct (floor 120), the negative run
+went red with prod unchanged, and the scheduled run verified prod and tore the service down. Five
+earlier live attempts stopped in the session machinery this design removed. See the
+[measured results](docs/pipelines-report.md), the
 [design](docs/superpowers/specs/2026-10-20-pipelines-simplified-delivery-design.md) and the
 [runbook](docs/runbook-pipelines.md).
 
