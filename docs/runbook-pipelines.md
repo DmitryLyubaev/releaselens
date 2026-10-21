@@ -3,7 +3,8 @@
 The one-time setup and the run day of [the 20 October design](superpowers/specs/2026-10-20-pipelines-simplified-delivery-design.md):
 a gated release to test and, once approved, demo-prod; a negative run that must go red; and the 16:00
 scheduled run that verifies prod and tears down. (The schedule moved from 09:30 to 16:00 Brisbane, 06:00 UTC,
-so a morning release is verified and torn down the same day.) **Status: not yet run;** nothing is applied or queued.
+so a morning release is verified and torn down the same day.) **Status: run on 21 October 2026, every check
+passed** ([report](pipelines-report.md)); the schedule has since been removed and the platform stack destroyed.
 
 ## Rules
 
@@ -236,15 +237,22 @@ and the tests pinning it (`tests/infra/test_pipelines_yaml.py`); `docs/pipelines
 
 | # | Unverified until the run | Step | Finding |
 |---|---|---|---|
-| 1 | One private Microsoft-hosted parallel job, with minutes left (rechecked) | 5 | |
-| 2 | Hosted agents install the pinned toolchain within the job timeouts, and the 41,825-row upload stays inside its 240 s and 200-request budget (`upload-*.metrics.json`) | run day | |
-| 3 | Workload identity federation and token refresh for the long-lived identities | 6 | |
-| 4 | How long a Basic search service takes to create (`CreateService`) and to delete (`TeardownTest`) | run day | |
-| 5 | The 06:00 UTC schedule registers from `main` and fires as `Build.Reason = Schedule` | run day | |
-| 6 | The Test identity deletes the service, and the indexes with it, under the group-scope grant | run day | |
-| 7 | Every run's service is named `p8-search-<suffix>`; a create soon after a delete may meet a name Azure has not yet released | run day | |
-| 8 | A stage killed at its timeout (`run.py`, `service.py`) leaves a state lease or a service no state lists; whether the recovery was needed | run day | |
-| 9 | Verify's `Reader` on `rg-p8-search` lets the scheduled Status run `az search service show` | run day | |
-| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject; the OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` (step 6). The prefix check is case-sensitive and the prefix is built from the organisation name as typed; if the step-6 preflight fails with `refresh-endpoint`, compare the prefix's casing with `System.OidcRequestUri`, rerun `owner_setup variables` with a new `--out` path (it never overwrites), then rewrite the variable group | 1, 3, 6 | |
-| 11 | The platform plan was exactly 31 to add (or the number, and why) | 1 | |
-| 12 | `-backend-config=use_oidc=false` let the fallback destroy use the owner's `az login` (or "not used") | stops | |
+| 1 | One private Microsoft-hosted parallel job, with minutes left (rechecked) | 5 | Yes: the free tier, one job, 8 of 1,800 minutes used |
+| 2 | Hosted agents install the pinned toolchain within the job timeouts, and the 41,825-row upload stays inside its 240 s and 200-request budget (`upload-*.metrics.json`) | run day | Toolchain: yes, every job. TestIndex and ProdIndex, upload included, took 5 min 45 s and 6 min 1 s and passed; the metrics files were not read back (the CLI's artifact download aborted in WSL) |
+| 3 | Workload identity federation and token refresh for the long-lived identities | 6 | Yes: preflight run 16, `code=identity-preflight-all`, and every later stage |
+| 4 | How long a Basic search service takes to create (`CreateService`) and to delete (`TeardownTest`) | run day | Create: 2 min 2 s to 2 min 37 s (three runs). TeardownTest: 2 min 2 s to 2 min 13 s |
+| 5 | The 06:00 UTC schedule registers from `main` and fires as `Build.Reason = Schedule` | run day | Yes: run 24 at 06:00 UTC after PR #82; the old 23:30 schedule had fired once too (run 17) |
+| 6 | The Test identity deletes the service, and the indexes with it, under the group-scope grant | run day | Yes: `actions` `service` and `test` `destroyed`, `outcome: pass` (runs 19, 21 and 24) |
+| 7 | Every run's service is named `p8-search-<suffix>`; a create soon after a delete may meet a name Azure has not yet released | run day | No conflict: the same name was recreated about 3 minutes after each of two deletes |
+| 8 | A stage killed at its timeout (`run.py`, `service.py`) leaves a state lease or a service no state lists; whether the recovery was needed | run day | No stage hit its timeout; no recovery was needed, and every state ended unleased |
+| 9 | Verify's `Reader` on `rg-p8-search` lets the scheduled Status run `az search service show` | run day | Yes: Status succeeded and Verify ran |
+| 10 | `az devops` and `az pipelines` work with the owner's `az login` in WSL; the endpoint list gives each issuer and subject; the OIDC request path prefix is `/<organisation>/<project ID>/_apis/distributedtask/hubs/build/` (step 6). The prefix check is case-sensitive and the prefix is built from the organisation name as typed; if the step-6 preflight fails with `refresh-endpoint`, compare the prefix's casing with `System.OidcRequestUri`, rerun `owner_setup variables` with a new `--out` path (it never overwrites), then rewrite the variable group | 1, 3, 6 | Yes, all three; the connections are Entra-issued (`/eid1/…` subjects, not `sc://`); the preflight passed first time |
+| 11 | The platform plan was exactly 31 to add (or the number, and why) | 1 | Exactly 31; the destroy after the run was exactly 31 too |
+| 12 | `-backend-config=use_oidc=false` let the fallback destroy use the owner's `az login` (or "not used") | stops | Not used |
+
+Further notes from the run, for a rerun:
+- **The portal's New pipeline wizard asks for a broad GitHub OAuth grant.** Create the pipeline with
+  `az pipelines create --skip-first-run` through the existing GitHub App connection instead.
+- **The demo-prod approval times out after 10 minutes.** Have the approver ready when PlanProd ends; a
+  timed-out run skips ProdIndex yet shows "succeeded", and needs a teardown and a fresh release.
+- **On Windows, `owner_setup` needs `PYTHONPATH` set to the repository and `eval`.**
