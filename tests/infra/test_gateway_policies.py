@@ -67,10 +67,15 @@ def _path(repo_root: Path, name: str) -> Path:
     return repo_root / "infra" / "gateway" / "policies" / name
 
 
+# What api.tf takes from log-to-eventhub.xml: the statement alone, from its opening tag to its
+# closing tag, so the file's header comment never reaches the live policy.
+STATEMENT = re.compile(r"(?s)<log-to-eventhub.*</log-to-eventhub>")
+
+
 def _render(repo_root: Path, name: str, logging: bool) -> str:
     """The policy as api.tf renders it: the marker becomes the log statement, or nothing."""
     text = _path(repo_root, name).read_text(encoding="utf-8")
-    log = _path(repo_root, LOG_FILE).read_text(encoding="utf-8").strip() if logging else ""
+    log = STATEMENT.search(_path(repo_root, LOG_FILE).read_text(encoding="utf-8")).group(0) if logging else ""
     return text.replace(MARKER, log)
 
 
@@ -318,7 +323,10 @@ def test_switch_off_renders_todays_policy(repo_root: Path, name: str, logging: b
         assert "log-to-eventhub" not in rendered and LOGGER_ID not in rendered
         assert _canonical(ET.fromstring(rendered)) == _canonical(ET.fromstring(source))
         return
-    # On, the switch adds the two log statements and nothing else.
+    # On, the switch adds the two log statements and nothing else: not even the log file's
+    # header comment, so the rendered policy has two comments fewer than its file (the markers).
+    assert rendered.count("<!--") == source.count("<!--") - 2
+    assert rendered.count("<log-to-eventhub ") == 2 and rendered.count("</log-to-eventhub>") == 2
     root = ET.fromstring(rendered)
     for section in ("outbound", "on-error"):
         for log in _section(root, section).findall("log-to-eventhub"):
@@ -355,12 +363,15 @@ def test_event_fields_match_contract(repo_root: Path, name: str, logging: bool) 
         assert expression.count("new JObject(") == 1
         assert re.findall(r'new JProperty\("([^"]+)"', expression) == EVENT_FIELDS
         assert "Formatting.None" in expression, "one event is one line of compact JSON"
+        # Built in that one constructor call: nothing added to it or set on it afterwards.
+        assert ".Add(" not in expression
+        assert not re.search(r"\]\s*=(?!=)", expression), "no indexer assignment"
 
 
 @pytest.mark.parametrize(("name", "logging"), RENDERED)
 def test_no_client_ip_or_body_in_event(repo_root: Path, name: str, logging: bool) -> None:
     for expression in _expressions(repo_root, name, logging):
-        for forbidden in ("IpAddress", "Body", "model", "Deployment"):
+        for forbidden in ("IpAddress", "Body", "model", "Deployment", "Request.Headers"):
             assert forbidden not in expression, f"the event reads {forbidden}"
 
 
@@ -370,7 +381,10 @@ def test_unknown_caller_is_other(repo_root: Path, name: str, logging: bool) -> N
         # The label comes from the secret named value, looked up by the caller's object ID. A
         # call with no token looks up an empty ID; an ID that is not in the map is "other".
         assert re.search(r'oid\s*=\s*jwt\s*!=\s*null\s*\?\s*jwt\.Claims\.GetValueOrDefault\("oid", ""\)\s*:\s*""\s*;', expression)
-        assert re.search(r'caller\s*=\s*\(string\)JObject\.Parse\("\{\{caller-labels\}\}"\)\[oid\]\s*\?\?\s*"other"\s*;', expression)
+        assert re.search(r'string caller = "other";', expression)
+        assert re.search(r'found\s*=\s*\(string\)JObject\.Parse\("\{\{caller-labels\}\}"\)\[oid\]\s*;', expression)
+        # Only one of the three known labels replaces "other"; anything else stays "other".
+        assert re.search(r'if \(found == "owner" \|\| found == "deploy" \|\| found == "webapp"\) caller = found;', expression)
         assert re.search(r'new JProperty\("caller", caller\)', expression)
         # The raw object ID is never a value in the event.
         assert not re.search(r'new JProperty\("\w+", oid\)', expression)
@@ -393,9 +407,42 @@ def test_refusal_and_nulls_follow_contract(repo_root: Path, name: str, logging: 
         assert re.search(r'answered\s*=\s*\(label\s*==\s*"primary"\s*\|\|\s*label\s*==\s*"secondary"\)\s*\?\s*label\s*:\s*null\s*;', expression)
         # A refusal is the gateway's own 401, 403 or 429, with no backend answer.
         assert re.search(r'refused\s*=\s*answered\s*==\s*null\s*&&\s*\(status\s*==\s*401\s*\|\|\s*status\s*==\s*403\s*\|\|\s*status\s*==\s*429\)\s*;', expression)
-        # No answer, no tokens.
-        assert re.search(r'tokens\s*=\s*answered\s*==\s*null\s*\|\|\s*consumed\s*==\s*null\s*\?\s*\(int\?\)null\s*:', expression)
+        # No answer, no tokens: tokens start null, and each assignment needs an answer.
+        assert "int? tokens = null;" in expression
+        assignments = [line for line in expression.splitlines() if re.search(r"\btokens = (?!null)", line)]
+        assert len(assignments) == 2
+        assert all(line.strip().startswith("if (answered != null &&") for line in assignments)
         for field, variable in [("answered_by", "answered"), ("status", "status"), ("refused_by_gateway", "refused"), ("tokens", "tokens")]:
             assert f'new JProperty("{field}", {variable})' in expression
         assert 'new JProperty("session", "{{p10-session}}")' in expression
         assert 'new JProperty("request_id", context.RequestId.ToString())' in expression
+
+
+# Telemetry must never change a call's answer. An exception in the statement at the end of outbound
+# sends an answered call to on-error, whose set-status turns it into a 502, and the on-error copy
+# throws again, so a refusal loses its 401, 403 or 429. The two steps that could throw are guarded.
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_caller_lookup_cannot_throw(repo_root: Path, name: str, logging: bool) -> None:
+    for expression in _expressions(repo_root, name, logging):
+        # The one parse of the label map, and the cast of what it finds, are inside a try whose
+        # catch leaves "other".
+        assert expression.count("JObject.Parse(") == 1
+        guarded = re.search(r"try \{(?P<body>.*?)\} catch \{(?P<handler>.*?)\}", expression, re.DOTALL)
+        assert guarded, "the caller lookup is not in a try/catch"
+        assert 'JObject.Parse("{{caller-labels}}")[oid]' in guarded.group("body")
+        assert guarded.group("handler").strip() == 'caller = "other";'
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_tokens_conversion_cannot_throw(repo_root: Path, name: str, logging: bool) -> None:
+    for expression in _expressions(repo_root, name, logging):
+        # No conversion that throws on an unexpected type or on overflow: an int is taken as it
+        # is, a long only when it fits an int, and anything else leaves tokens null.
+        assert "Convert." not in expression and "int.Parse" not in expression
+        assert "if (answered != null && consumed is int) tokens = (int)consumed;" in expression
+        assert (
+            "if (answered != null && consumed is long && (long)consumed >= 0 && (long)consumed <= int.MaxValue) "
+            "tokens = (int)(long)consumed;"
+        ) in expression

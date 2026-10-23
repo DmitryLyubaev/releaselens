@@ -81,11 +81,12 @@ resource "azurerm_api_management_api" "v1_rev2" {
 # (&lt;JObject&gt;), which is what "xml" means. "rawxml" is for unescaped expressions.
 #
 # Each file ends outbound and on-error with the marker comment below. With event_hub_logging on,
-# each marker becomes the Event Hubs log statement (policies/log-to-eventhub.xml, project 10);
-# off, the default, it becomes nothing, so the policy is its file without that one comment.
+# each marker becomes the Event Hubs log statement (policies/log-to-eventhub.xml, project 10),
+# from its opening tag to its closing tag, so the file's header comment stays in the file; off,
+# the default, it becomes nothing, so the policy is its file without that one comment.
 locals {
   log_marker    = "<!-- p10:log-to-eventhub -->"
-  log_statement = var.event_hub_logging ? trimspace(file("${path.module}/policies/log-to-eventhub.xml")) : ""
+  log_statement = var.event_hub_logging ? regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("${path.module}/policies/log-to-eventhub.xml")) : ""
 }
 
 resource "azapi_resource" "policy_v1" {

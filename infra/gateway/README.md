@@ -179,8 +179,14 @@ call's token count in (`tokensConsumed`), which nothing reads while logging is o
 With `event_hub_logging = true`:
 - [`policies/log-to-eventhub.xml`](policies/log-to-eventhub.xml) takes the place of the marker at
   the end of `outbound` (after the backend label) and at the end of `on-error`, in both revisions,
-  so calls the gateway refuses are logged too. `api.tf` does the replacement; the policy tests
+  so calls the gateway refuses are logged too. `api.tf` does the replacement with the statement
+  alone, from its opening tag, so the file's header comment stays in the file; the policy tests
   render both revisions both ways.
+- **Telemetry never changes an answer.** An exception in the statement would send an answered
+  call to `on-error` (a 502), and the `on-error` copy would throw again, so a refusal would lose
+  its status. The two steps that could throw are guarded: a `caller-labels` value that does not
+  parse, or holds anything but `owner`, `deploy` or `webapp`, gives `other`; a token count that is
+  not an `int`, or a `long` that fits one, gives a null `tokens`.
 - The logger `p10-eventhub` (azurerm; the pinned provider's `eventhub` block takes a
   user-assigned identity) sends to `<namespace>.servicebus.windows.net` as the gateway identity.
   The namespace has local authentication off, so there is no connection string. The Fabric
@@ -216,8 +222,11 @@ caller_labels_json  = "{\"<owner object id>\": \"owner\", \"<deploy object id>\"
 Switching it on or off is an in-place update of both policies, plus the logger and the named
 values created or destroyed. The mocked tests cannot show these; check them in the session:
 - an answered call and a refused call (no token, a 401) each arrive in the hub as one event;
-- `tokens` holds a number on an answered call (`llm-token-limit` sets `tokensConsumed`; the
-  expression converts whatever number type it holds).
+- `tokens` holds a number on an answered call (`llm-token-limit` sets `tokensConsumed`; if it is
+  null on every answered call, the variable holds a type the guard does not take, and the session
+  still runs, without token counts);
+- `caller` is `owner`, `deploy` or `webapp` for the known callers (if every event says `other`,
+  the `caller-labels` value did not parse in the gateway).
 
 ## Tests
 

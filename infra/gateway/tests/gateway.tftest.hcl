@@ -479,8 +479,8 @@ run "event_hub_logging_on" {
 
   assert {
     condition = (
-      azapi_resource.policy_v1.body.properties.value == replace(file("policies/api-v1.xml"), "<!-- p10:log-to-eventhub -->", trimspace(file("policies/log-to-eventhub.xml"))) &&
-      azapi_resource.policy_v1_rev2.body.properties.value == replace(file("policies/api-v1-rev2.xml"), "<!-- p10:log-to-eventhub -->", trimspace(file("policies/log-to-eventhub.xml")))
+      azapi_resource.policy_v1.body.properties.value == replace(file("policies/api-v1.xml"), "<!-- p10:log-to-eventhub -->", regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("policies/log-to-eventhub.xml"))) &&
+      azapi_resource.policy_v1_rev2.body.properties.value == replace(file("policies/api-v1-rev2.xml"), "<!-- p10:log-to-eventhub -->", regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("policies/log-to-eventhub.xml")))
     )
     error_message = "With event_hub_logging on, each policy's two markers must be replaced by the log statement."
   }
@@ -488,6 +488,12 @@ run "event_hub_logging_on" {
   assert {
     condition     = length(split("<log-to-eventhub logger-id=\"p10-eventhub\">", azapi_resource.policy_v1.body.properties.value)) == 3 && length(split("<log-to-eventhub logger-id=\"p10-eventhub\">", azapi_resource.policy_v1_rev2.body.properties.value)) == 3
     error_message = "Each policy must log twice: at the end of outbound and of on-error."
+  }
+
+  # The statement alone, from its opening tag: the log file's header comment stays in the file.
+  assert {
+    condition     = !strcontains(azapi_resource.policy_v1.body.properties.value, "Project 10:") && !strcontains(azapi_resource.policy_v1_rev2.body.properties.value, "Project 10:")
+    error_message = "The log file's header comment must not be rendered into either policy."
   }
 }
 
