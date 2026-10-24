@@ -14,3 +14,12 @@ publisher_email = "you@example.com"
 
 # Leave false until revision 2 has passed the smoke test at ;rev=2.
 # release_revision_2 = false
+
+# Project 10: one event per gateway call to Event Hubs (see the README, "Event Hubs logging").
+# Off by default. To switch it on, uncomment these in your own git-ignored terraform.tfvars and
+# fill in the names from the Fabric repository's Event Hubs stack; never commit real values.
+# event_hub_logging   = true
+# event_hub_namespace = "<namespace name>"
+# event_hub_name      = "<event hub name>"
+# p10_session         = "p10-<date>"
+# caller_labels_json  = "{\"<owner object id>\": \"owner\", \"<deploy object id>\": \"deploy\", \"<webapp object id>\": \"webapp\"}"

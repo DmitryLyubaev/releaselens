@@ -14,7 +14,7 @@
   Telemetry must never change a call's answer: an exception here would send an answered call to
   on-error (a 502), and the on-error copy would throw again. So the two steps that could throw are
   guarded. A label map that does not parse, or holds anything but one of the labels, gives
-  "other"; a token count that is not an int, or a long that fits one, gives null.
+  "other"; tokens is null unless the count is an int, or a long that fits in an int.
 -->
 <log-to-eventhub logger-id="p10-eventhub">@{
     var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("jwt");

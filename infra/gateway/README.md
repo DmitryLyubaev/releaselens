@@ -185,8 +185,8 @@ With `event_hub_logging = true`:
 - **Telemetry never changes an answer.** An exception in the statement would send an answered
   call to `on-error` (a 502), and the `on-error` copy would throw again, so a refusal would lose
   its status. The two steps that could throw are guarded: a `caller-labels` value that does not
-  parse, or holds anything but `owner`, `deploy` or `webapp`, gives `other`; a token count that is
-  not an `int`, or a `long` that fits one, gives a null `tokens`.
+  parse, or holds anything but `owner`, `deploy` or `webapp`, gives `other`; `tokens` is null
+  unless the count is an `int`, or a `long` that fits in an `int`.
 - The logger `p10-eventhub` (azurerm; the pinned provider's `eventhub` block takes a
   user-assigned identity) sends to `<namespace>.servicebus.windows.net` as the gateway identity.
   The namespace has local authentication off, so there is no connection string. The Fabric
@@ -218,6 +218,9 @@ event_hub_name      = "<event hub name>"
 p10_session         = "p10-<date>"
 caller_labels_json  = "{\"<owner object id>\": \"owner\", \"<deploy object id>\": \"deploy\", \"<webapp object id>\": \"webapp\"}"
 ```
+
+The first apply after this change merges shows an in-place update of both policies even with
+logging off, because the marker comment is removed from what the gateway holds; it is harmless.
 
 Switching it on or off is an in-place update of both policies, plus the logger and the named
 values created or destroyed. The mocked tests cannot show these; check them in the session:

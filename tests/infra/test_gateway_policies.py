@@ -291,6 +291,23 @@ def _log_statement(repo_root: Path) -> ET.Element:
     return ET.fromstring(_path(repo_root, LOG_FILE).read_text(encoding="utf-8"))
 
 
+# The statement only reads the call. Telemetry that wrote to the request or the response would
+# change what the backend receives or what the caller gets. Each pattern is one way to do that (or
+# to read the request, which the event has no use for), found in the C# of the expression.
+FORBIDDEN_IN_STATEMENT = {
+    "a read of Request.Headers": re.compile(r"Request\.Headers"),
+    "an .Add( call": re.compile(r"\.Add\("),
+    "a .Remove( call": re.compile(r"\.Remove\("),
+    "a Headers[...] assignment": re.compile(r"Headers\s*\[[^\]]*\]\s*=(?!=)"),
+    "an indexer assignment": re.compile(r"\]\s*=(?!=)"),
+}
+
+
+def _assert_read_only(expression: str) -> None:
+    found = [what for what, pattern in FORBIDDEN_IN_STATEMENT.items() if pattern.search(expression)]
+    assert not found, f"the log statement must not change the request or response: it has {', '.join(found)}"
+
+
 def _expressions(repo_root: Path, name: str, logging: bool) -> list[str]:
     """The event expression of each rendered log statement (two when the switch is on, none when
     off), and the one in log-to-eventhub.xml itself, so every check also holds in the off state."""
@@ -364,8 +381,7 @@ def test_event_fields_match_contract(repo_root: Path, name: str, logging: bool) 
         assert re.findall(r'new JProperty\("([^"]+)"', expression) == EVENT_FIELDS
         assert "Formatting.None" in expression, "one event is one line of compact JSON"
         # Built in that one constructor call: nothing added to it or set on it afterwards.
-        assert ".Add(" not in expression
-        assert not re.search(r"\]\s*=(?!=)", expression), "no indexer assignment"
+        _assert_read_only(expression)
 
 
 @pytest.mark.parametrize(("name", "logging"), RENDERED)
@@ -446,3 +462,35 @@ def test_tokens_conversion_cannot_throw(repo_root: Path, name: str, logging: boo
             "if (answered != null && consumed is long && (long)consumed >= 0 && (long)consumed <= int.MaxValue) "
             "tokens = (int)(long)consumed;"
         ) in expression
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_statement_does_not_mutate_request_or_response(repo_root: Path, name: str, logging: bool) -> None:
+    for expression in _expressions(repo_root, name, logging):
+        _assert_read_only(expression)
+
+
+# A policy with any one of these in its statement must be rejected by the guard above.
+MUTATIONS = [
+    pytest.param('var seen = context.Request.Headers.GetValueOrDefault("x-a", "");', id="read-request-headers"),
+    pytest.param('context.Response.Headers.Add("x-a", "b");', id="add"),
+    pytest.param('context.Response.Headers.Remove("x-a");', id="remove"),
+    pytest.param('context.Response.Headers["x-a"] = new string[] { "b" };', id="headers-indexer"),
+    pytest.param('label = "x"; found = label; var map = new JObject(); map["k"] = "v";', id="indexer-assignment"),
+]
+
+
+@pytest.mark.parametrize("mutation", MUTATIONS)
+def test_a_statement_that_mutates_is_rejected(repo_root: Path, mutation: str) -> None:
+    expression = "".join(_log_statement(repo_root).itertext())
+    _assert_read_only(expression)
+    anchor = "    int status = "
+    assert expression.count(anchor) == 1
+    mutated = expression.replace(anchor, f"    {mutation}\n{anchor}")
+    with pytest.raises(AssertionError, match="must not change the request or response"):
+        _assert_read_only(mutated)
+
+
+def test_reads_and_comparisons_are_not_mistaken_for_mutations() -> None:
+    # What the statement does read is allowed: == is not an assignment, a lookup is not an Add.
+    _assert_read_only('var a = context.Response.Headers.GetValueOrDefault("x", ""); if (a == "b" || a[0] == "c") { }')
