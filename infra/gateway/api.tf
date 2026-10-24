@@ -79,6 +79,16 @@ resource "azurerm_api_management_api" "v1_rev2" {
 #
 # format = "xml": the files are well-formed XML, with the generics in expressions escaped
 # (&lt;JObject&gt;), which is what "xml" means. "rawxml" is for unescaped expressions.
+#
+# Each file ends outbound and on-error with the marker comment below. With event_hub_logging on,
+# each marker becomes the Event Hubs log statement (policies/log-to-eventhub.xml, project 10),
+# from its opening tag to its closing tag, so the file's header comment stays in the file; off,
+# the default, it becomes nothing, so the policy is its file without that one comment.
+locals {
+  log_marker    = "<!-- p10:log-to-eventhub -->"
+  log_statement = var.event_hub_logging ? regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("${path.module}/policies/log-to-eventhub.xml")) : ""
+}
+
 resource "azapi_resource" "policy_v1" {
   type      = "Microsoft.ApiManagement/service/apis/policies@2024-05-01"
   name      = "policy"
@@ -87,16 +97,19 @@ resource "azapi_resource" "policy_v1" {
   body = {
     properties = {
       format = "xml"
-      value  = file("${path.module}/policies/api-v1.xml")
+      value  = replace(file("${path.module}/policies/api-v1.xml"), local.log_marker, local.log_statement)
     }
   }
 
   # After revision 2 is copied (see above), so revision 2 starts with no policy of revision 1's.
-  # After the named values and the pool, because API Management checks the policy's {{name}}
-  # references and its backend-id when the policy is saved.
+  # After the named values, the pool and the Event Hubs logger, because API Management checks the
+  # policy's {{name}} references, its backend-id and its logger-id when the policy is saved.
   depends_on = [
     azurerm_api_management_api.v1_rev2,
     azurerm_api_management_named_value.this,
+    azurerm_api_management_named_value.caller_labels,
+    azurerm_api_management_named_value.p10_session,
+    azurerm_api_management_logger.eventhub,
     azapi_resource.pool,
   ]
 }
@@ -109,13 +122,17 @@ resource "azapi_resource" "policy_v1_rev2" {
   body = {
     properties = {
       format = "xml"
-      value  = file("${path.module}/policies/api-v1-rev2.xml")
+      value  = replace(file("${path.module}/policies/api-v1-rev2.xml"), local.log_marker, local.log_statement)
     }
   }
 
-  # API Management checks the policy's {{name}} references and its backend-id when it is saved.
+  # API Management checks the policy's {{name}} references, its backend-id and its logger-id
+  # when it is saved.
   depends_on = [
     azurerm_api_management_named_value.this,
+    azurerm_api_management_named_value.caller_labels,
+    azurerm_api_management_named_value.p10_session,
+    azurerm_api_management_logger.eventhub,
     azapi_resource.pool,
   ]
 }

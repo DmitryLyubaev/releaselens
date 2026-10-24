@@ -1,0 +1,50 @@
+<!--
+  Project 10: one gateway event per call, sent to Event Hubs through the logger p10-eventhub.
+  api.tf puts this statement (from the opening tag on, without this comment) in place of the
+  marker comment at the end of outbound and at the end of on-error, in both revisions, only when
+  event_hub_logging is on (see the README).
+
+  The event has the eleven fields of the event contract and nothing else: no client IP, no request
+  or response body, no deployment or model. The caller is a label looked up by object ID in the
+  secret named value caller-labels, so no object ID leaves the gateway; a call with no token, or
+  an ID that is not in the map, is "other". answered_by is the label outbound set, so it is null
+  when no backend answered. Then the gateway's own 401, 403 or 429 is a refusal, any other status
+  is a backend failure, and either way tokens are null.
+
+  Telemetry must never change a call's answer: an exception here would send an answered call to
+  on-error (a 502), and the on-error copy would throw again. So the two steps that could throw are
+  guarded. A label map that does not parse, or holds anything but one of the labels, gives
+  "other"; tokens is null unless the count is an int, or a long that fits in an int.
+-->
+<log-to-eventhub logger-id="p10-eventhub">@{
+    var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("jwt");
+    var oid = jwt != null ? jwt.Claims.GetValueOrDefault("oid", "") : "";
+    string caller = "other";
+    try {
+        var found = (string)JObject.Parse("{{caller-labels}}")[oid];
+        if (found == "owner" || found == "deploy" || found == "webapp") caller = found;
+    } catch {
+        caller = "other";
+    }
+    var label = context.Response.Headers.GetValueOrDefault("x-releaselens-backend", "");
+    string answered = (label == "primary" || label == "secondary") ? label : null;
+    int status = context.Response.StatusCode;
+    bool refused = answered == null &amp;&amp; (status == 401 || status == 403 || status == 429);
+    var consumed = context.Variables.GetValueOrDefault&lt;object&gt;("tokensConsumed");
+    int? tokens = null;
+    if (answered != null &amp;&amp; consumed is int) tokens = (int)consumed;
+    if (answered != null &amp;&amp; consumed is long &amp;&amp; (long)consumed &gt;= 0 &amp;&amp; (long)consumed &lt;= int.MaxValue) tokens = (int)(long)consumed;
+    return new JObject(
+        new JProperty("event_time", context.Timestamp.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")),
+        new JProperty("request_id", context.RequestId.ToString()),
+        new JProperty("session", "{{p10-session}}"),
+        new JProperty("api", context.Api.Name),
+        new JProperty("operation", context.Operation.Id),
+        new JProperty("caller", caller),
+        new JProperty("answered_by", answered),
+        new JProperty("status", status),
+        new JProperty("refused_by_gateway", refused),
+        new JProperty("tokens", tokens),
+        new JProperty("latency_ms", (int)context.Elapsed.TotalMilliseconds)
+    ).ToString(Newtonsoft.Json.Formatting.None);
+}</log-to-eventhub>

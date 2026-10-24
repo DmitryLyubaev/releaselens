@@ -24,10 +24,11 @@ session.** The budget alert is the backstop, and it stops nothing.
 | API Management | `apim-releaselens-<suffix>` | `BasicV2_1`, `australiaeast`; the bootstrap's gateway identity, user-assigned, and no other |
 | Named values | `tenant-id`, `gateway-app-client-id`, `gateway-identity-client-id`, `tokens-per-minute`, `tokens-per-day`, `primary-backend-host` | what the policies refer to as `{{name}}`; none secret |
 | Version set and API | `azure-openai`, `azure-openai-v1` | segment scheme, version `v1`, path `openai`, HTTPS only, `subscription_required = false`; one operation, `POST /chat/completions` |
-| Policies (azapi) | [`policies/api-v1.xml`](policies/api-v1.xml), [`policies/api-v1-rev2.xml`](policies/api-v1-rev2.xml) | loaded with `file()`, format `xml`; each on its own revision (`;rev=1`, `;rev=2`), never on "whichever is current" |
+| Policies (azapi) | [`policies/api-v1.xml`](policies/api-v1.xml), [`policies/api-v1-rev2.xml`](policies/api-v1-rev2.xml) | loaded with `file()`, format `xml`; each on its own revision (`;rev=1`, `;rev=2`), never on "whichever is current"; each file's marker comment becomes the Event Hubs log statement, or nothing (below) |
 | Revision 2 | `azure-openai-v1;rev=2` | non-current until `release_revision_2 = true` |
 | Backends (azapi) | `aoai-primary`, `aoai-secondary`, `aoai-pool` | two Single backends, each with one breaker rule (one 429 in 5 minutes trips it for 1 minute, or for the Retry-After); the pool, primary priority 1, secondary priority 2 |
 | Logger and diagnostic | `appi-releaselens`, `applicationinsights` | to the bootstrap's Application Insights, ingesting as the gateway identity; every request sampled, no body, no client IP; custom metrics on (azapi) |
+| Event Hubs logger and its named values | `p10-eventhub`; `caller-labels` (secret), `p10-session` | only with `event_hub_logging = true` ([below](#event-hubs-logging-project-10)); none of them exists by default |
 
 `<suffix>` is six random lowercase letters and digits, new each session, so the 48 hours a
 deleted service's name stays reserved never block the next one.
@@ -73,6 +74,11 @@ git:
 | `tokens_per_minute` | each caller's budget per minute | `10000` |
 | `tokens_per_day` | each caller's budget per day | `50000` |
 | `release_revision_2` | make revision 2 current | `false` |
+| `event_hub_logging` | send one event per call to Event Hubs ([below](#event-hubs-logging-project-10)) | `false` |
+| `event_hub_namespace` | the Event Hubs namespace's name, not its host; required when logging is on | `""` |
+| `event_hub_name` | the event hub's name; required when logging is on | `""` |
+| `p10_session` | the session name every event carries, for example `p10-2026-11-12`; required when logging is on, never `replay` | `""` |
+| `caller_labels_json` | sensitive: a JSON object mapping each known caller's object ID to `owner`, `deploy`, `webapp` or `other` | `"{}"` |
 
 Put them in a git-ignored `terraform.tfvars` in this folder, in your own window, starting from
 [`terraform.tfvars.example`](terraform.tfvars.example). Never commit them.
@@ -161,6 +167,70 @@ third:
 - **The destroy after a release.** Whether API Management deletes the current revision 2 with
   the rest, or the destroy stops on it and needs the fallback above.
 
+## Event Hubs logging (project 10)
+
+For the Fabric real-time session (project 10, in the Fabric repository), the gateway can send one
+event per call to an event hub. It is **off by default**: with `event_hub_logging = false`, the
+Event Hubs logger and its two named values do not exist, and each policy is its file with the
+marker comment `<!-- p10:log-to-eventhub -->` removed, so every other session applies as before.
+The one other change to the files is inert: `llm-token-limit` names the variable it keeps the
+call's token count in (`tokensConsumed`), which nothing reads while logging is off.
+
+With `event_hub_logging = true`:
+- [`policies/log-to-eventhub.xml`](policies/log-to-eventhub.xml) takes the place of the marker at
+  the end of `outbound` (after the backend label) and at the end of `on-error`, in both revisions,
+  so calls the gateway refuses are logged too. `api.tf` does the replacement with the statement
+  alone, from its opening tag, so the file's header comment stays in the file; the policy tests
+  render both revisions both ways.
+- **Telemetry never changes an answer.** An exception in the statement would send an answered
+  call to `on-error` (a 502), and the `on-error` copy would throw again, so a refusal would lose
+  its status. The two steps that could throw are guarded: a `caller-labels` value that does not
+  parse, or holds anything but `owner`, `deploy` or `webapp`, gives `other`; `tokens` is null
+  unless the count is an `int`, or a `long` that fits in an `int`.
+- The logger `p10-eventhub` (azurerm; the pinned provider's `eventhub` block takes a
+  user-assigned identity) sends to `<namespace>.servicebus.windows.net` as the gateway identity.
+  The namespace has local authentication off, so there is no connection string. The Fabric
+  repository's Event Hubs stack gives the gateway identity **Azure Event Hubs Data Sender** on the
+  hub; this stack still grants no role, so that stack must be applied first.
+- `caller-labels` is a secret named value built from `caller_labels_json`, and `p10-session` holds
+  `p10_session`.
+
+Each event is one line of JSON with exactly these fields: `event_time` (UTC), `request_id` (API
+Management's request ID), `session`, `api`, `operation`, `caller`, `answered_by`, `status`,
+`refused_by_gateway`, `tokens` and `latency_ms`. There is no client IP, no request or response
+body, and no deployment or model. `caller` is a label: the caller's object ID is looked up in
+`caller-labels`, and a call with no token, or an ID not in the map, is `other`, so no object ID
+leaves the gateway. `answered_by` is the backend label (`primary` or `secondary`), and null when no
+backend answered. A call with no backend answer and status 401, 403 or 429 is the gateway's own
+refusal (`refused_by_gateway` true); any other status without an answer (a 502 or 503 from a
+backend failure) is not a refusal. With no answer, `tokens` is null.
+
+What the gateway can observe about 429s is its own refusals and the calls the secondary answered:
+the pool's retry hides the primary's 429 inside one request, so there is no event for it.
+
+The namespace and hub names, the session and the object IDs go in the git-ignored
+`terraform.tfvars`, never in a committed file:
+
+```hcl
+event_hub_logging   = true
+event_hub_namespace = "<namespace name>"
+event_hub_name      = "<event hub name>"
+p10_session         = "p10-<date>"
+caller_labels_json  = "{\"<owner object id>\": \"owner\", \"<deploy object id>\": \"deploy\", \"<webapp object id>\": \"webapp\"}"
+```
+
+The first apply after this change merges shows an in-place update of both policies even with
+logging off, because the marker comment is removed from what the gateway holds; it is harmless.
+
+Switching it on or off is an in-place update of both policies, plus the logger and the named
+values created or destroyed. The mocked tests cannot show these; check them in the session:
+- an answered call and a refused call (no token, a 401) each arrive in the hub as one event;
+- `tokens` holds a number on an answered call (`llm-token-limit` sets `tokensConsumed`; if it is
+  null on every answered call, the variable holds a type the guard does not take, and the session
+  still runs, without token counts);
+- `caller` is `owner`, `deploy` or `webapp` for the known callers (if every event says `other`,
+  the `caller-labels` value did not parse in the gateway).
+
 ## Tests
 
 ```bash
@@ -170,3 +240,6 @@ terraform test
 
 The tests plan against mocked providers and placeholder bootstrap outputs, and never apply or
 destroy anything. CI runs them with `fmt` and `validate` on every pull request to `main`.
+
+The policies' structure, rendered with Event Hubs logging off and on, is checked from the
+repository root by `python -m pytest tests/infra/test_gateway_policies.py`.

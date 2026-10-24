@@ -25,7 +25,7 @@
          call over budget never reaches a model. Over the minute budget is 429 with Retry-After,
          over the daily budget is 403. Placed before the backend so the gateway's own 429 is
          never retried. -->
-    <llm-token-limit counter-key='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' tokens-per-minute="{{tokens-per-minute}}" token-quota="{{tokens-per-day}}" token-quota-period="Daily" estimate-prompt-tokens="true" />
+    <llm-token-limit counter-key='@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("oid", "unknown"))' tokens-per-minute="{{tokens-per-minute}}" token-quota="{{tokens-per-day}}" token-quota-period="Daily" estimate-prompt-tokens="true" tokens-consumed-variable-name="tokensConsumed" />
     <!-- 3. Record usage by caller and deployment. preserveContent keeps the body for the
          backend; reading it without that would leave the model an empty request. -->
     <llm-emit-token-metric namespace="releaselens-gateway">
@@ -62,6 +62,7 @@
     <set-header name="x-envoy-upstream-service-time" exists-action="delete" />
     <set-header name="x-ms-deployment-name" exists-action="delete" />
     <set-header name="apim-request-id" exists-action="delete" />
+    <!-- p10:log-to-eventhub -->
   </outbound>
   <on-error>
     <base />
@@ -74,5 +75,6 @@
       <value>application/json</value>
     </set-header>
     <set-body>@("{\"error\":{\"status\":" + context.Response.StatusCode + ",\"message\":\"The gateway could not complete the request.\"}}")</set-body>
+    <!-- p10:log-to-eventhub -->
   </on-error>
 </policies>

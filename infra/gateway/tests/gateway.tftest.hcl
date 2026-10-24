@@ -215,8 +215,8 @@ run "api" {
   }
 
   assert {
-    condition     = azapi_resource.policy_v1.body.properties.format == "xml" && azapi_resource.policy_v1.body.properties.value == file("policies/api-v1.xml")
-    error_message = "Revision 1's policy must be policies/api-v1.xml, unchanged, in the xml format its escaped expressions need."
+    condition     = azapi_resource.policy_v1.body.properties.format == "xml" && azapi_resource.policy_v1.body.properties.value == replace(file("policies/api-v1.xml"), "<!-- p10:log-to-eventhub -->", "")
+    error_message = "Revision 1's policy must be policies/api-v1.xml without its marker comment (Event Hubs logging is off by default), in the xml format its escaped expressions need."
   }
 }
 
@@ -234,8 +234,8 @@ run "revision_2" {
   }
 
   assert {
-    condition     = azapi_resource.policy_v1_rev2.body.properties.format == "xml" && azapi_resource.policy_v1_rev2.body.properties.value == file("policies/api-v1-rev2.xml")
-    error_message = "Revision 2's policy must be policies/api-v1-rev2.xml, unchanged, in the xml format."
+    condition     = azapi_resource.policy_v1_rev2.body.properties.format == "xml" && azapi_resource.policy_v1_rev2.body.properties.value == replace(file("policies/api-v1-rev2.xml"), "<!-- p10:log-to-eventhub -->", "")
+    error_message = "Revision 2's policy must be policies/api-v1-rev2.xml without its marker comment (Event Hubs logging is off by default), in the xml format."
   }
 
   assert {
@@ -390,4 +390,180 @@ run "outputs" {
     condition     = output.app_insights_logger_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-releaselens-gateway/providers/Microsoft.ApiManagement/service/apim-releaselens-a1b2c3/loggers/appi-releaselens"
     error_message = "app_insights_logger_id must be the Application Insights logger's resource ID."
   }
+}
+
+# Event Hubs logging (project 10) is off by default, so every other session applies the gateway as
+# before: no logger, no named value of its own, and both policies are their files without the
+# marker comment (the "api" and "revision_2" runs assert the policies' exact values).
+run "event_hub_logging_off" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_api_management_logger.eventhub) == 0
+    error_message = "With event_hub_logging off, there must be no Event Hubs logger."
+  }
+
+  assert {
+    condition     = length(azurerm_api_management_named_value.caller_labels) == 0 && length(azurerm_api_management_named_value.p10_session) == 0
+    error_message = "With event_hub_logging off, there must be no caller-labels or p10-session named value."
+  }
+
+  assert {
+    condition = alltrue([for value in [azapi_resource.policy_v1.body.properties.value, azapi_resource.policy_v1_rev2.body.properties.value] :
+      !strcontains(value, "log-to-eventhub") && !strcontains(value, "p10-eventhub") && !strcontains(value, "p10:")
+    ])
+    error_message = "With event_hub_logging off, neither policy may hold a log statement or the marker."
+  }
+}
+
+run "event_hub_logging_on" {
+  command = plan
+
+  variables {
+    event_hub_logging   = true
+    event_hub_namespace = "evhns-example"
+    event_hub_name      = "evh-example"
+    p10_session         = "p10-2026-11-12"
+    # Unsorted, with spaces: the named value holds it in one canonical form.
+    caller_labels_json = "{\"55555555-5555-5555-5555-555555555555\": \"webapp\", \"44444444-4444-4444-4444-444444444444\": \"owner\"}"
+  }
+
+  assert {
+    condition = (
+      length(azurerm_api_management_logger.eventhub) == 1 &&
+      azurerm_api_management_logger.eventhub[0].name == "p10-eventhub" &&
+      azurerm_api_management_logger.eventhub[0].resource_group_name == "rg-releaselens-gateway" &&
+      azurerm_api_management_logger.eventhub[0].api_management_name == "apim-releaselens-a1b2c3"
+    )
+    error_message = "With event_hub_logging on, there must be one logger, p10-eventhub, on the service."
+  }
+
+  assert {
+    condition = (
+      azurerm_api_management_logger.eventhub[0].eventhub[0].name == "evh-example" &&
+      azurerm_api_management_logger.eventhub[0].eventhub[0].endpoint_uri == "evhns-example.servicebus.windows.net" &&
+      azurerm_api_management_logger.eventhub[0].eventhub[0].user_assigned_identity_client_id == "22222222-2222-2222-2222-222222222222"
+    )
+    error_message = "The logger must send to the hub in the namespace's endpoint, as the gateway identity (no connection string)."
+  }
+
+  assert {
+    condition = (
+      azurerm_api_management_named_value.caller_labels[0].name == "caller-labels" &&
+      azurerm_api_management_named_value.caller_labels[0].display_name == "caller-labels" &&
+      azurerm_api_management_named_value.caller_labels[0].secret == true
+    )
+    error_message = "caller-labels must be a secret named value, named as the policy refers to it."
+  }
+
+  # The policy puts the value inside a C# string literal, so its quotes are escaped.
+  assert {
+    condition     = nonsensitive(azurerm_api_management_named_value.caller_labels[0].value == "{\\\"44444444-4444-4444-4444-444444444444\\\":\\\"owner\\\",\\\"55555555-5555-5555-5555-555555555555\\\":\\\"webapp\\\"}")
+    error_message = "caller-labels must be caller_labels_json, compacted, with its quotes escaped for the policy's string literal."
+  }
+
+  assert {
+    condition = (
+      azurerm_api_management_named_value.p10_session[0].name == "p10-session" &&
+      azurerm_api_management_named_value.p10_session[0].display_name == "p10-session" &&
+      azurerm_api_management_named_value.p10_session[0].secret == false &&
+      nonsensitive(azurerm_api_management_named_value.p10_session[0].value) == "p10-2026-11-12"
+    )
+    error_message = "p10-session must be a named value holding p10_session."
+  }
+
+  assert {
+    condition     = length(azurerm_api_management_named_value.this) == 6
+    error_message = "The six named values the policies always use must be unchanged."
+  }
+
+  assert {
+    condition = (
+      azapi_resource.policy_v1.body.properties.value == replace(file("policies/api-v1.xml"), "<!-- p10:log-to-eventhub -->", regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("policies/log-to-eventhub.xml"))) &&
+      azapi_resource.policy_v1_rev2.body.properties.value == replace(file("policies/api-v1-rev2.xml"), "<!-- p10:log-to-eventhub -->", regex("(?s)<log-to-eventhub.*</log-to-eventhub>", file("policies/log-to-eventhub.xml")))
+    )
+    error_message = "With event_hub_logging on, each policy's two markers must be replaced by the log statement."
+  }
+
+  assert {
+    condition     = length(split("<log-to-eventhub logger-id=\"p10-eventhub\">", azapi_resource.policy_v1.body.properties.value)) == 3 && length(split("<log-to-eventhub logger-id=\"p10-eventhub\">", azapi_resource.policy_v1_rev2.body.properties.value)) == 3
+    error_message = "Each policy must log twice: at the end of outbound and of on-error."
+  }
+
+  # The statement alone, from its opening tag: the log file's header comment stays in the file.
+  assert {
+    condition     = !strcontains(azapi_resource.policy_v1.body.properties.value, "Project 10:") && !strcontains(azapi_resource.policy_v1_rev2.body.properties.value, "Project 10:")
+    error_message = "The log file's header comment must not be rendered into either policy."
+  }
+}
+
+run "event_hub_logging_needs_a_session" {
+  command = plan
+
+  variables {
+    event_hub_logging   = true
+    event_hub_namespace = "evhns-example"
+    event_hub_name      = "evh-example"
+  }
+
+  expect_failures = [var.p10_session]
+}
+
+# "replay" marks generated events, which never feed a published figure; a live session is never it.
+run "event_hub_logging_refuses_the_replay_session" {
+  command = plan
+
+  variables {
+    event_hub_logging   = true
+    event_hub_namespace = "evhns-example"
+    event_hub_name      = "evh-example"
+    p10_session         = "replay"
+  }
+
+  expect_failures = [var.p10_session]
+}
+
+run "event_hub_logging_needs_a_namespace_and_hub" {
+  command = plan
+
+  variables {
+    event_hub_logging = true
+    p10_session       = "p10-2026-11-12"
+  }
+
+  expect_failures = [var.event_hub_namespace, var.event_hub_name]
+}
+
+# The namespace's name, not its host: the stack adds the domain.
+run "event_hub_namespace_is_a_name" {
+  command = plan
+
+  variables {
+    event_hub_logging   = true
+    event_hub_namespace = "evhns-example.servicebus.windows.net"
+    event_hub_name      = "evh-example"
+    p10_session         = "p10-2026-11-12"
+  }
+
+  expect_failures = [var.event_hub_namespace]
+}
+
+run "caller_labels_are_the_four_labels" {
+  command = plan
+
+  variables {
+    caller_labels_json = "{\"44444444-4444-4444-4444-444444444444\": \"admin\"}"
+  }
+
+  expect_failures = [var.caller_labels_json]
+}
+
+run "caller_labels_are_an_object" {
+  command = plan
+
+  variables {
+    caller_labels_json = "[\"owner\"]"
+  }
+
+  expect_failures = [var.caller_labels_json]
 }
