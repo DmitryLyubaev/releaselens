@@ -508,3 +508,12 @@ def test_every_if_body_is_in_braces(repo_root: Path, name: str, logging: bool) -
                 depth += {"(": 1, ")": -1}.get(expression[i], 0)
                 i += 1
             assert expression[i:].lstrip().startswith("{"), expression[match.start():match.start() + 80]
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_event_time_is_the_utc_timestamp_without_conversion(repo_root: Path, name: str, logging: bool) -> None:
+    # context.Timestamp is UTC already; API Management refuses DateTime.ToUniversalTime() in a policy
+    # expression ("Usage of member 'ToUniversalTime()' ... is not supported"), seen on 15 Nov 2026.
+    for expression in _expressions(repo_root, name, logging):
+        assert "ToUniversalTime" not in expression
+        assert """new JProperty("event_time", context.Timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"))""" in expression

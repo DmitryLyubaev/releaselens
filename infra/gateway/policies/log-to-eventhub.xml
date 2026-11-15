@@ -18,6 +18,8 @@
 
   Every if body is in braces: API Management's policy parser rejects a single-statement if, and
   checks it only when the policy is saved (the first live apply failed on it, 15 Nov 2026).
+  context.Timestamp is already UTC, and DateTime.ToUniversalTime() is not allowed in policy
+  expressions (the second apply, same day).
 -->
 <log-to-eventhub logger-id="p10-eventhub">@{
     var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("jwt");
@@ -38,7 +40,7 @@
     if (answered != null &amp;&amp; consumed is int) { tokens = (int)consumed; }
     if (answered != null &amp;&amp; consumed is long &amp;&amp; (long)consumed &gt;= 0 &amp;&amp; (long)consumed &lt;= int.MaxValue) { tokens = (int)(long)consumed; }
     return new JObject(
-        new JProperty("event_time", context.Timestamp.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")),
+        new JProperty("event_time", context.Timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")),
         new JProperty("request_id", context.RequestId.ToString()),
         new JProperty("session", "{{p10-session}}"),
         new JProperty("api", context.Api.Name),
