@@ -57,3 +57,9 @@ project 4's three follow-ups ([functions runbook](runbook-functions.md#findings)
   `estimate-prompt-tokens = true`. No request was refused, so the backend-reach query did not
   apply. A simultaneous burst is not refused by `llm-token-limit` on Basic v2; the counter is
   probably updated after concurrent requests pass its check (an inference, not measured).
+
+## Project 10, 2026-11-15: this gateway's calls in Fabric
+
+One staged session sent this gateway's calls, one event per call, through Event Hubs into
+Microsoft Fabric, where two alerts fired and the delay and cost per call were measured:
+[project 10's live report](https://github.com/DmitryLyubaev/llm-cost-quality-fabric/blob/main/docs/live-report-p10.md).
