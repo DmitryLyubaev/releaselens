@@ -400,7 +400,7 @@ def test_unknown_caller_is_other(repo_root: Path, name: str, logging: bool) -> N
         assert re.search(r'string caller = "other";', expression)
         assert re.search(r'found\s*=\s*\(string\)JObject\.Parse\("\{\{caller-labels\}\}"\)\[oid\]\s*;', expression)
         # Only one of the three known labels replaces "other"; anything else stays "other".
-        assert re.search(r'if \(found == "owner" \|\| found == "deploy" \|\| found == "webapp"\) caller = found;', expression)
+        assert re.search(r'if \(found == "owner" \|\| found == "deploy" \|\| found == "webapp"\) \{ caller = found; \}', expression)
         assert re.search(r'new JProperty\("caller", caller\)', expression)
         # The raw object ID is never a value in the event.
         assert not re.search(r'new JProperty\("\w+", oid\)', expression)
@@ -457,10 +457,10 @@ def test_tokens_conversion_cannot_throw(repo_root: Path, name: str, logging: boo
         # No conversion that throws on an unexpected type or on overflow: an int is taken as it
         # is, a long only when it fits an int, and anything else leaves tokens null.
         assert "Convert." not in expression and "int.Parse" not in expression
-        assert "if (answered != null && consumed is int) tokens = (int)consumed;" in expression
+        assert "if (answered != null && consumed is int) { tokens = (int)consumed; }" in expression
         assert (
             "if (answered != null && consumed is long && (long)consumed >= 0 && (long)consumed <= int.MaxValue) "
-            "tokens = (int)(long)consumed;"
+            "{ tokens = (int)(long)consumed; }"
         ) in expression
 
 
@@ -494,3 +494,26 @@ def test_a_statement_that_mutates_is_rejected(repo_root: Path, mutation: str) ->
 def test_reads_and_comparisons_are_not_mistaken_for_mutations() -> None:
     # What the statement does read is allowed: == is not an assignment, a lookup is not an Add.
     _assert_read_only('var a = context.Response.Headers.GetValueOrDefault("x", ""); if (a == "b" || a[0] == "c") { }')
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_every_if_body_is_in_braces(repo_root: Path, name: str, logging: bool) -> None:
+    # API Management's policy parser rejects a single-statement if ("Block statements must be
+    # enclosed in { and }"); it is only checked when the policy is saved, so the first live apply
+    # of the event statement failed on it (15 Nov 2026).
+    for expression in _expressions(repo_root, name, logging):
+        for match in re.finditer(r"\bif\s*\(", expression):
+            depth, i = 1, match.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(expression[i], 0)
+                i += 1
+            assert expression[i:].lstrip().startswith("{"), expression[match.start():match.start() + 80]
+
+
+@pytest.mark.parametrize(("name", "logging"), RENDERED)
+def test_event_time_is_the_utc_timestamp_without_conversion(repo_root: Path, name: str, logging: bool) -> None:
+    # context.Timestamp is UTC already; API Management refuses DateTime.ToUniversalTime() in a policy
+    # expression ("Usage of member 'ToUniversalTime()' ... is not supported"), seen on 15 Nov 2026.
+    for expression in _expressions(repo_root, name, logging):
+        assert "ToUniversalTime" not in expression
+        assert """new JProperty("event_time", context.Timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"))""" in expression
